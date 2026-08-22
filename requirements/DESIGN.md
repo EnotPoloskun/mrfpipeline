@@ -712,6 +712,18 @@ left unassigned for the next batch. Completion/reconciliation schedules that
 next batch. The database constraint that a plan belongs to at most one batch
 prevents overlapping publication attempts.
 
+The normal scheduler holds the snapshot row lock and permits at most one
+unresolved batch. It freezes all currently unassigned plans and inserts the
+batch, items, and River job in one transaction. Pending or running work leaves
+later plans unassigned for the next batch. A failed batch also blocks newer
+batches until an operator explicitly retries that same frozen batch; the
+pipeline never bypasses it with a new ID.
+
+Scheduling runs when consumer ingest succeeds, when a TOC import finalizes for
+an already consumed snapshot, when a batch succeeds, and in a one-time-safe
+startup backlog sweep. This covers every ordering between import, ingest, and
+attachment without a payer-wide barrier.
+
 This model directly handles the common case where several TOCs reference one
 network file. It also avoids a payer-wide barrier that would delay all useful
 work and still fail to define what "all TOCs" means across later discoveries.
@@ -993,11 +1005,9 @@ The version 1 pipeline is complete when all of the following are proven:
 
 ## Deferred decisions owned by later stories
 
-The following are intentional story-level decisions, not reasons to block this
-design document:
+The following is an intentional story-level decision, not a reason to block
+this design document:
 
-- Story 12 pins plan-batch scheduling, JSON projection, and recovery mapping
-  from additive attachment reports to domain state.
 - Story 13 pins operator reconciliation commands or procedures, stale-job
   handling, real-data sizing, and artifact retention.
 

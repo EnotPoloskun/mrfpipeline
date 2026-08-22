@@ -265,9 +265,10 @@ After a successful new ingestion or exact completed-output recognition:
 5. Set snapshot consume succeeded, clear failure code, update `updated_at`, and
    commit.
 
-Story 11 does not insert a plan batch or attachment job. Known `mrf_plans`
-remain unassigned. Story 12 schedules this backlog, including snapshots that
-completed before the Story 12 deployment.
+Story 11 by itself does not insert a plan batch or attachment job. Story 12
+supersedes this success boundary by calling its common scheduler before commit,
+so ingest success and the initial batch/job become visible together when plans
+are known. Story 12 also sweeps snapshots that completed before its deployment.
 
 If the database commit fails after publication, retry recognizes the exact
 completed output and executes only this success transaction. It never calls

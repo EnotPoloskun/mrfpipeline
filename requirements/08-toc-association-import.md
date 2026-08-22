@@ -52,8 +52,10 @@ Parquet schemas and row-level contracts before mutating application data.
 - New sources receive `mrf.download` jobs immediately.
 - New snapshots for already parsed sources receive `consumer.ingest` jobs
   immediately; other snapshots remain blocked until Story 10 parse success.
-- Plans are inserted immediately but attachment batches are not created in
-  this story. Story 12 adds batch scheduling after the attachment worker exists.
+- Plans are inserted immediately but attachment batches are not created until
+  Story 12. Once Story 12 is implemented, its common scheduler extends import
+  finalization for consumed snapshots without changing the row-import rules in
+  this story.
 - TOC parser output remains after import in version 1. Story 13 owns retention.
 
 ## Conservative UHC feed policy
@@ -304,8 +306,11 @@ Project to `mrf_plans` for the resolved snapshot:
 - HIOS always stores null sponsor, even if provenance contains a sponsor.
 - Conflict on the sponsor-independent identity is a no-op.
 
-Do not create a plan attachment batch or River attachment job in Story 08.
-Unassigned `mrf_plans` rows are durable eligibility for Story 12.
+Story 08 by itself does not create a plan attachment batch or River attachment
+job. Story 12 supersedes that finalization boundary: after all rows are
+imported it schedules one batch for each touched consumed snapshot that has
+unassigned plans and no unresolved batch. Until then, unassigned `mrf_plans`
+rows are durable eligibility.
 
 ### Batch commit
 
@@ -316,18 +321,21 @@ remain and are safely replayed from the beginning after a worker retry.
 
 ## Import finalization
 
-After the second pass completes, use one final short transaction:
+After the second pass completes, use one final transaction:
 
 1. Lock the TOC row.
 2. Verify the same import job remains assigned.
 3. Require parse succeeded and import running.
-4. Set `import_status=succeeded`, clear any import failure code, and update
+4. With Story 12 present, select distinct snapshot IDs referenced by this TOC,
+   lock them in ascending order, and invoke its common plan-batch scheduler.
+5. Set `import_status=succeeded`, clear any import failure code, and update
    `updated_at`.
-5. Commit.
+6. Commit the final state and any attachment batches/jobs together.
 
 There is no single successor job because association import may create several
-independent MRF sources/snapshots or none. All eligible jobs were inserted
-atomically with their owning rows in batch transactions.
+independent MRF sources/snapshots or none. MRF/consumer jobs are inserted with
+their owning rows in batch transactions; Story 12 attachment jobs are inserted
+with frozen batches during finalization.
 
 A retry after final commit is a no-op. A crash between batches or before
 finalization repeats both passes and converges through uniqueness.
