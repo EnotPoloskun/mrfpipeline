@@ -533,13 +533,16 @@ In one or more bounded database transactions, it:
 3. Upserts the unique source/feed/month `mrf_snapshots` row.
 4. Inserts exact TOC provenance into `toc_mrf_plan_associations`.
 5. Projects the sponsor-independent plan into `mrf_plans`.
-6. Schedules newly eligible MRF download, MRF parse, consumer ingest, or plan
-   attachment work without duplicating existing stage jobs.
+6. Schedules newly eligible MRF downloads or consumer ingests without
+   duplicating existing stage jobs, and leaves newly inserted plans as durable
+   unassigned eligibility for Story 12 batching.
 
-Feed identity is not inferred by Story 02 and is not guessed in this design.
-Story 08 must define and test the first UHC feed-assignment policy before it
-creates snapshots. That policy may use explicit TOC context but may not use a
-hash or silently claim that an exact URL is a stable cross-month feed.
+Feed identity is not inferred by Story 02. Story 08 assigns the conservative
+version 1 UHC value `mrf-source-<mrf_sources.id>`. The same exact source URL
+therefore keeps one feed across collection months, while a changed URL creates
+a different feed. This policy uses no source string or hash and deliberately
+does not claim cross-URL monthly continuity. A future curated mapping requires
+an explicit warehouse/version strategy.
 
 Import is idempotent. Re-reading the same completed TOC output inserts no
 duplicate provenance, source, snapshot, or canonical plan.
@@ -978,12 +981,8 @@ The version 1 pipeline is complete when all of the following are proven:
 The following are intentional story-level decisions, not reasons to block this
 design document:
 
-- Story 05 pins the exact result/report shape of a successfully enqueued
-  discovery and the precise limit/membership accounting transaction.
-- Story 08 pins UHC feed assignment and the batching strategy for large TOC
-  association imports.
-- Stories 07 and 10 pin whether each parser is invoked through its Go package
-  or a controlled process, including exact version/preflight behavior.
+- Story 10 pins the MRF parser invocation boundary, including exact
+  version/preflight behavior.
 - Stories 11 and 12 pin the consumer integration boundary and recovery mapping
   from consumer reports to domain state.
 - Story 13 pins operator reconciliation commands or procedures, stale-job
