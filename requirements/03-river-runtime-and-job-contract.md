@@ -216,7 +216,7 @@ The version 1 worker client declares these exact queues and maximum workers:
 |---|---:|---|
 | `discovery` | 1 | Avoid concurrent payer listing pressure. |
 | `toc_download` | 4 | TOCs are relatively small network transfers. |
-| `toc_parse` | 2 | Bound parser subprocess and local-I/O load. |
+| `toc_parse` | 2 | Bound parser invocation and local-I/O load. |
 | `toc_import` | 2 | Bound Parquet reads and database writes. |
 | `mrf_download` | 2 | Bound bandwidth and disk growth for large files. |
 | `mrf_parse` | 1 | Bound the heaviest CPU, memory, and disk stage. |

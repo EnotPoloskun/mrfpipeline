@@ -262,17 +262,19 @@ and does not create a duplicate job.
 
 For the source ID:
 
-1. Format `feed_id=mrf-source-<source-id>`.
-2. Select or insert `mrf_feeds(payer_id, feed_id)`.
-3. Select or insert the unique snapshot `(mrf_source_id, mrf_feed_id,
+1. Lock the `mrf_sources` row before reading its parse state; this lock is the
+   race boundary shared with Story 10 parse finalization.
+2. Format `feed_id=mrf-source-<source-id>`.
+3. Select or insert `mrf_feeds(payer_id, feed_id)`.
+4. Select or insert the unique snapshot `(mrf_source_id, mrf_feed_id,
    collection_month)`.
-4. For a new snapshot:
+5. For a new snapshot:
    - set `consume_status=pending` and insert `consumer.ingest` through
      `InsertTx` when the source parse is already `succeeded`; or
    - leave `consume_status=blocked` when source parse is not succeeded.
-5. For an existing blocked snapshot whose source parse is now succeeded and
+6. For an existing blocked snapshot whose source parse is now succeeded and
    whose consume job ID is null, set pending and insert its ingest job.
-6. Never reopen a failed snapshot or duplicate pending/running/succeeded
+7. Never reopen a failed snapshot or duplicate pending/running/succeeded
    consume work.
 
 The normal import path does not repair suspicious states such as pending with

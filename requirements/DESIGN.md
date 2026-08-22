@@ -145,13 +145,11 @@ The pipeline must not copy the implementation of a sibling tool. It validates
 the documented inputs, versions, reports, and final manifests needed to decide
 whether a stage completed.
 
-The exact integration form—direct Go package call or controlled child process—
-is an internal boundary selected by the worker story for that component. It
-must preserve context cancellation, exact version checks, output redaction,
-single-invocation semantics, and the component's existing CLI/package
-contract. `mrfparser` requires particular care because its package temporarily
-changes the process-wide Go memory limit and does not support concurrent parser
-invocations.
+The parser workers call the public Go packages directly. They preserve context
+cancellation, exact version checks, output redaction, and single-invocation
+semantics. `mrfparser` temporarily changes the process-wide Go memory limit, so
+its River queue has maximum concurrency one and no concurrent `Parse` call is
+allowed.
 
 ## Deployment model
 
@@ -981,8 +979,6 @@ The version 1 pipeline is complete when all of the following are proven:
 The following are intentional story-level decisions, not reasons to block this
 design document:
 
-- Story 10 pins the MRF parser invocation boundary, including exact
-  version/preflight behavior.
 - Stories 11 and 12 pin the consumer integration boundary and recovery mapping
   from consumer reports to domain state.
 - Story 13 pins operator reconciliation commands or procedures, stale-job
