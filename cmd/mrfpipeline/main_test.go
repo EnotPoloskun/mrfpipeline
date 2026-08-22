@@ -33,8 +33,11 @@ func TestModulePathAndGoVersion(t *testing.T) {
 	if !strings.Contains(text, "\ngo 1.26\n") && !strings.HasSuffix(strings.TrimSpace(text), "\ngo 1.26") {
 		t.Fatalf("go version: %s", text)
 	}
-	if strings.Contains(text, "\nrequire") {
-		t.Fatal("Story 01 must not add module dependencies")
+	if !strings.Contains(text, "github.com/jackc/pgx/v5 v5.9.2") {
+		t.Fatalf("expected pinned pgx: %s", text)
+	}
+	if strings.Contains(text, "riverqueue.com/river") {
+		t.Fatal("Story 02 must not add River")
 	}
 }
 
@@ -67,21 +70,24 @@ func TestBuildTargets(t *testing.T) {
 func TestNoForbiddenProductionImports(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
-	forbidden := []string{
+	common := []string{
 		"database/sql",
-		"net",
 		"net/http",
-		"github.com/jackc/pgx",
 		"riverqueue.com/river",
 	}
-	dirs := []string{
-		filepath.Join(root, "cmd", "mrfpipeline"),
-		filepath.Join(root, "internal", "cli"),
-		filepath.Join(root, "internal", "config"),
+	cliForbidden := append(append([]string{}, common...), "github.com/jackc/pgx", "net")
+	dirs := []struct {
+		path      string
+		forbidden []string
+	}{
+		{filepath.Join(root, "cmd", "mrfpipeline"), cliForbidden},
+		{filepath.Join(root, "internal", "cli"), cliForbidden},
+		{filepath.Join(root, "internal", "config"), cliForbidden},
+		{filepath.Join(root, "internal", "database"), common},
 	}
 	fset := token.NewFileSet()
 	for _, dir := range dirs {
-		pkgs, err := parser.ParseDir(fset, dir, func(info os.FileInfo) bool {
+		pkgs, err := parser.ParseDir(fset, dir.path, func(info os.FileInfo) bool {
 			return !strings.HasSuffix(info.Name(), "_test.go")
 		}, 0)
 		if err != nil {
@@ -91,7 +97,7 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 			for _, file := range pkg.Files {
 				for _, spec := range file.Imports {
 					path := strings.Trim(spec.Path.Value, `"`)
-					for _, bad := range forbidden {
+					for _, bad := range dir.forbidden {
 						if path == bad || strings.HasPrefix(path, bad+"/") {
 							t.Fatalf("%s imports %s", fset.File(file.Pos()).Name(), path)
 						}

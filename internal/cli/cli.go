@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/config"
+	"github.com/enotpoloskun/mrfpipeline/internal/database"
 )
 
 // version defaults to dev and may be replaced with a linker flag:
@@ -24,7 +25,6 @@ const (
 )
 
 var (
-	errMigrateNotImplemented  = errors.New("migrate is not implemented")
 	errWorkNotImplemented     = errors.New("work is not implemented")
 	errDiscoverNotImplemented = errors.New("discover enqueue is not implemented")
 )
@@ -63,10 +63,11 @@ func execute(ctx context.Context, args []string, getenv func(string) string) (st
 		return "mrfpipeline " + version + "\n", nil
 	}
 
+	var text string
 	var opErr error
 	switch parsed.command {
 	case cmdMigrate:
-		opErr = runMigrate(ctx, getenv)
+		text, opErr = runMigrate(ctx, getenv)
 	case cmdWork:
 		opErr = runWork(ctx, getenv)
 	case cmdDiscover:
@@ -77,23 +78,28 @@ func execute(ctx context.Context, args []string, getenv func(string) string) (st
 	if opErr != nil {
 		return "", &cmdError{command: parsed.command, err: opErr}
 	}
-	return "", nil
+	return text, nil
 }
 
-func runMigrate(ctx context.Context, getenv func(string) string) error {
+func runMigrate(ctx context.Context, getenv func(string) string) (string, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", err
 	}
-	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
-		return err
+	databaseURL := getenv(config.EnvDatabaseURL)
+	if err := config.ValidateDatabaseURL(databaseURL); err != nil {
+		return "", err
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", err
 	}
-	return errMigrateNotImplemented
+	result, err := database.Migrate(ctx, databaseURL)
+	if err != nil {
+		return "", err
+	}
+	return database.FormatResult(result)
 }
 
 func runWork(ctx context.Context, getenv func(string) string) error {
@@ -311,6 +317,9 @@ func report(err error, stderr io.Writer) int {
 	}
 	if _, werr := fmt.Fprintln(stderr, err.Error()); werr != nil {
 		return 1
+	}
+	if errors.Is(err, database.ErrDatabase) {
+		return 3
 	}
 	return 1
 }

@@ -1,0 +1,86 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/enotpoloskun/mrfpipeline/internal/config"
+	"github.com/enotpoloskun/mrfpipeline/internal/database"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+func testMigrateEnv(t *testing.T) func(string) string {
+	t.Helper()
+	raw := os.Getenv("MRFPIPELINE_TEST_DATABASE_URL")
+	if raw == "" {
+		t.Skip("MRFPIPELINE_TEST_DATABASE_URL is not set")
+	}
+	cfg, err := pgxpool.ParseConfig(raw)
+	if err != nil {
+		t.Fatal("invalid test database url")
+	}
+	if !strings.HasPrefix(cfg.ConnConfig.Database, "mrfpipeline_test_") {
+		t.Fatal("test database name must start with mrfpipeline_test_")
+	}
+	pool, err := pgxpool.New(context.Background(), raw)
+	if err != nil {
+		t.Fatal("connect test database")
+	}
+	t.Cleanup(pool.Close)
+	if _, err := pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS mrfpipeline CASCADE"); err != nil {
+		t.Fatal("reset schema")
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS mrfpipeline CASCADE")
+	})
+	return envMap(map[string]string{config.EnvDatabaseURL: raw})
+}
+
+func TestIntegrationMigrateCommand(t *testing.T) {
+	env := testMigrateEnv(t)
+	code, stdout, stderr := runCLI(context.Background(), []string{"migrate"}, env)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr %q", stderr)
+	}
+	if stdout != "{\"application_version\":1,\"applied_migration_count\":1}\n" {
+		t.Fatalf("stdout %q", stdout)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &obj); err != nil {
+		t.Fatal(err)
+	}
+	if len(obj) != 2 {
+		t.Fatalf("fields %v", obj)
+	}
+
+	code, stdout, stderr = runCLI(context.Background(), []string{"migrate"}, env)
+	if code != 0 || stderr != "" {
+		t.Fatalf("repeat exit %d stderr=%q", code, stderr)
+	}
+	if stdout != "{\"application_version\":1,\"applied_migration_count\":0}\n" {
+		t.Fatalf("repeat stdout %q", stdout)
+	}
+
+	fail := Run(context.Background(), []string{"migrate"}, env, failWriter{}, io.Discard)
+	if fail != 1 {
+		t.Fatalf("post-commit write failure exit %d", fail)
+	}
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	code = Run(context.Background(), []string{"work"}, env, &stdoutBuf, &stderrBuf)
+	if code != 1 || stdoutBuf.String() != "" {
+		t.Fatalf("work should remain placeholder: %d", code)
+	}
+	if errors.Is(errors.New(stderrBuf.String()), database.ErrDatabase) {
+		t.Fatal(stderrBuf.String())
+	}
+}

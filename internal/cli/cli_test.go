@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/config"
+	"github.com/enotpoloskun/mrfpipeline/internal/database"
 )
 
 func fatalEnv(t *testing.T) func(string) string {
@@ -26,7 +27,7 @@ func envMap(m map[string]string) func(string) string {
 }
 
 func validDB() map[string]string {
-	return map[string]string{config.EnvDatabaseURL: "postgres://user:supersecret@example.invalid/db"}
+	return map[string]string{config.EnvDatabaseURL: "postgres://user:supersecret@127.0.0.1:1/db"}
 }
 
 func validWorkEnv(t *testing.T) map[string]string {
@@ -181,7 +182,7 @@ func TestEqualsAndSpaceFlagForms(t *testing.T) {
 func TestCommandEnvironmentRequirements(t *testing.T) {
 	t.Parallel()
 	invalidWorker := map[string]string{
-		config.EnvDatabaseURL:         "postgres://user:supersecret@example.invalid/db",
+		config.EnvDatabaseURL:         "postgres://user:supersecret@127.0.0.1:1/db",
 		config.EnvArtifactRoot:        "s3://bucket/artifacts",
 		config.EnvWarehousePath:       "https://example.invalid/wh",
 		config.EnvProviderCatalogPath: "file:///catalog",
@@ -190,12 +191,15 @@ func TestCommandEnvironmentRequirements(t *testing.T) {
 
 	t.Run("migrate requires only database", func(t *testing.T) {
 		t.Parallel()
-		code, stdout, _ := runCLI(context.Background(), []string{"migrate"}, envMap(invalidWorker))
-		if code != 1 || stdout != "" {
-			t.Fatalf("exit %d", code)
+		code, stdout, stderr := runCLI(context.Background(), []string{"migrate"}, envMap(invalidWorker))
+		if code != 3 || stdout != "" {
+			t.Fatalf("exit %d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if strings.Contains(stderr, "supersecret") || strings.Contains(stderr, "Try '") {
+			t.Fatalf("stderr %q", stderr)
 		}
 		_, err := execute(context.Background(), []string{"migrate"}, envMap(invalidWorker))
-		if !errors.Is(err, errMigrateNotImplemented) {
+		if !errors.Is(err, database.ErrDatabase) {
 			t.Fatalf("got %v", err)
 		}
 	})
@@ -324,7 +328,7 @@ func TestNilContextPanicsBeforeValidation(t *testing.T) {
 		return ""
 	}
 	for _, fn := range []func(){
-		func() { _ = runMigrate(nil, getenv) },
+		func() { _, _ = runMigrate(nil, getenv) },
 		func() { _ = runWork(nil, getenv) },
 		func() { _ = runDiscover(nil, getenv, "UHC", "bad", "0") },
 	} {
@@ -357,7 +361,7 @@ func TestCancellationPrecedence(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := runMigrate(canceled, envMap(nil))
+	_, err := runMigrate(canceled, envMap(nil))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("entry cancel: %v", err)
 	}
@@ -366,16 +370,16 @@ func TestCancellationPrecedence(t *testing.T) {
 	}
 
 	later := &sequencedCtx{Context: context.Background()}
-	err = runMigrate(later, envMap(validDB()))
+	_, err = runMigrate(later, envMap(validDB()))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("post-validation cancel: %v", err)
 	}
-	if errors.Is(err, errMigrateNotImplemented) {
-		t.Fatal("post-validation cancel must precede placeholder")
+	if errors.Is(err, database.ErrDatabase) {
+		t.Fatal("post-validation cancel must precede database work")
 	}
 
 	race := &sequencedCtx{Context: context.Background()}
-	err = runMigrate(race, envMap(nil))
+	_, err = runMigrate(race, envMap(nil))
 	if !errors.Is(err, config.ErrInvalidConfig) {
 		t.Fatalf("config should win when entry is not canceled: %v", err)
 	}
@@ -393,8 +397,15 @@ func TestErrorClassification(t *testing.T) {
 	}
 
 	_, err = execute(context.Background(), []string{"migrate"}, envMap(validDB()))
-	if !errors.Is(err, errMigrateNotImplemented) || errors.Is(err, config.ErrInvalidConfig) {
-		t.Fatalf("migrate placeholder: %v", err)
+	if !errors.Is(err, database.ErrDatabase) || errors.Is(err, config.ErrInvalidConfig) {
+		t.Fatalf("migrate database failure: %v", err)
+	}
+	code, stdout, stderr := runCLI(context.Background(), []string{"migrate"}, envMap(validDB()))
+	if code != 3 || stdout != "" {
+		t.Fatalf("migrate database exit %d stdout=%q", code, stdout)
+	}
+	if strings.Contains(stderr, "supersecret") || strings.Contains(stderr, "Try '") {
+		t.Fatalf("stderr %q", stderr)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
@@ -404,7 +415,7 @@ func TestErrorClassification(t *testing.T) {
 		t.Fatalf("cancel: %v", err)
 	}
 
-	code, stdout, _ := runCLI(canceled, []string{"migrate"}, envMap(validDB()))
+	code, stdout, _ = runCLI(canceled, []string{"migrate"}, envMap(validDB()))
 	if code != 1 || stdout != "" {
 		t.Fatalf("cancel exit %d stdout=%q", code, stdout)
 	}

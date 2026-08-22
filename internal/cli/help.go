@@ -14,7 +14,7 @@ Usage:
   mrfpipeline --version
 
 Commands:
-  migrate   Apply application and River database migrations (later story)
+  migrate   Apply application database migrations
   work      Run background workers (later story)
   discover  Enqueue one bounded UHC discovery run (later story)
 `
@@ -23,9 +23,8 @@ const migrateHelp = `Usage:
   mrfpipeline migrate
   mrfpipeline migrate --help
 
-Apply application and River database migrations once they exist. The
-operation is explicit and repeatable; work and discover do not migrate
-automatically.
+Apply application database migrations. The operation is explicit and
+repeatable; work and discover do not migrate automatically.
 
 Required environment:
   MRFPIPELINE_DATABASE_URL  PostgreSQL connection string
