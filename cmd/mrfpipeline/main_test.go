@@ -42,6 +42,12 @@ func TestModulePathAndGoVersion(t *testing.T) {
 	if !strings.Contains(text, "github.com/riverqueue/river/riverdriver/riverpgxv5 v0.39.0") {
 		t.Fatalf("expected pinned riverpgxv5: %s", text)
 	}
+	if !strings.Contains(text, "github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260821182039-590460f1448b") {
+		t.Fatalf("expected pinned mrfdiscoverer: %s", text)
+	}
+	if strings.Contains(text, "\nreplace ") || strings.HasPrefix(text, "replace ") {
+		t.Fatal("go.mod must not contain a replace directive")
+	}
 }
 
 func TestBuildTargets(t *testing.T) {
@@ -80,8 +86,6 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 	cliForbidden := append(append([]string{}, common...),
 		"github.com/jackc/pgx",
 		"github.com/riverqueue/river",
-		"github.com/enotpoloskun/mrfpipeline/internal/jobs",
-		"github.com/enotpoloskun/mrfpipeline/internal/artifact",
 		"net",
 	)
 	dirs := []struct {
@@ -93,6 +97,7 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 		{filepath.Join(root, "internal", "config"), cliForbidden},
 		{filepath.Join(root, "internal", "database"), common},
 		{filepath.Join(root, "internal", "jobs"), common},
+		{filepath.Join(root, "internal", "discovery"), common},
 		{filepath.Join(root, "internal", "artifact"), []string{
 			"database/sql",
 			"github.com/jackc/pgx",

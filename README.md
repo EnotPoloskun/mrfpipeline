@@ -8,7 +8,7 @@ This repository is requirements-first. Stories 01–13 in
 [`requirements/`](requirements/) define version 1. [`requirements/DESIGN.md`](requirements/DESIGN.md)
 records product decisions that must stay consistent across those stories.
 
-The current command surface specified by Story 01 is:
+The current command surface is:
 
 ```text
 mrfpipeline migrate
@@ -16,9 +16,10 @@ mrfpipeline work
 mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
 ```
 
-Those commands are placeholders until later stories replace them. Story 13
-adds `reconcile` and `retry` and replaces this README with operational
-documentation.
+`migrate` applies application and River schemas. `discover` enqueues one
+bounded UHC discovery run. `work` currently consumes only the discovery
+queue. Story 13 adds `reconcile` and `retry` and replaces this README with
+operational documentation.
 
 ## River UI (optional, not part of this binary)
 

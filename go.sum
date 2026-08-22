@@ -1,3 +1,5 @@
+github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260821182039-590460f1448b h1:8CkRY0o80dBV5TFfyow9bTctpfhictcHGYSvihktENo=
+github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260821182039-590460f1448b/go.mod h1:64lqzWrE+wZNNUM3+Oe+C4az9vNe1B+eqDrNiSGtvIg=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

@@ -41,8 +41,8 @@ type RunParams struct {
 }
 
 // Run executes claim, external work, success/successor, retry bookkeeping,
-// or terminal failure. Production tables are not wired here; later stories
-// pass their StageSpec.
+// or terminal failure. Discovery uses DiscoveryRunStage; later stories pass
+// their own StageSpec.
 func Run(ctx context.Context, p RunParams) error {
 	if ctx == nil {
 		panic("nil context")
@@ -67,15 +67,23 @@ func Run(ctx context.Context, p RunParams) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if isImmediateFail(workErr) {
+		code := terminalFailureCode(workErr)
+		if ferr := MarkFailed(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID, code); ferr != nil {
+			return ferr
+		}
+		return river.JobCancel(jobErr(code))
+	}
 	max := p.MaxAttempts
 	if max <= 0 {
 		max = MaxAttempts
 	}
 	if p.Attempt >= max {
-		if ferr := MarkFailed(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID, FailureAttemptsExhausted); ferr != nil {
+		code := terminalFailureCode(workErr)
+		if ferr := MarkFailed(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID, code); ferr != nil {
 			return ferr
 		}
-		return river.JobCancel(jobErr(FailureAttemptsExhausted))
+		return river.JobCancel(jobErr(code))
 	}
 	if ferr := MarkRetryable(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID); ferr != nil {
 		return fmt.Errorf("%w: %w", workErr, ferr)
@@ -205,9 +213,7 @@ func MarkRetryable(ctx context.Context, pool *pgxpool.Pool, spec StageSpec, doma
 
 // MarkFailed records a terminal safe failure_code on a still-assigned row.
 func MarkFailed(ctx context.Context, pool *pgxpool.Pool, spec StageSpec, domainID, riverJobID int64, code string) error {
-	switch code {
-	case FailureInvalidArguments, FailureMissingRecord, FailureDomainInvariant, FailureAttemptsExhausted:
-	default:
+	if !allowedFailureCode(code) {
 		code = FailureAttemptsExhausted
 	}
 	return updateAssigned(ctx, pool, spec, domainID, riverJobID, func(tx pgx.Tx) error {

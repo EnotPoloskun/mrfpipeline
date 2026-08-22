@@ -3,6 +3,7 @@ module github.com/enotpoloskun/mrfpipeline
 go 1.26
 
 require (
+	github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260821182039-590460f1448b
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/riverqueue/river v0.39.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.39.0

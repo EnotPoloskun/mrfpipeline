@@ -16,8 +16,8 @@ Usage:
 
 Commands:
   migrate   Apply application and River database migrations
-  work      Run background workers (later story)
-  discover  Enqueue one bounded UHC discovery run (later story)
+  work      Run background workers
+  discover  Enqueue one bounded UHC discovery run
 `
 
 const migrateHelp = `Usage:
@@ -35,9 +35,8 @@ const workHelp = `Usage:
   mrfpipeline work
   mrfpipeline work --help
 
-Run background workers for download, parse, consume, and plan-attachment
-jobs. Once implemented, this command validates the complete worker
-configuration and runs until canceled.
+Run background workers. This command validates the complete worker
+configuration, starts the discovery queue, and runs until canceled.
 
 Required environment:
   MRFPIPELINE_DATABASE_URL
@@ -51,8 +50,8 @@ const discoverHelp = `Usage:
   mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
   mrfpipeline discover --help
 
-Enqueue one background discovery run. Success will enqueue work rather than
-wait for the entire pipeline.
+Enqueue one background discovery run. Success reports the durable run and
+job identifiers rather than waiting for listing or download.
 
 collection_month is a caller-supplied label assigned to discovered TOC
 records. It is not inferred from URLs or payer contents.

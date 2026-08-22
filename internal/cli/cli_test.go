@@ -73,7 +73,7 @@ func TestInformationalInvocations(t *testing.T) {
 			if stdout == "" {
 				t.Fatal("expected informational stdout")
 			}
-			if strings.Contains(stdout, "reconcile") || strings.Contains(stdout, "retry") {
+			if strings.Contains(stdout, "reconcile") || strings.Contains(stdout, "retry") || strings.Contains(stdout, "later story") {
 				t.Fatalf("help mentioned later commands: %q", stdout)
 			}
 		})
@@ -153,11 +153,11 @@ func TestRepeatedFlagsUseFinalOccurrence(t *testing.T) {
 	env := envMap(validDB())
 	ok := []string{"discover", "--payer", "UHC", "--payer", "uhc", "--collection-month", "1999-01", "--collection-month", "2026-08", "--limit", "0", "--limit", "5"}
 	code, stdout, _ := runCLI(context.Background(), ok, env)
-	if code != 1 || stdout != "" {
+	if code != 3 || stdout != "" {
 		t.Fatalf("final valid values: exit %d stdout=%q", code, stdout)
 	}
 	_, err := execute(context.Background(), ok, env)
-	if !errors.Is(err, errDiscoverNotImplemented) {
+	if !errors.Is(err, database.ErrDatabase) {
 		t.Fatalf("got %v", err)
 	}
 
@@ -176,7 +176,7 @@ func TestEqualsAndSpaceFlagForms(t *testing.T) {
 	env := envMap(validDB())
 	args := []string{"discover", "--payer=uhc", "--collection-month=2026-08", "--limit=2"}
 	_, err := execute(context.Background(), args, env)
-	if !errors.Is(err, errDiscoverNotImplemented) {
+	if !errors.Is(err, database.ErrDatabase) {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -209,7 +209,7 @@ func TestCommandEnvironmentRequirements(t *testing.T) {
 	t.Run("discover ignores worker paths", func(t *testing.T) {
 		t.Parallel()
 		_, err := execute(context.Background(), discoverArgs("1"), envMap(invalidWorker))
-		if !errors.Is(err, errDiscoverNotImplemented) {
+		if !errors.Is(err, database.ErrDatabase) {
 			t.Fatalf("got %v", err)
 		}
 	})
@@ -294,6 +294,7 @@ func TestDiscoverSemanticValidation(t *testing.T) {
 		{"limit hex", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "0x10"}, config.FieldLimit},
 		{"limit empty", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit="}, config.FieldLimit},
 		{"limit overflow", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "9223372036854775808"}, config.FieldLimit},
+		{"limit exceeds integer", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "2147483648"}, config.FieldLimit},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -317,7 +318,7 @@ func TestDiscoverSemanticValidation(t *testing.T) {
 
 	for _, limit := range []string{"1", "2", "5", "10", "02"} {
 		_, err := execute(context.Background(), discoverArgs(limit), env)
-		if !errors.Is(err, errDiscoverNotImplemented) {
+		if !errors.Is(err, database.ErrDatabase) {
 			t.Fatalf("limit %s: %v", limit, err)
 		}
 	}
@@ -332,7 +333,7 @@ func TestNilContextPanicsBeforeValidation(t *testing.T) {
 	for _, fn := range []func(){
 		func() { _, _ = runMigrate(nil, getenv) },
 		func() { _ = runWork(nil, getenv) },
-		func() { _ = runDiscover(nil, getenv, "UHC", "bad", "0") },
+		func() { _, _ = runDiscover(nil, getenv, "UHC", "bad", "0") },
 	} {
 		func() {
 			defer func() {
@@ -394,8 +395,8 @@ func TestErrorClassification(t *testing.T) {
 	t.Parallel()
 	env := envMap(validWorkEnv(t))
 	_, err := execute(context.Background(), []string{"work"}, env)
-	if !errors.Is(err, errWorkNotImplemented) || errors.Is(err, config.ErrInvalidConfig) {
-		t.Fatalf("placeholder: %v", err)
+	if !errors.Is(err, database.ErrDatabase) || errors.Is(err, config.ErrInvalidConfig) {
+		t.Fatalf("work database failure: %v", err)
 	}
 
 	_, err = execute(context.Background(), []string{"migrate"}, envMap(validDB()))
@@ -423,25 +424,31 @@ func TestErrorClassification(t *testing.T) {
 	}
 
 	code, stdout, _ = runCLI(context.Background(), []string{"work"}, env)
-	if code != 1 || stdout != "" {
-		t.Fatalf("placeholder exit %d", code)
+	if code != 3 || stdout != "" {
+		t.Fatalf("work database exit %d", code)
 	}
 
 	var jobStderr bytes.Buffer
 	code = report(fmt.Errorf("%w: insert", jobs.ErrJob), &jobStderr)
-	if code != 1 {
+	if code != 4 {
 		t.Fatalf("job exit %d", code)
 	}
 	if strings.Contains(jobStderr.String(), "Try '") {
 		t.Fatalf("job error printed a hint: %q", jobStderr.String())
 	}
+
+	var bothStderr bytes.Buffer
+	code = report(fmt.Errorf("%w: %w: insert", jobs.ErrJob, database.ErrDatabase), &bothStderr)
+	if code != 3 {
+		t.Fatalf("job+database exit %d", code)
+	}
 }
 
-func TestPlaceholderLeavesPathsUntouched(t *testing.T) {
+func TestWorkUnreachableDatabaseLeavesPathsUntouched(t *testing.T) {
 	t.Parallel()
 	env := validWorkEnv(t)
 	code, stdout, _ := runCLI(context.Background(), []string{"work"}, envMap(env))
-	if code != 1 || stdout != "" {
+	if code != 3 || stdout != "" {
 		t.Fatalf("exit %d", code)
 	}
 	for _, key := range []string{

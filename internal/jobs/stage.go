@@ -35,6 +35,18 @@ type KindBinding struct {
 	ArgField string
 }
 
+// DiscoveryRunStage is the domain stage for discovery.run.
+var DiscoveryRunStage = StageSpec{
+	Table:             "mrfpipeline.discovery_runs",
+	IDColumn:          "id",
+	StatusColumn:      "status",
+	JobIDColumn:       "river_job_id",
+	StartedAtColumn:   "started_at",
+	CompletedAtColumn: "completed_at",
+	FailureCodeColumn: "failure_code",
+	UpdatedAtColumn:   "updated_at",
+}
+
 var identRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 var tableRE = regexp.MustCompile(`^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$`)
 

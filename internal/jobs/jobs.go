@@ -14,10 +14,13 @@ import (
 var ErrJob = errors.New("background job operation failed")
 
 const (
-	FailureInvalidArguments  = "invalid_job_arguments"
-	FailureMissingRecord     = "missing_domain_record"
-	FailureDomainInvariant   = "domain_invariant"
-	FailureAttemptsExhausted = "job_attempts_exhausted"
+	FailureInvalidArguments       = "invalid_job_arguments"
+	FailureMissingRecord          = "missing_domain_record"
+	FailureDomainInvariant        = "domain_invariant"
+	FailureAttemptsExhausted      = "job_attempts_exhausted"
+	FailureDiscoveryListing       = "discovery_listing_failed"
+	FailureDiscoveryResultInvalid = "discovery_result_invalid"
+	FailureDiscoveryDatabase      = "discovery_database_failed"
 
 	MaxAttempts    = 8
 	RescueAfter    = 24 * time.Hour
@@ -38,17 +41,50 @@ func (e *failCodeError) Error() string {
 func (e *failCodeError) Unwrap() error { return ErrJob }
 
 func jobErr(op string) error {
-	switch op {
-	case FailureInvalidArguments, FailureMissingRecord, FailureDomainInvariant, FailureAttemptsExhausted:
+	if allowedFailureCode(op) {
 		return &failCodeError{code: op}
-	default:
-		return fmt.Errorf("%w: %s", ErrJob, op)
 	}
+	return fmt.Errorf("%w: %s", ErrJob, op)
+}
+
+// Failure returns a redacted job error. Known codes are persisted on
+// terminal failure; other operations wrap ErrJob only.
+func Failure(code string) error {
+	return jobErr(code)
+}
+
+func allowedFailureCode(code string) bool {
+	switch code {
+	case FailureInvalidArguments, FailureMissingRecord, FailureDomainInvariant, FailureAttemptsExhausted,
+		FailureDiscoveryListing, FailureDiscoveryResultInvalid, FailureDiscoveryDatabase:
+		return true
+	default:
+		return false
+	}
+}
+
+func isImmediateFail(err error) bool {
+	return isFailure(err, FailureInvalidArguments) ||
+		isFailure(err, FailureMissingRecord) ||
+		isFailure(err, FailureDomainInvariant)
+}
+
+func terminalFailureCode(err error) string {
+	var f *failCodeError
+	if errors.As(err, &f) && allowedFailureCode(f.code) {
+		return f.code
+	}
+	return FailureAttemptsExhausted
 }
 
 func isFailure(err error, code string) bool {
 	var f *failCodeError
 	return errors.As(err, &f) && f.code == code
+}
+
+// IsFailure reports whether err is a coded terminal/retryable job failure.
+func IsFailure(err error, code string) bool {
+	return isFailure(err, code)
 }
 
 func classifyJob(ctx context.Context, op string, err error) error {

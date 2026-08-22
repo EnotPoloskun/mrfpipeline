@@ -5,13 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/config"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
+	"github.com/enotpoloskun/mrfpipeline/internal/discovery"
+	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 )
 
 // version defaults to dev and may be replaced with a linker flag:
@@ -22,11 +26,6 @@ const (
 	cmdMigrate  = "migrate"
 	cmdWork     = "work"
 	cmdDiscover = "discover"
-)
-
-var (
-	errWorkNotImplemented     = errors.New("work is not implemented")
-	errDiscoverNotImplemented = errors.New("discover enqueue is not implemented")
 )
 
 // Main is the process entry: signals, os.Args, and standard streams.
@@ -71,7 +70,7 @@ func execute(ctx context.Context, args []string, getenv func(string) string) (st
 	case cmdWork:
 		opErr = runWork(ctx, getenv)
 	case cmdDiscover:
-		opErr = runDiscover(ctx, getenv, parsed.payer, parsed.month, parsed.limit)
+		text, opErr = runDiscover(ctx, getenv, parsed.payer, parsed.month, parsed.limit)
 	default:
 		return "", &usageError{reason: "unknown command"}
 	}
@@ -112,47 +111,78 @@ func runWork(ctx context.Context, getenv func(string) string) error {
 	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
 		return err
 	}
-	if _, err := config.NormalizeLocalPath(config.EnvArtifactRoot, getenv(config.EnvArtifactRoot)); err != nil {
+	art, err := config.NormalizeLocalPath(config.EnvArtifactRoot, getenv(config.EnvArtifactRoot))
+	if err != nil {
 		return err
 	}
-	if _, err := config.NormalizeLocalPath(config.EnvWarehousePath, getenv(config.EnvWarehousePath)); err != nil {
+	warehouse, err := config.NormalizeLocalPath(config.EnvWarehousePath, getenv(config.EnvWarehousePath))
+	if err != nil {
 		return err
 	}
-	if _, err := config.NormalizeLocalPath(config.EnvProviderCatalogPath, getenv(config.EnvProviderCatalogPath)); err != nil {
+	catalog, err := config.NormalizeLocalPath(config.EnvProviderCatalogPath, getenv(config.EnvProviderCatalogPath))
+	if err != nil {
 		return err
 	}
-	if _, err := config.NormalizeLocalPath(config.EnvServicesPath, getenv(config.EnvServicesPath)); err != nil {
+	services, err := config.NormalizeLocalPath(config.EnvServicesPath, getenv(config.EnvServicesPath))
+	if err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return errWorkNotImplemented
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.WorkMaxConns)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := database.ValidateCurrent(ctx, pool); err != nil {
+		return err
+	}
+	if err := artifact.CheckOverlap(art, warehouse, catalog, services); err != nil {
+		return err
+	}
+	ws, err := artifact.Init(ctx, art)
+	if err != nil {
+		return err
+	}
+	if err := os.Setenv("TMPDIR", ws.StagingDir()); err != nil {
+		return err
+	}
+	return discovery.RunWorkers(ctx, pool, nil, jobs.NewLogger(os.Stderr))
 }
 
-func runDiscover(ctx context.Context, getenv func(string) string, payer, month, limit string) error {
+func runDiscover(ctx context.Context, getenv func(string) string, payer, month, limit string) (string, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", err
 	}
 	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
-		return err
+		return "", err
 	}
 	if err := config.ValidatePayer(payer); err != nil {
-		return err
+		return "", err
 	}
 	if err := config.ValidateCollectionMonth(month); err != nil {
-		return err
+		return "", err
 	}
-	if _, err := config.ValidateLimit(limit); err != nil {
-		return err
+	n, err := config.ValidateLimit(limit)
+	if err != nil {
+		return "", err
+	}
+	if n > math.MaxInt32 {
+		return "", fmt.Errorf("%w: %s: must fit in a PostgreSQL integer", config.ErrInvalidConfig, config.FieldLimit)
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return "", err
 	}
-	return errDiscoverNotImplemented
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.DiscoverMaxConns)
+	if err != nil {
+		return "", err
+	}
+	defer pool.Close()
+	return discovery.Enqueue(ctx, pool, payer, month, n)
 }
 
 type parsed struct {
@@ -320,6 +350,9 @@ func report(err error, stderr io.Writer) int {
 	}
 	if errors.Is(err, database.ErrDatabase) {
 		return 3
+	}
+	if errors.Is(err, jobs.ErrJob) {
+		return 4
 	}
 	return 1
 }

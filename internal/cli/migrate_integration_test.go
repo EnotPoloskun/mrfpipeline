@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
 	"strings"
@@ -84,14 +82,5 @@ func TestIntegrationMigrateCommand(t *testing.T) {
 	fail := Run(context.Background(), []string{"migrate"}, env, failWriter{}, io.Discard)
 	if fail != 1 {
 		t.Fatalf("post-commit write failure exit %d", fail)
-	}
-
-	var stdoutBuf, stderrBuf bytes.Buffer
-	code = Run(context.Background(), []string{"work"}, env, &stdoutBuf, &stderrBuf)
-	if code != 1 || stdoutBuf.String() != "" {
-		t.Fatalf("work should remain placeholder: %d", code)
-	}
-	if errors.Is(errors.New(stderrBuf.String()), database.ErrDatabase) {
-		t.Fatal(stderrBuf.String())
 	}
 }
