@@ -36,8 +36,11 @@ func TestModulePathAndGoVersion(t *testing.T) {
 	if !strings.Contains(text, "github.com/jackc/pgx/v5 v5.9.2") {
 		t.Fatalf("expected pinned pgx: %s", text)
 	}
-	if strings.Contains(text, "riverqueue.com/river") {
-		t.Fatal("Story 02 must not add River")
+	if !strings.Contains(text, "github.com/riverqueue/river v0.39.0") {
+		t.Fatalf("expected pinned river: %s", text)
+	}
+	if !strings.Contains(text, "github.com/riverqueue/river/riverdriver/riverpgxv5 v0.39.0") {
+		t.Fatalf("expected pinned riverpgxv5: %s", text)
 	}
 }
 
@@ -73,9 +76,13 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 	common := []string{
 		"database/sql",
 		"net/http",
-		"riverqueue.com/river",
 	}
-	cliForbidden := append(append([]string{}, common...), "github.com/jackc/pgx", "net")
+	cliForbidden := append(append([]string{}, common...),
+		"github.com/jackc/pgx",
+		"github.com/riverqueue/river",
+		"github.com/enotpoloskun/mrfpipeline/internal/jobs",
+		"net",
+	)
 	dirs := []struct {
 		path      string
 		forbidden []string
@@ -84,13 +91,17 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 		{filepath.Join(root, "internal", "cli"), cliForbidden},
 		{filepath.Join(root, "internal", "config"), cliForbidden},
 		{filepath.Join(root, "internal", "database"), common},
+		{filepath.Join(root, "internal", "jobs"), common},
 	}
 	fset := token.NewFileSet()
 	for _, dir := range dirs {
 		pkgs, err := parser.ParseDir(fset, dir.path, func(info os.FileInfo) bool {
 			return !strings.HasSuffix(info.Name(), "_test.go")
-		}, 0)
+		}, parser.ImportsOnly)
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			t.Fatal(err)
 		}
 		for _, pkg := range pkgs {

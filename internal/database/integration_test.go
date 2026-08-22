@@ -13,8 +13,6 @@ import (
 
 const testDatabaseURLEnv = "MRFPIPELINE_TEST_DATABASE_URL"
 
-var integrationMu sync.Mutex
-
 func testDatabaseURL(t *testing.T) string {
 	t.Helper()
 	raw := os.Getenv(testDatabaseURLEnv)
@@ -43,7 +41,7 @@ func openTestPool(t *testing.T, url string) *pgxpool.Pool {
 
 func resetSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS mrfpipeline CASCADE"); err != nil {
+	if err := resetPipelineSchemas(context.Background(), pool); err != nil {
 		t.Fatal("reset schema")
 	}
 }
@@ -51,12 +49,12 @@ func resetSchema(t *testing.T, pool *pgxpool.Pool) {
 func withTestDB(t *testing.T) (string, *pgxpool.Pool) {
 	t.Helper()
 	url := testDatabaseURL(t)
-	integrationMu.Lock()
+	TestDBMu.Lock()
 	pool := openTestPool(t, url)
 	resetSchema(t, pool)
 	t.Cleanup(func() {
 		resetSchema(t, pool)
-		integrationMu.Unlock()
+		TestDBMu.Unlock()
 	})
 	return url, pool
 }
@@ -76,9 +74,15 @@ func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 	if first.ApplicationVersion != 1 || first.AppliedMigrationCount != 1 {
 		t.Fatalf("first %+v", first)
 	}
+	if first.RiverVersion != ExpectedRiverVersion || first.AppliedRiverMigrationCount != ExpectedRiverVersion {
+		t.Fatalf("first river %+v", first)
+	}
 	second := mustMigrate(t, url)
 	if second.ApplicationVersion != 1 || second.AppliedMigrationCount != 0 {
 		t.Fatalf("second %+v", second)
+	}
+	if second.RiverVersion != ExpectedRiverVersion || second.AppliedRiverMigrationCount != 0 {
+		t.Fatalf("second river %+v", second)
 	}
 
 	var n int
@@ -162,6 +166,9 @@ func TestIntegrationConcurrentMigrators(t *testing.T) {
 	if results[0].AppliedMigrationCount+results[1].AppliedMigrationCount != 1 {
 		t.Fatalf("applied %+v %+v", results[0], results[1])
 	}
+	if results[0].AppliedRiverMigrationCount+results[1].AppliedRiverMigrationCount != ExpectedRiverVersion {
+		t.Fatalf("river applied %+v %+v", results[0], results[1])
+	}
 	var n int
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations WHERE version = 1`).Scan(&n); err != nil {
 		t.Fatal("count version 1")
@@ -236,6 +243,76 @@ func TestIntegrationInvalidLedgerRejected(t *testing.T) {
 				t.Fatalf("exposed url: %v", err)
 			}
 		})
+	}
+}
+
+func TestIntegrationRiverFailureDoesNotRewriteApplication(t *testing.T) {
+	url, pool := withTestDB(t)
+	if _, err := pool.Exec(context.Background(), `
+CREATE SCHEMA mrfpipeline_river;
+CREATE TABLE mrfpipeline_river.river_migration (broken int)`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Migrate(context.Background(), url)
+	if !errors.Is(err, ErrDatabase) {
+		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(err.Error(), url) {
+		t.Fatalf("exposed url: %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations WHERE version = 1`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("application ledger rewritten: %d", n)
+	}
+	if _, err := pool.Exec(context.Background(), `DROP TABLE mrfpipeline_river.river_migration`); err != nil {
+		t.Fatal(err)
+	}
+	result := mustMigrate(t, url)
+	if result.ApplicationVersion != 1 || result.AppliedMigrationCount != 0 {
+		t.Fatalf("app %+v", result)
+	}
+	if result.RiverVersion != ExpectedRiverVersion || result.AppliedRiverMigrationCount != ExpectedRiverVersion {
+		t.Fatalf("river %+v", result)
+	}
+}
+
+func TestIntegrationInvalidRiverLedgerRejected(t *testing.T) {
+	url, pool := withTestDB(t)
+	mustMigrate(t, url)
+	if _, err := pool.Exec(context.Background(), `INSERT INTO mrfpipeline_river.river_migration (line, version) VALUES ('main', 99)`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Migrate(context.Background(), url)
+	if !errors.Is(err, ErrDatabase) {
+		t.Fatalf("got %v", err)
+	}
+	if strings.Contains(err.Error(), url) {
+		t.Fatalf("exposed url: %v", err)
+	}
+	err = ValidateCurrent(context.Background(), pool)
+	if !errors.Is(err, ErrDatabase) {
+		t.Fatalf("validate: %v", err)
+	}
+	if !strings.Contains(err.Error(), "mrfpipeline migrate") {
+		t.Fatalf("missing migrate instruction: %v", err)
+	}
+}
+
+func TestIntegrationValidateCurrent(t *testing.T) {
+	url, pool := withTestDB(t)
+	err := ValidateCurrent(context.Background(), pool)
+	if !errors.Is(err, ErrDatabase) {
+		t.Fatalf("missing schema: %v", err)
+	}
+	if !strings.Contains(err.Error(), "mrfpipeline migrate") {
+		t.Fatalf("missing migrate instruction: %v", err)
+	}
+	mustMigrate(t, url)
+	if err := ValidateCurrent(context.Background(), pool); err != nil {
+		t.Fatal(err)
 	}
 }
 

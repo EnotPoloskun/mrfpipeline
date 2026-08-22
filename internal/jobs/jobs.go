@@ -1,0 +1,65 @@
+package jobs
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/enotpoloskun/mrfpipeline/internal/database"
+)
+
+// ErrJob is the sentinel wrapped by River client, insert, start, stop,
+// argument decoding, and runtime failures after lower-level text is redacted.
+var ErrJob = errors.New("background job operation failed")
+
+const (
+	FailureInvalidArguments  = "invalid_job_arguments"
+	FailureMissingRecord     = "missing_domain_record"
+	FailureDomainInvariant   = "domain_invariant"
+	FailureAttemptsExhausted = "job_attempts_exhausted"
+
+	MaxAttempts    = 8
+	RescueAfter    = 24 * time.Hour
+	GracefulStop   = 30 * time.Second
+	ProgressEvery  = 30 * time.Second
+	JobTimeoutNone = -1 * time.Nanosecond
+	RiverSchema    = database.RiverSchema
+)
+
+type failCodeError struct {
+	code string
+}
+
+func (e *failCodeError) Error() string {
+	return ErrJob.Error() + ": " + e.code
+}
+
+func (e *failCodeError) Unwrap() error { return ErrJob }
+
+func jobErr(op string) error {
+	switch op {
+	case FailureInvalidArguments, FailureMissingRecord, FailureDomainInvariant, FailureAttemptsExhausted:
+		return &failCodeError{code: op}
+	default:
+		return fmt.Errorf("%w: %s", ErrJob, op)
+	}
+}
+
+func isFailure(err error, code string) bool {
+	var f *failCodeError
+	return errors.As(err, &f) && f.code == code
+}
+
+func classifyJob(ctx context.Context, op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(err, database.ErrDatabase) {
+		return fmt.Errorf("%w: %w: %s", ErrJob, database.ErrDatabase, op)
+	}
+	return jobErr(op)
+}

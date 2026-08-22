@@ -11,8 +11,10 @@ import (
 
 // Result is the compact migrate success report.
 type Result struct {
-	ApplicationVersion    int `json:"application_version"`
-	AppliedMigrationCount int `json:"applied_migration_count"`
+	ApplicationVersion         int `json:"application_version"`
+	AppliedMigrationCount      int `json:"applied_migration_count"`
+	RiverVersion               int `json:"river_version"`
+	AppliedRiverMigrationCount int `json:"applied_river_migration_count"`
 }
 
 type ledgerRow struct {
@@ -166,12 +168,22 @@ VALUES ($1, $2)`, file.Version, file.Name); err != nil {
 		}
 	}
 
+	riverVersion, riverApplied, err := applyRiverMigrations(ctx, pool)
+	if err != nil {
+		return Result{}, err
+	}
+
 	if _, err := conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1, $2)", MigrationLockClass, MigrationLockObject); err != nil {
 		return Result{}, dbErr("unlock")
 	}
 	unlocked = true
 
-	return Result{ApplicationVersion: maxApplied, AppliedMigrationCount: appliedCount}, nil
+	return Result{
+		ApplicationVersion:         maxApplied,
+		AppliedMigrationCount:      appliedCount,
+		RiverVersion:               riverVersion,
+		AppliedRiverMigrationCount: riverApplied,
+	}, nil
 }
 
 func validateLedger(rows []ledgerRow, files []migrationFile) error {

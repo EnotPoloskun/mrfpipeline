@@ -9,6 +9,14 @@ import (
 	"testing"
 )
 
+func TestBundledRiverVersion(t *testing.T) {
+	t.Parallel()
+	got := bundledRiverVersion()
+	if got != ExpectedRiverVersion {
+		t.Fatalf("rivermigrate main line is %d; story expects %d — stop and update the story", got, ExpectedRiverVersion)
+	}
+}
+
 func TestRequirePostgres15(t *testing.T) {
 	t.Parallel()
 	err := requirePostgres15(149999)
@@ -56,25 +64,25 @@ func TestCanceledContextIsNotDatabase(t *testing.T) {
 
 func TestResultJSON(t *testing.T) {
 	t.Parallel()
-	got, err := FormatResult(Result{ApplicationVersion: 1, AppliedMigrationCount: 1})
+	got, err := FormatResult(Result{ApplicationVersion: 1, AppliedMigrationCount: 1, RiverVersion: 6, AppliedRiverMigrationCount: 6})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "{\"application_version\":1,\"applied_migration_count\":1}\n" {
+	if got != "{\"application_version\":1,\"applied_migration_count\":1,\"river_version\":6,\"applied_river_migration_count\":6}\n" {
 		t.Fatalf("got %q", got)
 	}
 	var obj map[string]any
 	if err := json.Unmarshal([]byte(strings.TrimSuffix(got, "\n")), &obj); err != nil {
 		t.Fatal(err)
 	}
-	if len(obj) != 2 {
+	if len(obj) != 4 {
 		t.Fatalf("fields %v", obj)
 	}
-	zero, err := FormatResult(Result{ApplicationVersion: 1, AppliedMigrationCount: 0})
+	zero, err := FormatResult(Result{ApplicationVersion: 1, AppliedMigrationCount: 0, RiverVersion: 6, AppliedRiverMigrationCount: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if zero != "{\"application_version\":1,\"applied_migration_count\":0}\n" {
+	if zero != "{\"application_version\":1,\"applied_migration_count\":0,\"river_version\":6,\"applied_river_migration_count\":0}\n" {
 		t.Fatalf("got %q", zero)
 	}
 }

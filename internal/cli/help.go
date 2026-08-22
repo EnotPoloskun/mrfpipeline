@@ -3,8 +3,9 @@ package cli
 const rootHelp = `mrfpipeline orchestrates the MRF discovery, parsing, consumption, and
 plan-attachment pipeline.
 
-PostgreSQL stores durable state and River runs background jobs in later
-stories. mrfenricher execution is manual and is not started by the pipeline.
+PostgreSQL stores durable state. River background jobs use a separate
+schema applied by migrate. mrfenricher execution is manual and is not
+started by the pipeline.
 
 Usage:
   mrfpipeline migrate
@@ -14,7 +15,7 @@ Usage:
   mrfpipeline --version
 
 Commands:
-  migrate   Apply application database migrations
+  migrate   Apply application and River database migrations
   work      Run background workers (later story)
   discover  Enqueue one bounded UHC discovery run (later story)
 `
@@ -23,8 +24,8 @@ const migrateHelp = `Usage:
   mrfpipeline migrate
   mrfpipeline migrate --help
 
-Apply application database migrations. The operation is explicit and
-repeatable; work and discover do not migrate automatically.
+Apply application and River database migrations. The operation is
+explicit and repeatable; work and discover do not migrate automatically.
 
 Required environment:
   MRFPIPELINE_DATABASE_URL  PostgreSQL connection string

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/enotpoloskun/mrfpipeline/internal/config"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
+	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 )
 
 func fatalEnv(t *testing.T) func(string) string {
@@ -423,6 +425,15 @@ func TestErrorClassification(t *testing.T) {
 	code, stdout, _ = runCLI(context.Background(), []string{"work"}, env)
 	if code != 1 || stdout != "" {
 		t.Fatalf("placeholder exit %d", code)
+	}
+
+	var jobStderr bytes.Buffer
+	code = report(fmt.Errorf("%w: insert", jobs.ErrJob), &jobStderr)
+	if code != 1 {
+		t.Fatalf("job exit %d", code)
+	}
+	if strings.Contains(jobStderr.String(), "Try '") {
+		t.Fatalf("job error printed a hint: %q", jobStderr.String())
 	}
 }
 
