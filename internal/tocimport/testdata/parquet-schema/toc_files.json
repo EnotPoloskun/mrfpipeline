@@ -1,0 +1,16 @@
+{
+  "output_schema_version": "1.0.0",
+  "dataset": "toc_files",
+  "fields": [
+    {"name":"toc_output_id","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"payer_id","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"collection_month","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"source_uri","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"reporting_entity_name","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"reporting_entity_type","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"last_updated_on","physical_type":"INT32","logical_type":"DATE","repetition":"optional"},
+    {"name":"last_updated_on_raw","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"optional"},
+    {"name":"source_schema_version","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"optional"},
+    {"name":"additional_fields_json","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"optional"}
+  ]
+}

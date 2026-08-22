@@ -9,7 +9,7 @@ import (
 func TestQueues(t *testing.T) {
 	t.Parallel()
 	q := Queues()
-	if len(q) != 3 {
+	if len(q) != 4 {
 		t.Fatalf("queues %v", q)
 	}
 	if q[jobs.QueueDiscovery].MaxWorkers != 1 {
@@ -21,7 +21,13 @@ func TestQueues(t *testing.T) {
 	if q[jobs.QueueTOCParse].MaxWorkers != 2 {
 		t.Fatalf("toc_parse %d", q[jobs.QueueTOCParse].MaxWorkers)
 	}
-	if _, ok := q[jobs.QueueTOCImport]; ok {
-		t.Fatal("must not consume toc_import")
+	if q[jobs.QueueTOCImport].MaxWorkers != 2 {
+		t.Fatalf("toc_import %d", q[jobs.QueueTOCImport].MaxWorkers)
+	}
+	if _, ok := q[jobs.QueueMRFDownload]; ok {
+		t.Fatal("must not consume mrf_download")
+	}
+	if _, ok := q[jobs.QueueConsumer]; ok {
+		t.Fatal("must not consume consumer")
 	}
 }

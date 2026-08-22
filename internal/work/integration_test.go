@@ -129,28 +129,46 @@ UPDATE mrfpipeline.toc_files SET download_river_job_id = $2 WHERE id = $1`, tocI
 		var status, parse, imp string
 		err := pool.QueryRow(context.Background(), `
 SELECT download_status, parse_status, import_status FROM mrfpipeline.toc_files WHERE id = $1`, tocID).Scan(&status, &parse, &imp)
-		if err == nil && status == jobs.StatusSucceeded && parse == jobs.StatusSucceeded && imp == jobs.StatusPending {
+		if err == nil && status == jobs.StatusSucceeded && parse == jobs.StatusSucceeded && imp == jobs.StatusSucceeded {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	var status, parse, imp, kind, state string
+	var status, parse, imp string
 	if err := pool.QueryRow(context.Background(), `
 SELECT download_status, parse_status, import_status FROM mrfpipeline.toc_files WHERE id = $1`, tocID).Scan(&status, &parse, &imp); err != nil {
 		t.Fatal(err)
 	}
-	if status != jobs.StatusSucceeded || parse != jobs.StatusSucceeded || imp != jobs.StatusPending {
+	if status != jobs.StatusSucceeded || parse != jobs.StatusSucceeded || imp != jobs.StatusSucceeded {
 		cancel()
 		t.Fatalf("download=%s parse=%s import=%s", status, parse, imp)
 	}
+	var sources, downloads, ingests, batches int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_sources`).Scan(&sources); err != nil || sources != 1 {
+		cancel()
+		t.Fatalf("sources %d %v", sources, err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload).Scan(&downloads); err != nil || downloads != 1 {
+		cancel()
+		t.Fatalf("downloads %d %v", downloads, err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindConsumerIngest).Scan(&ingests); err != nil || ingests != 0 {
+		cancel()
+		t.Fatalf("ingests %d %v", ingests, err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.plan_attachment_batches`).Scan(&batches); err != nil || batches != 0 {
+		cancel()
+		t.Fatalf("batches %d %v", batches, err)
+	}
+	var kind, state string
 	if err := pool.QueryRow(context.Background(), `
-SELECT kind, state FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindTOCImport).Scan(&kind, &state); err != nil {
+SELECT kind, state FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload).Scan(&kind, &state); err != nil {
 		cancel()
 		t.Fatal(err)
 	}
-	if kind != jobs.KindTOCImport || state == "completed" || state == "discarded" {
+	if kind != jobs.KindMRFDownload || state == "completed" || state == "discarded" {
 		cancel()
-		t.Fatalf("import consumed %s %s", kind, state)
+		t.Fatalf("mrf download consumed %s %s", kind, state)
 	}
 	cancel()
 	select {

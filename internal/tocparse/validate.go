@@ -27,7 +27,8 @@ const (
 
 var errOutputInvalid = errors.New("toc parse output invalid")
 
-type parsedManifest struct {
+// CompletedOutput is the Story 07 completed-output validation result.
+type CompletedOutput struct {
 	TOCOutputID     string
 	PayerID         string
 	CollectionMonth string
@@ -35,6 +36,13 @@ type parsedManifest struct {
 	SourceEncoding  string
 	Counts          mrftocparser.Counts
 	WarningTotals   mrftocparser.WarningTotals
+}
+
+type parsedManifest = CompletedOutput
+
+// ValidateCompletedOutput re-runs Story 07 layout and manifest checks.
+func ValidateCompletedOutput(dir, tocOutputID, payerID, collectionMonth, sourceURI string) (CompletedOutput, error) {
+	return validateCompletedOutput(dir, tocOutputID, payerID, collectionMonth, sourceURI)
 }
 
 func validateCompletedOutput(dir, tocOutputID, payerID, collectionMonth, sourceURI string) (parsedManifest, error) {

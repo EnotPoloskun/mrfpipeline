@@ -6,6 +6,7 @@ require (
 	github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260821182039-590460f1448b
 	github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5
 	github.com/jackc/pgx/v5 v5.9.2
+	github.com/parquet-go/parquet-go v0.30.1
 	github.com/riverqueue/river v0.39.0
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.39.0
 	github.com/riverqueue/river/rivertype v0.39.0
@@ -21,7 +22,6 @@ require (
 	github.com/klauspost/compress v1.17.9 // indirect
 	github.com/parquet-go/bitpack v1.0.0 // indirect
 	github.com/parquet-go/jsonlite v1.0.0 // indirect
-	github.com/parquet-go/parquet-go v0.30.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/riverqueue/river/riverdriver v0.39.0 // indirect

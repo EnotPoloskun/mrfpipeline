@@ -14,19 +14,25 @@ import (
 var ErrJob = errors.New("background job operation failed")
 
 const (
-	FailureInvalidArguments       = "invalid_job_arguments"
-	FailureMissingRecord          = "missing_domain_record"
-	FailureDomainInvariant        = "domain_invariant"
-	FailureAttemptsExhausted      = "job_attempts_exhausted"
-	FailureDiscoveryListing       = "discovery_listing_failed"
-	FailureDiscoveryResultInvalid = "discovery_result_invalid"
-	FailureDiscoveryDatabase      = "discovery_database_failed"
-	FailureTOCDownload            = "toc_download_failed"
-	FailureTOCParseInputInvalid   = "toc_parse_input_invalid"
-	FailureTOCParseResourceFailed = "toc_parse_resource_failed"
-	FailureTOCParseOutputFailed   = "toc_parse_output_failed"
-	FailureTOCParseOutputInvalid  = "toc_parse_output_invalid"
-	FailureTOCParseCleanupFailed  = "toc_parse_cleanup_failed"
+	FailureInvalidArguments         = "invalid_job_arguments"
+	FailureMissingRecord            = "missing_domain_record"
+	FailureDomainInvariant          = "domain_invariant"
+	FailureAttemptsExhausted        = "job_attempts_exhausted"
+	FailureDiscoveryListing         = "discovery_listing_failed"
+	FailureDiscoveryResultInvalid   = "discovery_result_invalid"
+	FailureDiscoveryDatabase        = "discovery_database_failed"
+	FailureTOCDownload              = "toc_download_failed"
+	FailureTOCParseInputInvalid     = "toc_parse_input_invalid"
+	FailureTOCParseResourceFailed   = "toc_parse_resource_failed"
+	FailureTOCParseOutputFailed     = "toc_parse_output_failed"
+	FailureTOCParseOutputInvalid    = "toc_parse_output_invalid"
+	FailureTOCParseCleanupFailed    = "toc_parse_cleanup_failed"
+	FailureTOCImportManifestInvalid = "toc_import_manifest_invalid"
+	FailureTOCImportSchemaInvalid   = "toc_import_schema_invalid"
+	FailureTOCImportRowInvalid      = "toc_import_row_invalid"
+	FailureTOCImportOrderInvalid    = "toc_import_order_invalid"
+	FailureTOCImportDatabaseFailed  = "toc_import_database_failed"
+	FailureTOCImportInvariant       = "toc_import_invariant"
 
 	MaxAttempts    = 8
 	RescueAfter    = 24 * time.Hour
@@ -65,7 +71,9 @@ func allowedFailureCode(code string) bool {
 		FailureDiscoveryListing, FailureDiscoveryResultInvalid, FailureDiscoveryDatabase,
 		FailureTOCDownload,
 		FailureTOCParseInputInvalid, FailureTOCParseResourceFailed, FailureTOCParseOutputFailed,
-		FailureTOCParseOutputInvalid, FailureTOCParseCleanupFailed:
+		FailureTOCParseOutputInvalid, FailureTOCParseCleanupFailed,
+		FailureTOCImportManifestInvalid, FailureTOCImportSchemaInvalid, FailureTOCImportRowInvalid,
+		FailureTOCImportOrderInvalid, FailureTOCImportDatabaseFailed, FailureTOCImportInvariant:
 		return true
 	default:
 		return false

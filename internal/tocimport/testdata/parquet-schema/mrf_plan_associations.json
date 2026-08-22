@@ -1,0 +1,20 @@
+{
+  "output_schema_version": "1.0.0",
+  "dataset": "mrf_plan_associations",
+  "fields": [
+    {"name":"toc_output_id","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"payer_id","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"collection_month","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"mrf_location","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"mrf_filename","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"optional"},
+    {"name":"plan_name","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"issuer_name","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"plan_sponsor_name","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"optional"},
+    {"name":"plan_id_type","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"plan_id","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"plan_market_type","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"required"},
+    {"name":"reporting_structure_additional_fields_json","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"optional"},
+    {"name":"plan_additional_fields_json","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"optional"},
+    {"name":"file_additional_fields_json","physical_type":"BYTE_ARRAY","logical_type":"STRING","repetition":"optional"}
+  ]
+}

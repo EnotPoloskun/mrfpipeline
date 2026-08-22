@@ -17,6 +17,12 @@ func TestFailureCodes(t *testing.T) {
 		FailureTOCParseOutputFailed,
 		FailureTOCParseOutputInvalid,
 		FailureTOCParseCleanupFailed,
+		FailureTOCImportManifestInvalid,
+		FailureTOCImportSchemaInvalid,
+		FailureTOCImportRowInvalid,
+		FailureTOCImportOrderInvalid,
+		FailureTOCImportDatabaseFailed,
+		FailureTOCImportInvariant,
 		FailureDomainInvariant,
 	} {
 		err := Failure(code)
@@ -41,5 +47,11 @@ func TestFailureCodes(t *testing.T) {
 	}
 	if isImmediateFail(Failure(FailureTOCParseInputInvalid)) {
 		t.Fatal("toc parse input should retry")
+	}
+	if isImmediateFail(Failure(FailureTOCImportManifestInvalid)) {
+		t.Fatal("toc import manifest should retry")
+	}
+	if isImmediateFail(Failure(FailureTOCImportInvariant)) {
+		t.Fatal("toc import invariant should retry")
 	}
 }
