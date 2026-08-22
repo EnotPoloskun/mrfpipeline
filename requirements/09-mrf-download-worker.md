@@ -44,11 +44,15 @@ download behavior.
 - A valid completed download is reused after retry/crash without another HTTP
   request.
 - Range resume, alternate mirrors, conditional requests, and worker-internal
-  retry remain unsupported.
+  retry remain unsupported. A retry starts from byte zero.
 - Download success unblocks and enqueues exactly one `mrf.parse` job.
 - Completed bytes remain until Story 10 validates parser publication.
 - A terminal source download failure leaves every dependent snapshot blocked;
   it does not fail or delete those snapshot/plan records automatically.
+- No disk reservation or free-space preflight is added. Version 1 does not
+  guess required capacity from HTTP headers.
+- All download failures use the shared eight-attempt policy, including HTTP
+  404 and other 4xx responses.
 
 ## Worker registration
 
@@ -178,8 +182,8 @@ Do not propagate the source failure into every snapshot row. Their blocked
 state plus the source relationship explains the prerequisite failure and lets
 Story 13 repair/retry the one shared source rather than many copies.
 
-There is no special retry count for HTTP `4xx`, private-address rejection, or
-disk errors in version 1.
+There is no special retry count for HTTP `4xx`, including `404`, private-address
+rejection, or disk errors in version 1.
 
 ## Crash behavior
 
@@ -208,7 +212,8 @@ Never expose:
 - Raw network, TLS, filesystem, or PostgreSQL diagnostics.
 
 Safe logs follow Story 03 and may contain the fixed job kind/queue, River job
-ID, attempt, duration, and terminal classification.
+ID, attempt, duration, terminal classification, and throttled download
+`progress`.
 
 ## Required tests
 
@@ -221,6 +226,8 @@ ID, attempt, duration, and terminal classification.
 - Success inserts exactly one parse job atomically.
 - Final failure does not update dependent snapshot rows.
 - Errors remain classified/redacted with hostile long URLs and filenames.
+- A live body copy emits throttled `progress`; a reused completed download
+  does not.
 
 ### PostgreSQL/River/filesystem/HTTP integration tests
 
@@ -265,4 +272,5 @@ go vet ./...
 - Consumer snapshot ingestion or plan attachment.
 - Per-snapshot source copies or jobs.
 - Resume/range downloads, alternate URLs, internal retry loops, S3 artifacts,
-  URL normalization, filename identity, or content hashes.
+  URL normalization, filename identity, content hashes, or free-space
+  preflight.

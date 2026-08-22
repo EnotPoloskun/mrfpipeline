@@ -56,8 +56,9 @@ production workers. Story 05 starts the runtime.
 - The downloader preserves received representation bytes. It does not decode
   gzip or JSON and does not infer encoding from a filename or HTTP header.
 - A completed download is never overwritten merely because a River job runs
-  again. An incomplete download is removed from its exact record directory
-  and restarted from byte zero.
+again. A completed artifact for an exact URL is reused permanently in version
+1 even if the remote response later changes. An incomplete download is removed
+from its exact record directory and restarted from byte zero.
 - Version 1 does not implement HTTP range resume. Atomic publication and full
   retry are simpler and safe for the bounded initial pipeline.
 - `manifest.json` published by `mrftocparser` or `mrfparser` remains their
@@ -168,14 +169,12 @@ unsupported marker version, a symlink, or a wrong-type fixed entry returns an
 artifact error. Initialization does not adopt, rename, empty, quarantine, or
 delete an unrecognized root.
 
-Extra root entries are rejected. The sole pre-marker exception is an exact
-temporary-marker filename created by an interrupted empty-root
-initialization; initialization removes that regular file and retries marker
-publication. A symlink, directory, several marker temporaries, or any other
-pre-marker entry remains an error. This makes an incorrect artifact-root
-value fail closed instead of treating an arbitrary directory as
-pipeline-owned. Temporary entries created under `.staging` are handled only
-through the targeted operation recovery rules below.
+Extra root entries are rejected, including `.DS_Store`, `Thumbs.db`, and
+similar desktop noise. These are managed roots, not general user directories.
+The sole pre-marker exception is an exact temporary-marker filename created by
+an interrupted empty-root initialization; initialization removes that regular
+file and retries marker publication. A symlink, directory, several marker
+temporaries, or any other pre-marker entry remains an error.
 
 Two processes must not initialize or mutate one artifact root concurrently.
 Story 03 already limits version 1 to one worker process. The filesystem checks
@@ -288,11 +287,18 @@ It performs:
 4. If `download` exists but is incomplete, remove only that exact leaf after
    the filesystem safety checks.
 5. Create an exclusive operation directory under root `.staging` whose name
-   records the fixed artifact kind and numeric ID plus an OS-generated random
-   collision suffix. The suffix is temporary, not identity.
+   begins with the exact prefix `toc-download-<id>-` or `mrf-download-<id>-`
+   and is followed by an OS-generated random collision suffix. The suffix is
+   temporary, not identity. Story 13 and targeted cleanup parse only these
+   prefixes.
 6. Create `data` inside it with requested mode `0600`.
 7. Issue one HTTP request and stream its body directly to `data` through a
-   fixed-size copy buffer.
+   fixed-size copy buffer. During that copy, emit Story 03 throttled
+   `progress` logs with phase `download`. When `Content-Length` is known and
+   matches a nonnegative total, include integer `percent` and
+   `copied_bytes`/`total_bytes`. When length is unknown or chunked, omit
+   `percent` and log `copied_bytes` only. A completed download that is reused
+   without a new request emits no progress.
 8. Close the response body and data file and validate any advertised content
    length.
 9. Write and close `manifest.json` with the observed byte count.
@@ -346,8 +352,12 @@ Use one shared `net/http.Client` and transport per worker process. The client:
   received representation.
 - Uses normal system certificate and hostname verification for HTTPS.
 - Does not accept an insecure-TLS option or custom certificate bypass.
-- Does not use proxy environment variables in version 1.
+- Does not use proxy environment variables in version 1. Direct connections
+  are the contract. A deployment that requires a proxy needs an explicit
+  networking story before the live run.
 - Follows at most five redirects.
+- Resolves a relative `Location` against the preceding request URL, then
+  revalidates the complete resolved URL under this same policy.
 - Permits HTTP to HTTPS and same-scheme redirects, including cross-host CDN
   redirects.
 - Rejects an HTTPS-to-HTTP redirect.
@@ -356,11 +366,12 @@ Use one shared `net/http.Client` and transport per worker process. The client:
 - Never forwards credentials or source-derived headers across a redirect;
   version 1 sends none.
 
-Every connection, including redirects, must reject loopback, unspecified,
-link-local, multicast, and private-use IP addresses after DNS resolution and
-again at dial selection. This is the version 1 server-side request-forgery
-boundary for payer-provided URLs. IPv4 and IPv6 are both covered. A hostname
-that resolves only to rejected addresses fails without connecting.
+Every connection, including redirects, must reject the complete DNS result
+when **any** resolved address is loopback, unspecified, link-local, multicast,
+or private-use. Revalidate the chosen address again at dial selection. This is
+the version 1 server-side request-forgery boundary for payer-provided URLs.
+IPv4 and IPv6 are both covered. Mixed public-and-private answers fail without
+connecting.
 
 The client makes direct network connections. Corporate HTTP proxies, private
 mirrors, authenticated URLs, custom headers, client certificates, and private
@@ -392,16 +403,17 @@ decompress gzip, or calculate a digest while copying. It does not impose a
 fixed body-size limit because production MRF size is not yet bounded. Disk
 capacity planning and quotas belong to Story 13.
 
-Only HTTP status `200 OK` is accepted. Redirects are handled by the client
-before this check. `206`, other `2xx`, `3xx` after the redirect limit, `4xx`,
-and `5xx` are failures. The downloader closes the body without reading or
-logging it.
+Only HTTP status `200 OK` is accepted, including an empty body. Redirects are
+handled by the client before this check. Empty `200` is a completed download;
+TOC and MRF parsers later reject invalid or empty content. `206`, other `2xx`,
+`3xx` after the redirect limit, `4xx`, and `5xx` are failures. The downloader
+closes the body without reading or logging it.
 
 When a valid nonnegative `Content-Length` is present, the observed body byte
-count must match it exactly. Chunked or otherwise unknown-length bodies are
-allowed. An early EOF, copy failure, close failure, length mismatch, context
-cancellation, or manifest/publication failure never creates a completed final
-download.
+count must match it exactly. Chunked or otherwise unknown-length bodies succeed
+on a clean EOF. An early EOF, copy failure, close failure, length mismatch,
+context cancellation, or manifest/publication failure never creates a completed
+final download.
 
 The downloader makes one request sequence per invocation. It has no internal
 status-code retry, connection retry loop, or backoff. River owns whole-stage
@@ -495,7 +507,8 @@ Production error strings and logs never contain:
 Safe diagnostics may contain only a fixed operation name and classification.
 HTTP status may be mapped to a bounded class such as `http_4xx` or
 `http_5xx`; do not persist the status text or response body. Numeric byte
-counts may appear only in successful internal results, not ordinary logs.
+counts may appear in the Story 03 throttled `progress` logs and in successful
+internal results. They still must not appear in error strings.
 
 No story-specific CLI success output or exit status is added because no
 production command exposes this component yet.
@@ -517,6 +530,8 @@ production command exposes this component yet.
   and response-body fixtures.
 - Context cancellation remains distinguishable from artifact and download
   classifications.
+- Body-copy progress is throttled, omits percent when length is unknown, and
+  never logs URLs, hosts, or paths.
 
 ### Filesystem integration tests
 
@@ -524,8 +539,8 @@ Use a fresh test temporary directory and prove:
 
 - An absent or empty root initializes with the exact marker and fixed
   directories, and repeated initialization is a no-op.
-- Nonempty unmarked, unsupported-version, extra-entry, symlinked, and
-  wrong-type roots fail without deletion.
+- Nonempty unmarked, unsupported-version, extra-entry including `.DS_Store`,
+  symlinked, and wrong-type roots fail without deletion.
 - Missing fixed directories in a recognized root are repaired, while
   wrong-type replacements are rejected.
 - Lexical and resolved overlap with warehouse, provider catalog, or services
@@ -555,7 +570,10 @@ Prove:
 - HTTPS downgrade, unsupported scheme, user information, malformed target,
   and a redirect to a rejected network address fail before the unsafe request.
 - Loopback, unspecified, link-local, multicast, private IPv4, private IPv6,
-  and mixed DNS answers are handled by the fixed network policy.
+  and mixed public-and-private DNS answers are rejected for the complete
+  resolution.
+- Relative redirects are resolved against the preceding URL and then
+  revalidated.
 - Only status 200 succeeds; failure bodies are neither copied to the final
   artifact nor included in errors.
 - Known content length must match; unknown length succeeds; an early EOF or

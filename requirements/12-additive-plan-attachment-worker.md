@@ -59,11 +59,18 @@ global plan-store validation, immutable part publication, and exact warehouse
   the next batch. A failed batch blocks later batches until Story 13 explicitly
   retries that same batch.
 - Each batch contains all plans currently unassigned for that snapshot. There
-  is no arbitrary plan-count limit in version 1.
+  is no arbitrary plan-count limit in version 1. Add a cap only after
+  representative measurements show it is necessary. A zero-count batch is
+  never created.
 - Attachments are additive only. No plan part, rate snapshot, parser output,
   or database plan identity is removed, replaced, merged, or revised.
 - A consumer success with `AddedPlanCount=0` is a valid idempotent success.
+  `added_plan_count` stores the last acknowledged consumer report, not an
+  independently reconstructed warehouse total.
 - All `Ingest` and `AttachPlans` calls share the one-worker `consumer` queue.
+- DuckDB is test-only. Production pipeline code does not query it.
+- No `is_plan_ready` column is added. Serving derives the Story 12 readiness
+  rule from PostgreSQL.
 
 ## Worker registration
 
@@ -136,7 +143,9 @@ that completed under Story 11 before the attachment worker existed.
 
 The sweep processes only valid consumed snapshots and unassigned plans. It
 does not reset running/failed stages, replace jobs, or repair inconsistent
-states; those are Story 13 responsibilities. Repeating the sweep is safe.
+states; those are Story 13 responsibilities. Repeating the sweep is safe. A
+large backlog may delay startup. The sweep remains serial and transactionally
+bounded per snapshot.
 
 ### Batch completion
 
@@ -186,22 +195,28 @@ plan_id
 plan_market_type
 ```
 
-Emit one uncompressed UTF-8 JSON array. Every element has exactly these six
-members in this order:
+Emit one uncompressed UTF-8 JSON array from a typed struct in exact field
+order. Use a pinned encoder configuration: compact JSON, `SetEscapeHTML(false)`,
+and one trailing newline. Every element has exactly these six members in this
+order:
 
 ```json
 {"plan_name":"...","issuer_name":"...","plan_sponsor_name":"... or null","plan_id_type":"ein or hios","plan_id":"...","plan_market_type":"group or individual"}
 ```
 
 The illustrative string above does not relax JSON typing. EIN emits the
-stored required nonempty sponsor as a JSON string. HIOS emits
-`"plan_sponsor_name":null`; never emit an empty string. All other values are
-preserved byte-for-byte from PostgreSQL after normal Go JSON escaping. Do not
-trim, normalize, infer, or case-fold them.
+stored required nonempty sponsor as a JSON string. HIOS always emits JSON
+null sponsor (`"plan_sponsor_name":null`); never emit an empty string. All
+other values are preserved from PostgreSQL through that pinned encoder. Do not
+trim, normalize, infer, case-fold, or rely on `encoding/json` default HTML
+escaping.
 
 The document contains exactly `requested_plan_count` distinct objects, ends
 with one newline, and has no wrapper, metadata, TOC fields, MRF location,
 output ID, batch ID, timestamps, additional fields, or hashes.
+
+Encoder behavior is part of the pipeline artifact contract. Existing
+`plans.json` must equal the newly rendered canonical bytes exactly.
 
 ## Plan document publication and reuse
 
@@ -216,8 +231,9 @@ Preflight is exact:
 - empty target or target without `plans.json`: treat it as manifest-absent
   pipeline-owned partial work, remove/recreate only that exact generated batch
   leaf, then publish the frozen document;
-- existing real `plans.json`: strictly decode and require it to equal the
-  current frozen item projection exactly, including order and sponsor typing;
+- existing real `plans.json`: require its bytes to equal the newly rendered
+  canonical projection exactly, including order, sponsor typing, compact
+  encoding, HTML-escape setting, and trailing newline;
 - symlink, wrong type, extra entry, malformed JSON, duplicate/unknown member,
   count mismatch, or content mismatch: preserve it and fail closed.
 
@@ -378,13 +394,15 @@ River retention, or consumer `AddedPlanCount` as readiness identity.
 ### Unit tests
 
 - Scheduler locks the snapshot, creates at most one unresolved batch, freezes
-  all unassigned plans, and inserts its River job atomically.
+  all unassigned plans, never creates a zero-count batch, and inserts its
+  River job atomically.
 - Pending/running/failed batches block a new batch; succeeded batches do not.
 - Batch and output formatting uses numeric IDs, not River IDs or hashes.
 - JSON has exact fields/order/types, deterministic plan ordering, HIOS null,
-  EIN sponsor, one newline, and no domain extras.
-- Existing valid JSON is compared to frozen rows; partial work is targeted;
-  invalid/mismatched final input is preserved.
+  EIN sponsor, compact encoder with `SetEscapeHTML(false)`, one newline, and
+  no domain extras.
+- Existing valid JSON is compared as exact canonical bytes; partial work is
+  targeted; invalid/mismatched final input is preserved.
 - Claim/success use snapshot-then-batch lock order and verify exact item count.
 - Typed consumer errors and report mismatches map to fixed redacted codes.
 - Readiness derivation covers planless, unassigned, pending, failed, and fully

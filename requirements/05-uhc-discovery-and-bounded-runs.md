@@ -6,9 +6,9 @@ Planned.
 
 ## User story
 
-As a pipeline operator, I want to enqueue a UHC discovery and optionally admit
-only a few new TOCs so that I can start the background pipeline with a bounded
-real-data test instead of processing the full payer listing at once.
+As a pipeline operator, I want to enqueue a UHC discovery that admits only a
+bounded number of new TOCs so that I can start the background pipeline with a
+controlled real-data test instead of processing the full payer listing at once.
 
 ## Goal
 
@@ -54,22 +54,33 @@ listing logic, or add a second payer HTTP implementation to this repository.
 
 - `discover` enqueues work and returns immediately. It never performs the live
   UHC request in the CLI process.
+- `--limit` is required and is a positive `int64`. Omitted or unlimited
+  discovery is deferred until chunked admission is designed.
 - One discovery run represents one payer, one caller-selected collection
-  month, and one optional admission limit.
-- The optional limit applies only to exact URLs that would create new
-  `toc_files` rows. Known TOCs never consume the limit.
-- Newly encountered URLs beyond the limit are not inserted. A later bounded
-  discovery can admit them.
+  month, and one required admission limit.
+- Collection month is an operator-owned label. It is not inferred or checked
+  against listing dates. The first admitting run freezes it on the TOC row. A
+  wrong first admission requires rebuild, not rediscovery or retry.
+- The limit applies only to exact URLs that would create new `toc_files` rows.
+  Known TOCs never consume the limit.
+- Newly encountered URLs beyond the limit are not inserted. They increment
+  `overflow_count`. A later bounded discovery can admit them.
 - Returned URLs are compared exactly. No normalization, filename comparison,
   or hash is used.
 - `mrfdiscoverer` listing order decides which new URLs are admitted first.
 - Duplicate exact URLs returned within one listing are collapsed for domain
   processing at their first ordinal. The raw occurrence count remains visible
-  in `discovered_count`.
+  in `discovered_count`. Original first-occurrence ordinals may contain gaps.
 - A successfully admitted TOC receives its first download job in the same
   transaction as its row.
 - Existing TOCs are observed again but do not receive duplicate download jobs.
 - Discovery is manual or externally scheduled. There is no periodic River job.
+- A retry re-fetches the current live listing. There is no cached listing
+  artifact.
+- One invalid returned URL fails the complete attempt; no entries are skipped.
+- An empty valid listing succeeds with all counts zero.
+- The single admission transaction is appropriate only because the run is
+  bounded.
 
 ## `discover` command behavior
 
@@ -91,7 +102,7 @@ after Story 01 argument/configuration validation, the command:
    `mrfpipeline_river`; it has no queue consumers and is not started.
 4. Begins one PostgreSQL transaction.
 5. Inserts a `discovery_runs` row with exact payer, first-of-month date,
-   optional limit, and `pending` status.
+   required positive limit, and `pending` status.
 6. Inserts one `discovery.run` job with only `discovery_run_id` through
    `InsertTx`.
 7. Stores the returned numeric River job ID on the run.
@@ -105,8 +116,8 @@ removes both the new domain row and River job. The command does not search
 River arguments to infer whether an insert happened.
 
 Every valid invocation creates a new discovery run, even when payer, month,
-and limit equal an earlier invocation. Runs are operator requests and are not
-deduplicated.
+and limit equal an earlier invocation or an earlier run is still pending. Runs
+are operator requests and are not deduplicated.
 
 ## Discovery enqueue result
 
@@ -116,7 +127,7 @@ On success, standard output is one compact JSON object plus newline:
 {"discovery_run_id":41,"river_job_id":9001,"payer_id":"uhc","collection_month":"2026-08","toc_limit":5}
 ```
 
-When `--limit` is omitted, `toc_limit` is JSON `null`. The field order is
+`toc_limit` is always a positive integer in version 1. The field order is
 exactly:
 
 1. `discovery_run_id`
@@ -149,8 +160,9 @@ validation, `work`:
 
 The remaining production job kinds are already durable contracts, and the
 discovery worker may insert `toc.download` jobs. This Story 05 worker client
-does not consume `toc_download` yet. Those jobs remain pending in River until
-Story 06 registers that worker and queue.
+does not consume `toc_download` yet. Those jobs remain available in River until
+Story 06 registers that worker and queue. That pending state is expected staged
+implementation behavior, not a leak.
 
 Do not register no-op workers for unimplemented stages. A no-op could complete
 a durable job without completing its domain stage.
@@ -224,17 +236,17 @@ not calculated with a digest.
 `existing_count` is the number of distinct first-occurrence URLs that resolve
 to an already existing `(payer_id, source_url)` row at the point this run
 processes them. `admitted_count` is the number of new `toc_files` rows actually
-inserted by this run.
+inserted by this run. `overflow_count` is the number of distinct new
+first-occurrence URLs excluded because the admission limit was already
+exhausted. A positive `overflow_count` is the explicit truncation signal.
 
-Consequently the three counters need not sum:
+Duplicate occurrences can make the counters not equal the raw listing length:
 
 ```text
-discovered_count != existing_count + admitted_count
+existing_count + admitted_count + overflow_count <= discovered_count
 ```
 
-Duplicate occurrences and new URLs beyond the admission limit appear only in
-`discovered_count`. This is intentional and compatible with the Story 02
-constraints.
+An empty valid listing (`N=0`) succeeds with all four counts zero.
 
 ## Atomic admission transaction
 
@@ -254,8 +266,9 @@ transaction for run finalization, TOC admission, membership, and job insertion.
    - insert this run's membership at the first ordinal with `was_new=false`;
    - increment `existing_count`; and
    - do not change any stage or River job ID.
-5. When the row does not exist and the optional limit is already exhausted:
-   do not insert a TOC, membership, or job and continue scanning.
+5. When the row does not exist and the required limit is already exhausted:
+   do not insert a TOC, membership, or job, increment `overflow_count`, and
+   continue scanning.
 6. When the row does not exist and admission remains available:
    - insert it with this run's payer, month, first-run reference, pending
      download, and blocked successor stages;
@@ -263,8 +276,9 @@ transaction for run finalization, TOC admission, membership, and job insertion.
    - insert `toc.download` through River `InsertTx`;
    - store its job ID in `download_river_job_id`; and
    - increment `admitted_count` only after the row insertion wins.
-7. Set the run counts, `status=succeeded`, `completed_at` and `updated_at` to
-   transaction time, leave `failure_code` null, and commit.
+7. Set the run counts including `overflow_count`, `status=succeeded`,
+   `completed_at` and `updated_at` to transaction time, leave `failure_code`
+   null, and commit.
 
 A concurrent uniqueness conflict means the URL is existing for this run. It
 does not consume an admission slot, and the iteration continues so a later new
@@ -290,11 +304,13 @@ The result is:
 - `known-1`: membership, `was_new=false`.
 - `new-A`: inserted, membership, download job.
 - `new-B`: inserted, membership, download job.
-- `new-C`, `new-D`: not inserted and no membership.
+- `new-C`, `new-D`: not inserted and no membership; `overflow_count=2`.
 
 A later run with the same limit observes `known-1`, `new-A`, and `new-B`, then
-admits `new-C` and `new-D`. The limit therefore supports deterministic staged
-test expansion without permanently suppressing overflow candidates.
+admits `new-C` and `new-D` with `overflow_count=0`. The limit therefore supports
+deterministic staged test expansion without permanently suppressing overflow
+candidates. The documented live progression is `--limit 1`, then `2`, then `5`,
+with `10` only after measuring fan-out and disk.
 
 If the listing contains `new-A` twice, only its first ordinal becomes
 membership. `discovered_count` still counts both occurrences.
@@ -368,12 +384,16 @@ only fixed event/job fields allowed by Story 03.
 ### Unit tests
 
 - `discover` produces the exact insertion-only transaction inputs and compact
-  report, including `toc_limit:null` when absent.
+  report. Missing `--limit` is invalid configuration; `toc_limit` is never
+  JSON `null` in version 1.
 - Output failure after commit does not insert a second run or cancel the job.
-- First-occurrence processing preserves ordinal and exact URL equality.
-- Raw discovered count includes duplicates while existing/admitted counts use
-  distinct first occurrences.
-- Limit selection skips known URLs and admits the first actual new rows.
+- First-occurrence processing preserves original ordinals, including gaps, and
+  exact URL equality.
+- Raw discovered count includes duplicates while existing/admitted/overflow
+  counts use distinct first occurrences.
+- Limit selection skips known URLs, admits the first actual new rows, and
+  records overflow for remaining distinct new URLs.
+- An empty valid listing succeeds with all counts zero.
 - Invalid returned URLs fail the complete attempt without exposure.
 - `mrfdiscoverer` error and cancellation mapping is exact and redacted.
 - Production `work` registers only the implemented discovery worker/queue.
@@ -391,7 +411,8 @@ Using the disposable database safeguards from Story 02, prove:
 - A second identical run creates no new TOC or download jobs, updates
   last-seen values, and records `was_new=false` membership.
 - A limit counts only inserts, known rows do not consume it, overflow rows are
-  absent, and a later run admits the next new rows.
+  absent from membership, `overflow_count` is exact, and a later run admits
+  the next new rows.
 - Duplicate listing occurrences use the first ordinal and create one
   membership/job.
 - Two defensive concurrent admissions resolve uniqueness without duplicate
@@ -435,7 +456,8 @@ go vet ./...
 - UHC discovery uses the `mrfdiscoverer` package rather than copied listing
   logic.
 - Exact URLs and first listing ordinals are stored without normalization.
-- `--limit` admits only the first requested number of actually new TOCs and a
+- `--limit` is required and admits only the requested number of actually new
+  TOCs. Distinct new URLs beyond the limit increment `overflow_count`, and a
   later run can admit prior overflow.
 - Each newly admitted TOC receives exactly one pending download job.
 - Repeated, duplicate, failed, canceled, and stale executions are idempotent
@@ -446,6 +468,7 @@ go vet ./...
 
 - A payer other than UHC.
 - Internal recurring scheduling or cron configuration.
+- Omitted or unlimited discovery; chunked admission of a full listing.
 - Caching or storing payer listing JSON.
 - TOC HTTP download or artifact creation.
 - TOC parsing, Parquet import, MRF creation, or feed assignment.

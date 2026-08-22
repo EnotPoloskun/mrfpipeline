@@ -150,11 +150,13 @@ Story 02 fields remain stable and two River fields are added:
 {"application_version":1,"applied_migration_count":0,"river_version":6,"applied_river_migration_count":0}
 ```
 
-The pgx v5 River driver at 0.39.0 has `main` migration line version `6`.
-`applied_river_migration_count` is the number applied by this invocation.
-Repeating the current migration reports zero for both applied counts. A later
-River dependency upgrade may change `river_version` only as part of its
-explicit dependency and migration story.
+The pgx v5 River driver at the pinned version is authoritative for
+`river_version`. Version 0.39 currently reports `main` migration line `6`. If
+inspection during implementation disagrees, update this story before merging;
+do not fake version 6. `applied_river_migration_count` is the number applied
+by this invocation. Repeating the current migration reports zero for both
+applied counts. A later River dependency upgrade may change `river_version`
+only as part of its explicit dependency and migration story.
 
 The output does not include migration SQL, schema table names, database
 coordinates, advisory-lock values, or River diagnostic details.
@@ -243,15 +245,23 @@ Create the production River client with these fixed policies:
 - The shared pgx v5 pool and schema `mrfpipeline_river`.
 - The exact queue map above once the corresponding production workers are
   registered.
-- Eight maximum attempts per job, including the first attempt.
+- Eight maximum attempts per job, including the first attempt. That is the
+  first attempt plus seven retries. Version 1 uses this uniform policy for
+  every job, including HTTP 4xx and URL-policy failures. There is no fail-fast
+  taxonomy.
 - River's exponential retry policy with jitter; do not busy-loop or add a
   second application retry loop around a worker.
 - No default execution timeout for long downloads, parsers, or consumers.
   Workers must honor the River context and terminate child processes on
   cancellation.
 - Rescue running jobs considered stuck after 24 hours. At-least-once recovery
-  may then overlap a process that is alive but no longer updating River; the
-  domain claim and artifact publication rules remain the correctness guard.
+  may then overlap a process that is alive but no longer updating River. River
+  0.39 rescue changes an overdue running row to retryable or discarded; it
+  does not terminate the existing Go invocation. Domain claim, artifact
+  publication, and the Story 10 process-level `mrfparser.Parse` mutex remain
+  the correctness guards. Queue concurrency one is expected to prevent a
+  second local fetch while the original slot is occupied, but it is not the
+  parser safety contract.
 - River's default fetch cooldown and polling behavior.
 - No periodic jobs, scheduled discovery, custom leader election, job snoozing,
   job tags, or job metadata in version 1.
@@ -442,15 +452,53 @@ Normal lifecycle logs may include only:
 - River's numeric job ID and attempt number.
 - A fixed safe failure classification.
 - A duration and count with no source-derived label.
+- For a `progress` event only: a fixed phase token, a nonnegative integer
+  `percent` from 0 through 100 when a total is known, and unlabeled byte
+  counts (`copied_bytes`, `total_bytes`) when a total is unknown or when the
+  byte counters are the progress signal.
 
 Do not log encoded job arguments, domain IDs, URLs, file paths, plans,
 database coordinates, SQL, HTTP headers, response bodies, child-process
-output, or raw errors. River library errors must pass through an adapter that
-emits a safe classification rather than forwarding arbitrary error text.
+output, or raw errors. Successful CLI reports and the documented Story 13 SQL
+queries are the supported ways to obtain domain IDs. River library errors must
+pass through an adapter that emits a safe classification rather than
+forwarding arbitrary error text.
+
+### Progress logs
+
+Progress is a liveness signal for long in-flight work. It is not stored in
+PostgreSQL, River job metadata, or artifact manifests.
+
+Required instrumented operations:
+
+| Operation | Progress signal |
+|---|---|
+| TOC and MRF HTTP body copy | Copied bytes versus advertised `Content-Length` when known |
+| `mrfparser.Parse` | Parser stored-byte progress callback |
+| `mrfconsumer.Ingest` | Package `OnProgress` phase and percent |
+
+Also log the three fixed TOC parser stages through `WithProgress`. Those are
+phase tokens, not a percent.
+
+Do not instrument discovery listing, TOC association import, or plan
+attachment in version 1. Discovery is short. Import is bounded database
+batches. `AttachPlans` has no progress callback.
+
+Throttle: at most one `progress` line per executing River job every 30
+seconds, plus one line at the start of the instrumented operation and one
+line when that operation completes successfully. Do not emit per-buffer,
+per-row, or per-callback spam. Do not emit progress when a completed
+artifact is reused and the instrumented operation is skipped.
+
+When a total is known, `percent` is `min(100, 100*copied/total)` as an
+integer. When the total is unknown or chunked, omit `percent` and log
+`copied_bytes` only. Phase tokens are a fixed allowlist; do not log parser or
+consumer prose, paths, or URLs.
 
 This story does not introduce Prometheus, OpenTelemetry, an HTTP metrics
-endpoint, or a UI. Structured logs and durable database state are sufficient
-for the initial runtime.
+endpoint, or an embedded UI. Story 13 documents optional external River UI as
+operator tooling. Structured logs and durable database state remain the
+pipeline's own observability.
 
 ## Shutdown behavior
 
@@ -462,7 +510,8 @@ The reusable production runtime follows Story 01 signal handling:
    shutdown.
 3. Give active jobs 30 seconds to stop gracefully.
 4. If that interval expires, call River's canceling stop path so job contexts
-   and their subprocesses are canceled.
+   and their subprocesses are canceled. Downloads and MRF parses do not finish
+   inside the grace interval; atomic publication plus retry recover them.
 5. Close the database pool only after River shutdown returns.
 
 Shutdown errors are redacted `ErrJob` failures. Cancellation is not reported
@@ -482,10 +531,13 @@ production `work` command because no production worker is registered yet.
   overflowing argument values are rejected safely.
 - Queue concurrency, attempt count, River schema, retry, timeout, stuck-job,
   and retention settings match the fixed production policy.
+- The documented parser mutex requirement is recorded for Story 10; Story 03
+  does not call `mrfparser`.
 - No production insertion uses River `UniqueOpts`, tags, or metadata.
 - Runtime, migration, insertion, decoding, logging, and shutdown errors never
   expose supplied database URLs, source URLs, paths, or plan-like fixtures.
-- The logger adapter includes only its allowlisted fields.
+- The logger adapter includes only its allowlisted fields, including
+  throttled `progress` events without domain IDs, URLs, or paths.
 - Story 01 command parsing and configuration tests continue to pass.
 
 ### PostgreSQL and River integration tests
@@ -553,7 +605,8 @@ go vet ./...
 - Multiple worker processes, horizontal scaling, distributed filesystem
   locking, or dynamic queue configuration.
 - A manual retry, cancel, repair, or reconciliation command.
-- An HTTP API, metrics endpoint, dashboard, or UI.
+- An HTTP API, metrics endpoint, dashboard, or UI embedded in this binary.
+  Optional external River UI is operator documentation in Story 13.
 - River schema customization beyond its fixed PostgreSQL schema.
 - River unique jobs, argument hashes, content hashes, UUIDs, or custom job
   tables.

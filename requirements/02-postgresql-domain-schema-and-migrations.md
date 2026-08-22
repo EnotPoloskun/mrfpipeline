@@ -182,6 +182,12 @@ All application tables follow these rules:
   time.
 - Tables do not use update triggers. Later transactions update `updated_at`
   explicitly with `transaction_timestamp()` when changing mutable state.
+- Collection months are stored as a first-of-month `date`. Go converts strictly
+  between that date and sibling-tool `YYYY-MM` text at the tool boundary.
+- `discovery_run_toc_files` and `plan_attachment_batch_items` are the only
+  `ON DELETE CASCADE` joins. Every other foreign key remains `ON DELETE
+  RESTRICT`.
+- Every nonnull River job ID column requires a positive value.
 
 The common stage-state vocabulary is:
 
@@ -244,12 +250,13 @@ One row represents one requested payer listing discovery.
 | `id` | `bigint` identity | Primary key. |
 | `payer_id` | `text` | Exact supported payer identifier. Version 1 permits only `uhc`. |
 | `collection_month` | `date` | First day of the caller-selected month. |
-| `toc_limit` | `integer` nullable | Positive optional admission limit. |
+| `toc_limit` | `integer` nullable | Positive admission limit. Version 1 CLI always writes a positive value; null is reserved for a future unlimited/chunked-admission story. |
 | `status` | `text` | Run state; initially `pending`. |
-| `discovered_count` | `bigint` | Listing URLs returned; initially `0`. |
-| `existing_count` | `bigint` | Returned URLs already known; initially `0`. |
+| `discovered_count` | `bigint` | Listing URLs returned, including duplicate occurrences; initially `0`. |
+| `existing_count` | `bigint` | Distinct first-occurrence URLs already known; initially `0`. |
 | `admitted_count` | `bigint` | Newly inserted TOCs admitted by this run; initially `0`. |
-| `river_job_id` | `bigint` nullable | Reserved for Story 03; no foreign key. |
+| `overflow_count` | `bigint` | Distinct new first-occurrence URLs excluded by the admission limit; initially `0`. |
+| `river_job_id` | `bigint` nullable | Reserved for Story 03; no foreign key. Must be positive when present. |
 | `failure_code` | `text` nullable | Safe bounded classification, never raw error text. |
 | `created_at` | `timestamptz` | Required creation time. |
 | `started_at` | `timestamptz` nullable | First transition to `running`. |
@@ -257,10 +264,20 @@ One row represents one requested payer listing discovery.
 | `updated_at` | `timestamptz` | Required, initially creation time. |
 
 Constraints require a valid first-of-month date, a positive limit when
-present, nonnegative counts, `existing_count <= discovered_count`, and
-`admitted_count <= discovered_count - existing_count`. A terminal status has
+present, nonnegative counts, `existing_count <= discovered_count`,
+`admitted_count + overflow_count <= discovered_count - existing_count`, and
+`existing_count + admitted_count + overflow_count <= discovered_count`. When
+`toc_limit` is present, `admitted_count <= toc_limit`. A terminal status has
 `completed_at`; a nonterminal status does not. A successful row has no failure
 code. Story 05 finalizes counter updates and discovery transitions.
+
+`payer_id` has an exact CHECK of `'uhc'` on every v1 table that stores it:
+`discovery_runs`, `toc_files`, and `mrf_feeds`.
+
+Every shared `failure_code` describes the currently failed stage and is null
+otherwise. Explicit retry clears it; successful completion also leaves it
+null. A failed download or parse leaves successor stages `blocked`, not
+`failed`.
 
 ### `toc_files`
 
@@ -286,17 +303,25 @@ One row represents one exact payer TOC URL admitted to the pipeline.
 
 The exact unique key is `(payer_id, source_url)`. A later discovery of that
 key reuses the row, preserves its original `collection_month` and first run,
-and may only update `last_seen_at` plus discovery-observation data.
+and may only update `last_seen_at` plus discovery-observation data. The first
+admitting run freezes `collection_month`. A wrong month is not corrected by
+rediscovery or retry; rebuilding the affected pipeline and warehouse state is
+required.
 
 Stage constraints prevent parse from leaving `blocked` before download
 succeeds and prevent import from leaving `blocked` before parse succeeds.
+A failed download leaves parse and import `blocked`, not `failed`.
 `toc_output_id` is not stored separately; later code formats it exactly as
 `toc-<id>` from the database primary key.
+
+Every nonnull `*_river_job_id` on this table and on `mrf_sources`,
+`mrf_snapshots`, `discovery_runs`, and `plan_attachment_batches` must be
+positive.
 
 ### `discovery_run_toc_files`
 
 This join records every known or newly admitted TOC associated with a
-discovery run after Story 05 applies its optional limit.
+discovery run after Story 05 applies its required limit.
 
 | Column | Type | Contract |
 |---|---|---|
@@ -307,9 +332,10 @@ discovery run after Story 05 applies its optional limit.
 | `created_at` | `timestamptz` | Required creation time. |
 
 The primary key is `(discovery_run_id, toc_file_id)`. Each run also has a
-unique `listing_ordinal`. New URLs beyond the optional admission limit are
-counted in `discovered_count` but are not inserted into `toc_files` or this
-join. A later bounded discovery may admit them.
+unique `listing_ordinal`. Original first-occurrence ordinals are retained and
+may contain gaps after in-listing duplicates. Distinct new URLs beyond the
+admission limit increment `overflow_count` and are not inserted into
+`toc_files` or this join. A later bounded discovery may admit them.
 
 ### `mrf_feeds`
 
@@ -325,8 +351,10 @@ One row represents one caller/orchestrator-owned logical feed series used by
 | `updated_at` | `timestamptz` | Required mutable-state timestamp. |
 
 The unique key is `(payer_id, feed_id)`. Both values match the lowercase ASCII
-identifier contract `[a-z0-9][a-z0-9._-]{0,127}`. Story 02 does not infer feed
-identity from a URL, filename, TOC plan, or database hash.
+identifier contract `[a-z0-9][a-z0-9._-]{0,127}`. Do not encode Story 08's
+`mrf-source-` assignment policy into the database constraint; a later curated
+feed policy must remain possible. Story 02 does not infer feed identity from a
+URL, filename, TOC plan, or database hash.
 
 ### `mrf_sources`
 
@@ -505,6 +533,30 @@ from analytical feed/month identity (`mrf_snapshots`). Multiple TOCs may point
 to one MRF source and contribute plans to one snapshot without creating
 another download or parser lifecycle.
 
+## Operational indexes
+
+Include these indexes in migration `0001` before implementation lands. Do not
+wait for Story 13 to discover them. They do not change uniqueness or identity
+semantics.
+
+| Index | Purpose |
+|---|---|
+| `discovery_runs(status)` | Startup/reconcile nonterminal run scans. |
+| `toc_files(download_status)` | Download-stage scans. |
+| `toc_files(parse_status)` | Parse-stage scans. |
+| `toc_files(import_status)` | Import-stage scans. |
+| `mrf_sources(download_status)` | Shared download-stage scans. |
+| `mrf_sources(parse_status)` | Shared parse-stage scans. |
+| `mrf_snapshots(mrf_source_id)` | Parse-success snapshot scheduling. |
+| `mrf_snapshots(consume_status)` | Consumer-stage scans. |
+| `plan_attachment_batches(mrf_snapshot_id)` | Unresolved-batch lookup under a snapshot lock. |
+| `plan_attachment_batches(status)` | Attachment-stage scans. |
+| `mrf_plans(mrf_snapshot_id)` | Unassigned-plan selection. |
+
+`plan_attachment_batch_items(mrf_plan_id)` is already unique and is the join
+used to detect unassigned plans. Do not add hash-derived or URL-derived
+indexes.
+
 ## Transaction and concurrency rules
 
 Story 02 provides concrete query helpers only where needed by migration and
@@ -611,11 +663,15 @@ The suite proves:
 - Unknown, missing, noncontiguous, and filename-mismatched ledger state is
   rejected without repair.
 - Every invalid status, month, counter, identifier, URL newline, plan enum,
-  sponsor condition, and lifecycle combination is rejected by the relevant
-  database constraint.
+  sponsor condition, overflow/admitted arithmetic, zero/negative River job ID,
+  and lifecycle combination is rejected by the relevant database constraint.
 - Exact duplicate TOC URLs, MRF URLs, discovery membership, feed IDs,
   snapshots, TOC associations including null values, sponsor-independent MRF
   plans, and batch items are rejected by database uniqueness.
+- `payer_id` values other than `uhc` are rejected on `discovery_runs`,
+  `toc_files`, and `mrf_feeds`.
+- `feed_id` accepts any consumer-compatible identifier and does not require an
+  `mrf-source-` prefix.
 - Different URL strings remain distinct even when they share a filename or
   differ only by case, query, escaping, or fragment.
 - The same MRF source can participate in several valid snapshots while its URL
@@ -643,6 +699,10 @@ go vet ./...
 - Repeated and concurrent migration invocations are safe and idempotent.
 - The application schema distinguishes an exact downloadable MRF source from
   a payer/feed/month consumer snapshot.
+- `discovery_runs` stores `overflow_count` for distinct new URLs excluded by
+  the required admission limit.
+- Operational stage, snapshot-by-source, batch, and unassigned-plan indexes
+  exist in `0001`.
 - Exact database constraints prevent duplicate URLs, TOC associations,
   sponsor-independent snapshot plans, and batch assignment.
 - Multiple TOCs may associate plans with one MRF without creating another MRF

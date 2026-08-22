@@ -45,8 +45,14 @@ worker coordinates one domain row around the existing downloader.
   in the same transaction.
 - Download bytes remain present until Story 07 validates parser publication.
 - All download and publication failures use River's shared eight-attempt
-  policy. Version 1 does not introduce special per-status attempt counts.
+  policy, including HTTP 4xx and URL-policy failures. Version 1 does not
+  introduce special per-status attempt counts or a fail-fast taxonomy.
 - HTTP failures never cause the TOC URL row to be deleted.
+- Byte count remains in the download manifest, not PostgreSQL.
+- A zero-byte completed download still schedules TOC parsing, which then fails
+  input validation.
+- Inconsistent lifecycle combinations fail with `domain_invariant`. Only
+  Story 13 reconciliation repairs that shape.
 
 ## Worker registration
 
@@ -61,7 +67,8 @@ No other production queue is consumed yet. `toc.parse` jobs created by this
 story remain pending until Story 07.
 
 The fixed maximum is per the one supported worker process. Do not add a
-download-concurrency flag or environment variable.
+download-concurrency flag or environment variable. `MaxConnsPerHost=4` on the
+shared HTTP client is sufficient; do not add another per-host semaphore.
 
 ## Job argument and row ownership
 
@@ -229,7 +236,8 @@ In addition to Stories 01, 03, and 04, this worker must not expose:
 - TOC ID in ordinary worker logs.
 
 Safe logs may include the fixed job kind/queue, River job ID, attempt, duration,
-and `toc_download_failed` classification.
+`toc_download_failed` classification, and Story 04 throttled download
+`progress`.
 
 ## Required tests
 
@@ -261,6 +269,7 @@ server/dialer, prove:
 - Unsupported or malformed completed metadata fails closed.
 - HTTP/status, redirect-policy, content-length, filesystem, and cancellation
   failures leave parse blocked until success.
+- A completed zero-byte download still schedules TOC parsing.
 - Eighth failure marks only download failed with the fixed safe code.
 - A stale job cannot remove or replace another job's completed artifact.
 - Queue concurrency never exceeds four within the one worker process.

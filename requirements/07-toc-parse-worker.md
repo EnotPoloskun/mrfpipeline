@@ -46,6 +46,10 @@ association expansion, Parquet publication, and its own manifest semantics.
 - The parser receives the extensionless completed download path. It detects
   JSON versus gzip from bytes.
 - The pipeline invokes `mrftocparser` in-process through its public Go API.
+- A process-wide `TMPDIR` of `<artifact-root>/.staging` is set once before
+  River starts, because `mrftocparser.Config` has no temp-directory field.
+  Never mutate `TMPDIR` around individual calls.
+- Two concurrent TOC parser calls are supported.
 - A nonempty `parsed` directory without `manifest.json` is incomplete and is
   reset before retry.
 - Manifest presence alone is not enough. The pipeline validates the exact
@@ -72,6 +76,11 @@ Extend the production client:
 
 `toc.import` jobs remain pending until Story 08. Do not configure unimplemented
 queues or no-op workers.
+
+Amend `work` so that, after Story 04 workspace validation and before starting
+River, it sets process `TMPDIR` once to the validated
+`<artifact-root>/.staging` directory. Never restore or mutate `TMPDIR` around
+individual parser calls.
 
 ## Job argument and owned fields
 
@@ -117,10 +126,15 @@ collection_month = YYYY-MM
 The formatting uses the stored positive ID and first-of-month date only.
 
 After claim commit, validate the Story 04 completed download and obtain its
-regular `data` path. Missing, incomplete, malformed, or wrong-type download
-content is an artifact invariant failure; the parse worker does not silently
-redownload or change download status. Story 13 owns repair of a succeeded
-download whose artifact was later lost.
+regular `data` path. Always pass that exact absolute-clean generated
+`download/data` path to the parser. Missing, incomplete, malformed, or
+wrong-type download content is an artifact invariant failure; the parse worker
+does not silently redownload or change download status. Story 13 owns repair of
+a succeeded download whose artifact was later lost.
+
+Once valid parser output exists, source-path validation compares the recorded
+`source.uri` string to the generated path. The deleted input file need not
+exist.
 
 ## Output preflight
 
@@ -140,6 +154,7 @@ never asks the parser to append, resume, overwrite, or repair output.
 When no manifest is present after preflight, call:
 
 ```go
+ctx = mrftocparser.WithProgress(ctx, throttledTOCStageProgress)
 report, err := mrftocparser.Parse(ctx, mrftocparser.Config{
     InputPath:       downloadDataPath,
     OutputPath:      parsedPath,
@@ -149,8 +164,16 @@ report, err := mrftocparser.Parse(ctx, mrftocparser.Config{
 })
 ```
 
-Pass the River context unchanged. Do not install process signal handlers,
-write CLI progress, set package globals, or redirect package output.
+Pass the River context unchanged. Do not install process signal handlers, set
+package globals, or redirect package output.
+
+Install public `mrftocparser.WithProgress` so the three fixed stages log as
+Story 03 `progress` events with phases `toc_destination_prepared`,
+`toc_input_parsed`, and `toc_parquet_closed`. Do not invent a percent for TOC
+parse. Do not write the parser CLI's human progress lines. Do not import
+`internal/app`. If the pinned TOC parser has no root `WithProgress`, add that
+thin public wrapper in `mrftocparser` and pin the release; it already exists
+unexported for the CLI.
 
 The package returns no successful report unless it published its final
 manifest. On success, require:
@@ -182,7 +205,8 @@ parsed/
 ```
 
 All three are real, non-symlink entries with the expected types. There are no
-extra root entries.
+extra root entries. Any extra, including `.DS_Store`, `Thumbs.db`, or similar
+noise, fails closed.
 
 Each dataset directory contains only contiguous regular files named:
 
@@ -224,6 +248,10 @@ published JSON Schema. Do not import sibling `internal` packages.
 An unsupported or corrupt manifest beside otherwise present output is a
 completed-output contract failure. Generic reset refuses it because deleting
 a manifest-present directory could destroy successfully published evidence.
+The operator must stop the worker, inspect and remove or quarantine that exact
+generated `parsed` directory, then issue `retry`. A fresh parser
+report/manifest mismatch is the same class: preserve the manifest-present
+output and fail closed.
 
 ## Download cleanup
 
@@ -293,7 +321,13 @@ already published one, and follows common retry/shutdown behavior.
 - Strict manifest decoding and metadata/count validation match the 1.0.0
   contract.
 - Root/part layout validation rejects extras, gaps, symlinks, and wrong types.
-- Fresh parser report and manifest mismatches fail closed.
+- Fresh parser report and manifest mismatches fail closed and preserve
+  manifest-present output.
+- After download cleanup, source-path validation compares the recorded string
+  and does not require the deleted file to exist.
+- `TMPDIR` is set once before River and is not mutated around `Parse`.
+- The three TOC parser stages log as throttled/fixed `progress` phases without
+  percent, URLs, or paths.
 - Sibling errors map to fixed safe classifications without raw values.
 - Success finalization atomically inserts one `toc.import` job.
 
@@ -315,7 +349,7 @@ Using disposable PostgreSQL/River state and local fixtures, prove:
 - Success transaction rollback retains reusable output and creates no visible
   import job until retry commits.
 - Completed/stale jobs are no-ops and cannot delete another stage's artifacts.
-- Queue concurrency does not exceed two.
+- Queue concurrency is two and two parser calls may overlap.
 
 Run:
 

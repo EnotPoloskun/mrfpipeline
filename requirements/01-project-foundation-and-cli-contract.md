@@ -21,7 +21,7 @@ This story establishes three operational commands:
 ```text
 mrfpipeline migrate
 mrfpipeline work
-mrfpipeline discover --payer uhc --collection-month <YYYY-MM> [--limit <count>]
+mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
 ```
 
 The commands are placeholders in Story 01. After successful configuration
@@ -73,6 +73,13 @@ go.mod
 README.md
 ```
 
+Story 01 adds a short `README.md` that states the project is requirements-first,
+names the three current commands, and links to `requirements/`. It does not
+document worker operations that do not exist yet. Story 13 replaces it with
+operational documentation. Root and command `--help` in this story mention only
+`migrate`, `work`, and `discover`. Story 13 amends root help to add `reconcile`
+and `retry`.
+
 The exact internal package split may remain smaller when that is clearer, but
 the command entry point stays thin. Process argument parsing, signal setup,
 and stream selection belong to the command or CLI adapter. Environment and
@@ -112,16 +119,19 @@ implemented.
 mrfpipeline discover \
   --payer uhc \
   --collection-month 2026-08 \
-  [--limit 5]
+  --limit 5
 ```
 
-`--payer` and `--collection-month` are required. `--limit` is optional.
+`--payer`, `--collection-month`, and `--limit` are required. Omitted or
+unlimited discovery is deferred until a later chunked-admission story. The
+Story 02 `toc_limit` column may remain nullable for that future compatibility;
+version 1 never writes null and never accepts a missing `--limit`.
 
 | Flag | Meaning |
 |---|---|
 | `--payer` | Exact payer adapter identifier. Version 1 accepts only `uhc`. |
 | `--collection-month` | Caller-selected month assigned to the discovered TOC records, exactly `YYYY-MM`. It is not inferred from URLs or payer contents. |
-| `--limit` | Optional positive decimal integer limiting how many newly discovered TOCs this run may admit into the pipeline. Omission means no configured limit. Story 05 defines selection and counting semantics. |
+| `--limit` | Required positive `int64` limiting how many newly discovered TOCs this run may admit into the pipeline. Story 05 defines selection, overflow counting, and admission semantics. |
 
 Scalar flags accept both `--name value` and `--name=value`. A scalar flag may
 appear more than once; its final occurrence is used. A flag is syntactically
@@ -203,16 +213,19 @@ month:
 - Year `0000`, timestamps, surrounding whitespace, and alternate spellings
   are invalid.
 
-When present, `limit` must be a positive base-10 integer representable as a Go
-`int`. `0`, negative values, a leading plus sign, surrounding
-whitespace, decimals, exponents, and overflow are invalid. Leading zeroes are
-accepted by command parsing and have their ordinary decimal meaning; Story 05
-stores and reports the resulting integer rather than the original spelling.
+`limit` is required and must be a positive base-10 integer that fits in a
+signed 64-bit integer (`int64`), independent of the platform `int` size. `0`,
+negative values, a leading plus sign, surrounding whitespace, decimals,
+exponents, empty values, and values that overflow `int64` are invalid. Leading
+zeroes are accepted by command parsing and have their ordinary decimal meaning;
+Story 05 stores and reports the resulting integer rather than the original
+spelling.
 
-The limit is an operator safety control for initial five-to-ten-file runs. It
-is not an identity value, a permanent production cap, or a request to truncate
-the payer listing before exact URL deduplication. Story 05 defines its
-application to newly admitted TOCs.
+The limit is an operator safety control for bounded discovery. It is not an
+identity value or a request to truncate the payer listing before exact URL
+deduplication. The documented live progression is one newly admitted TOC, then
+two, then five, with ten only after measuring fan-out and disk. Story 05
+defines its application to newly admitted TOCs and `overflow_count`.
 
 ## Validation and placeholder behavior
 
@@ -245,7 +258,7 @@ Configuration validation is deterministic and fail-fast.
 3. Validate `MRFPIPELINE_DATABASE_URL`.
 4. Validate payer.
 5. Validate collection month.
-6. Validate the optional limit.
+6. Validate the required limit.
 7. Check cancellation again.
 8. Return the private discovery-enqueue-not-implemented error.
 
@@ -312,9 +325,10 @@ Root help explains:
 - The `migrate`, `work`, and `discover` commands.
 
 Command help explains the command's future effect and required environment.
-Discovery help also explains that `collection_month` is caller supplied, the
-optional limit is intended for bounded test runs, and success will enqueue
-background work rather than wait for the entire pipeline.
+Discovery help also explains that `collection_month` is a caller-supplied
+label, `--limit` is required, unlimited discovery is out of version 1 scope,
+and success will enqueue background work rather than wait for the entire
+pipeline. Help in this story does not mention `reconcile` or `retry`.
 
 ## CLI errors, streams, and exit status
 
@@ -411,9 +425,9 @@ Add focused tests proving:
 - Payer validation accepts only exact `uhc`.
 - Month validation accepts boundary years and valid months and rejects year
   `0000`, invalid months, whitespace, and noncanonical forms.
-- Limit parsing covers omission, `1`, representative values `5` and `10`,
-  leading zeroes, zero, negative, plus-prefixed, noninteger, and overflowing
-  values.
+- Limit parsing covers missing `--limit`, `1`, representative values `2`, `5`,
+  and `10`, leading zeroes, zero, negative, plus-prefixed, noninteger, empty,
+  and values overflowing `int64`.
 - A nil context panics before validation or side effects; the panic text is
   not asserted.
 - Entry cancellation precedes invalid configuration, and post-validation
@@ -436,6 +450,9 @@ Add focused tests proving:
   redaction rules above.
 - Story 01 operational commands are side-effect-free placeholders and never
   report success.
+- `README.md` is a short requirements-first placeholder linking to
+  `requirements/`.
+- `--limit` is syntactically required and parsed as a positive `int64`.
 - Command parsing and configuration are implemented once and are ready for
   later database, River, discovery, and worker stories.
 - No database, queue, payer request, artifact, parser, consumer, enrichment,

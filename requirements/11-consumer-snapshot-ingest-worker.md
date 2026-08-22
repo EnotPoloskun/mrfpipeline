@@ -50,10 +50,16 @@ ingestion.
   output.
 - Plans are never passed to `Ingest`. A snapshot may publish before its first
   plan attachment and is then valid warehouse state but not plan-ready.
+  Planless rates may be queryable. Serving that must not expose planless rates
+  waits on the PostgreSQL-derived plan-ready rule; the worker does not hide
+  warehouse files.
 - The manually produced provider catalog remains an operator input. The
   pipeline never invokes `mrfenricher` or mutates the configured catalog.
 - The first successful ingestion pins the catalog into the warehouse according
   to the consumer contract. Later ingestions must match that pinned identity.
+  A pinned-catalog identity mismatch returned as consumer `ErrOutput` maps to
+  `consumer_ingest_output_failed`. `consumer_ingest_provider_changed` applies
+  only to the pipeline's configured-path metadata guard.
 - The `consumer` queue has maximum concurrency one and is the only supported
   writer path to the configured warehouse.
 - A valid already-published exact snapshot is reusable after lost database
@@ -61,6 +67,9 @@ ingestion.
   fails closed.
 - Parsed MRF output is shared and retained. Ingestion never deletes or changes
   it.
+- Story 11 tests create no attachment batches.
+- Wire `OnProgress` to a throttled Story 03 `progress` logger. Do not leave it
+  nil. Do not persist percent in PostgreSQL.
 
 ## Worker registration
 
@@ -81,11 +90,17 @@ Before River starts, complete the Story 04 local path validation and require:
 - `MRFPIPELINE_PROVIDER_CATALOG_PATH` is a readable real directory rather than
   a symlink;
 - `MRFPIPELINE_WAREHOUSE_PATH` is absent, an empty real directory, or a real
-  directory that appears to be a consumer `1.5.0` warehouse;
+  directory whose `warehouse.json` is strict JSON with exact warehouse schema
+  `1.5.0`;
 - the configured catalog is lexically separate from the artifact root and
   service selector; and
 - the configured catalog is lexically separate from the warehouse except for
   the consumer-supported exact `<warehouse>/provider_catalog` path.
+
+Startup recognition is shallow: a real warehouse directory plus strict
+`warehouse.json` with exact `1.5.0`. Do not require the provider-catalog copy
+or plan-schema seed at startup; the consumer owns that documented recovery.
+Unexpected warehouse structure is rejected later by `Ingest`.
 
 The warehouse-owned catalog exception is valid only for an already recognized
 consumer `1.5.0` warehouse. A missing or new warehouse requires an external
@@ -100,8 +115,8 @@ the warehouse-pinned catalog.
 
 Startup does not create, repair, or migrate a warehouse. A nonempty directory
 whose `warehouse.json` is absent, malformed, or not exact `1.5.0` fails worker
-startup. Detailed provider-catalog validation and the consumer's documented
-recoverable initialization work occur inside `Ingest`.
+startup. Detailed provider-catalog validation, seed presence, and the
+consumer's documented recoverable initialization work occur inside `Ingest`.
 
 ## Job argument and claim
 
@@ -160,7 +175,7 @@ cfg := mrfconsumer.Config{
     FeedID:             feed.FeedID,
     CollectionMonth:    formatMonth(snapshot.CollectionMonth),
     OutputID:           formatSnapshotOutputID(snapshot.ID),
-    OnProgress:         nil,
+    OnProgress:         throttledIngestProgress,
 }
 report, err := mrfconsumer.Ingest(ctx, cfg)
 ```
@@ -169,9 +184,16 @@ The production field order follows the consumer's public type and `gofmt`.
 `formatMonth` emits exact `YYYY-MM`; output ID emits `mrf-<positive base-10
 ID>` with no zero padding.
 
+`throttledIngestProgress` is a Story 03 `progress` adapter. It logs the
+consumer's fixed phase tokens (`validating_input`, `provider_relationships`,
+`rate_facts`, `publishing`) and integer `percent`. It applies the 30-second
+throttle. It must not log `OutputID`, paths, payer, feed, month, catalog
+identity, or report counts.
+
 Do not pass plans, a TOC path, taxonomy values, a DuckDB handle, PostgreSQL,
 job identity, batch identity, callbacks that expose domain values, or generic
-storage options. Pass the River context unchanged.
+storage options. Pass the River context unchanged. Do not leave `OnProgress`
+nil.
 
 ## Consumer initialization and recovery
 
@@ -225,8 +247,10 @@ preserve it and require all of the following:
   `manifest.json`, with no snapshot-local plans directory; and
 - each dataset contains exactly the manifest-declared contiguous private
   regular non-symlink parts named
-  `mrf-<snapshot-id>-part-<five-digit-ordinal>.parquet`, with no gaps or extra
-  entries.
+  `mrf-<snapshot-id>-part-<ordinal>.parquet`, using the consumer's canonical
+  formatting: a minimum of five decimal digits, contiguous ordinals from zero,
+  and wider ordinals such as `100000` valid. Do not impose a five-digit
+  maximum. There are no gaps or extra entries.
 
 Use the consumer's documented JSON size bounds and strict duplicate/unknown
 member rules. This recovery recognizer validates the immutable publication
@@ -295,9 +319,12 @@ Mapping is exact:
 
 - `mrfconsumer.ErrInvalidConfig` -> `consumer_ingest_config_invalid`;
 - `mrfconsumer.ErrInvalidInput` -> `consumer_ingest_input_invalid`;
-- `mrfconsumer.ErrOutput` -> `consumer_ingest_output_failed`;
-- pipeline preflight/recognition/report mismatch -> the corresponding fixed
-  input, provider, or output-invalid code;
+- `mrfconsumer.ErrOutput` -> `consumer_ingest_output_failed`, including a
+  pinned-catalog identity mismatch returned by the consumer;
+- pipeline configured-path provider-catalog metadata mismatch ->
+  `consumer_ingest_provider_changed` only;
+- pipeline preflight/recognition/report mismatch other than that metadata
+  guard -> the corresponding fixed input or output-invalid code;
 - database failure -> `consumer_ingest_database_failed`; and
 - context cancellation/deadline remains the context error.
 
@@ -317,11 +344,18 @@ diagnostics in logs or `failure_code`.
   identity and configured roots; plans and batch values cannot enter it.
 - Output/month formatting is deterministic numeric formatting without hashes.
 - Claim and success transitions require the assigned job and source parse.
-- Startup accepts only absent/empty or apparent 1.5.0 warehouses and enforces
-  the warehouse-owned catalog exception.
-- Provider metadata change detection uses filesystem metadata, not a digest.
+- Startup accepts only absent/empty or a real directory whose
+  `warehouse.json` is exact `1.5.0`, without requiring seed or catalog copy,
+  and enforces the warehouse-owned catalog exception.
+- Provider metadata change detection uses filesystem metadata, not a digest,
+  and is the only path to `consumer_ingest_provider_changed`.
 - Completed-output recognition is strict, redacted, and does not scan rows.
+  Part ordinals use canonical consumer formatting with a five-digit minimum,
+  not a five-digit maximum.
 - Typed consumer errors map to fixed failure codes without string inspection.
+  Catalog identity `ErrOutput` maps to `consumer_ingest_output_failed`.
+- Ingest `OnProgress` is wired, throttled, redacted, and skipped when a
+  completed snapshot is recognized without calling `Ingest`.
 
 ### Integration tests
 
@@ -344,6 +378,7 @@ catalog fixture:
   attempt converges without rewriting the warehouse.
 - Final failure leaves parsed output, provenance, and plans intact.
 - No consumer writers overlap.
+- Story 11 tests create no attachment batches.
 
 Run:
 
@@ -365,8 +400,8 @@ go vet ./...
   consumer contract.
 - Lost PostgreSQL acknowledgement after atomic snapshot publication converges
   by exact recognition without a second ingestion.
-- Ingest success is durable while all current plans remain available for the
-  separate additive attachment story.
+- A completed snapshot with no plan attachment is valid warehouse state and
+  may be queryable. Serving waits on the PostgreSQL-derived plan-ready rule.
 - Failures do not delete or rewrite parser output or a published warehouse.
 
 ## Non-goals

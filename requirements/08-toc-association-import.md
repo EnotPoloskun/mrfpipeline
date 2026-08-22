@@ -49,14 +49,27 @@ Parquet schemas and row-level contracts before mutating application data.
   domain mutation. Import uses a second bounded pass for writes.
 - Database uniqueness makes a replay idempotent. No import checkpoint table,
   row hash, or content hash is added.
-- New sources receive `mrf.download` jobs immediately.
+- New sources receive `mrf.download` jobs immediately. There is no
+  reference-count threshold.
 - New snapshots for already parsed sources receive `consumer.ingest` jobs
   immediately; other snapshots remain blocked until Story 10 parse success.
 - Plans are inserted immediately but attachment batches are not created until
   Story 12. Once Story 12 is implemented, its common scheduler extends import
   finalization for consumed snapshots without changing the row-import rules in
-  this story.
-- TOC parser output remains after import in version 1. Story 13 owns retention.
+  this story. Story 08 alone has no attachment hook or attachment-job
+  expectation.
+- Reporting entity and `last_updated_on` remain validation-only. They are not
+  copied into PostgreSQL.
+- Imported MRF locations are HTTPS-only. HTTP is rejected here even though the
+  Story 04 downloader supports HTTP.
+- Distinct locations are upserted in deterministic exact-URL order. Resolved
+  `mrf_sources` rows are then locked in ascending numeric ID order before
+  parse state is read.
+- A terminal partial import is finished by retrying `toc.import`. Previously
+  committed batches remain valid; do not cancel their downstream MRF work.
+- Story 13 deletes succeeded imported TOC parsed output. PostgreSQL and
+  warehouse backups are the recovery mechanism; version 1 does not roll a
+  succeeded import backward for re-import.
 
 ## Conservative UHC feed policy
 
@@ -91,10 +104,17 @@ Consequences are explicit:
 - Version 1 does not claim cross-URL monthly feed continuity. Old distinct
   feeds are not automatically superseded by a newer URL.
 
-This conservative policy avoids silently grouping unrelated rate files. A
-future curated feed-mapping story may introduce explicit aliases and a
-warehouse rebuild/migration strategy. It must not rewrite this version 1
-history by guessing after publication.
+This conservative policy avoids silently grouping unrelated rate files. It is
+not a logical cross-month network feed. Consumer `current_*` views can
+double-count after URL rotation. Serving must select an explicit
+`collection_month` or treat the warehouse as single-month. A later curated
+cross-URL feed map requires rebuilding the warehouse and must not rewrite this
+version 1 history by guessing after publication.
+
+One shared source parse may create two consumer snapshots when two collection
+months reference the same exact URL. Concurrent valid EIN sponsors may race;
+database uniqueness retains one valid sponsor. Consumer identity excludes
+sponsor.
 
 ## Worker registration
 
@@ -164,11 +184,12 @@ documented semantics and require:
 - output ID, payer, and collection month equal the TOC domain row;
 - source URI equals the generated former download data path recorded by the
   manifest, even though the download leaf has been removed;
-- reporting entity values are valid nonempty strings; and
+- reporting entity values are valid nonempty strings;
+- `last_updated_on` satisfies the parser contract; and
 - row count equals manifest `counts.toc_files == 1`.
 
-The local source path is validation-only and is not copied into PostgreSQL or
-logged.
+Reporting entity, `last_updated_on`, and the local source path are
+validation-only. They are not copied into PostgreSQL or logged.
 
 ### `mrf_plan_associations`
 
@@ -195,7 +216,11 @@ Validate each typed row:
 
 - Caller metadata equals the TOC domain row.
 - `mrf_location` is the exact valid HTTPS source string from the parser output.
-- Nullable `mrf_filename` matches the parser's documented derivation.
+  HTTP, including an otherwise well-formed `http://` location, is invalid even
+  though the generic downloader supports HTTP.
+- Nullable `mrf_filename` is recomputed from that `mrf_location` using the
+  parser's documented filename derivation and compared exactly. Do not merely
+  validate filename syntax.
 - Required plan strings are nonempty valid UTF-8.
 - `plan_id_type` is exact `ein` or `hios`.
 - `plan_market_type` is exact `group` or `individual`.
@@ -239,18 +264,21 @@ Reopen the validated association parts and stream them again in batches of at
 most 1,000 rows. Each batch uses one short PostgreSQL transaction. Do not hold
 the transaction while reading the next batch from disk.
 
-Within a batch, process rows in their existing order. Database uniqueness is
-the final concurrency arbiter.
+Within a batch, association and plan rows keep their existing stream order.
+Distinct MRF locations are upserted separately in deterministic exact-URL
+order. Database uniqueness is the final concurrency arbiter.
 
 ### MRF source upsert
 
-For each distinct exact `mrf_location` in the batch:
+Collect the distinct exact `mrf_location` values in the batch and sort them by
+exact Go string order. For each location in that order:
 
 1. Select or insert `mrf_sources(source_url)`.
 2. On insert, set `first_mrf_filename` to the nonempty filename when present,
    download pending, and parse blocked.
 3. Insert one `mrf.download` job through `InsertTx` for a new source and store
-   `download_river_job_id`.
+   `download_river_job_id`. A new source is scheduled immediately; there is no
+   reference-count threshold.
 4. On an existing source, never change its URL or stage state and never insert
    another normal download job.
 5. If its `first_mrf_filename` is null and the current association has a
@@ -260,23 +288,26 @@ For each distinct exact `mrf_location` in the batch:
 A uniqueness conflict after attempted insert is handled as an existing source
 and does not create a duplicate job.
 
+After every distinct location in the batch is resolved, lock those
+`mrf_sources` rows with `SELECT ... FOR UPDATE` in ascending numeric ID order.
+Do not lock by URL order at this step. This lock is the race boundary shared
+with Story 10 parse finalization.
+
 ### Feed and snapshot upsert
 
-For the source ID:
+For each locked source ID, in the same ascending-ID order:
 
-1. Lock the `mrf_sources` row before reading its parse state; this lock is the
-   race boundary shared with Story 10 parse finalization.
-2. Format `feed_id=mrf-source-<source-id>`.
-3. Select or insert `mrf_feeds(payer_id, feed_id)`.
-4. Select or insert the unique snapshot `(mrf_source_id, mrf_feed_id,
+1. Format `feed_id=mrf-source-<source-id>`.
+2. Select or insert `mrf_feeds(payer_id, feed_id)`.
+3. Select or insert the unique snapshot `(mrf_source_id, mrf_feed_id,
    collection_month)`.
-5. For a new snapshot:
+4. For a new snapshot:
    - set `consume_status=pending` and insert `consumer.ingest` through
      `InsertTx` when the source parse is already `succeeded`; or
    - leave `consume_status=blocked` when source parse is not succeeded.
-6. For an existing blocked snapshot whose source parse is now succeeded and
+5. For an existing blocked snapshot whose source parse is now succeeded and
    whose consume job ID is null, set pending and insert its ingest job.
-7. Never reopen a failed snapshot or duplicate pending/running/succeeded
+6. Never reopen a failed snapshot or duplicate pending/running/succeeded
    consume work.
 
 The normal import path does not repair suspicious states such as pending with
@@ -373,10 +404,10 @@ Before attempt eight, return assigned import state to pending and leave
 replays idempotently.
 
 On the final attempt, set import failed with the most specific safe code.
-Previously committed sources/snapshots/jobs are not deleted or canceled because
-they are valid projections from rows that passed the complete first validation
-pass. Story 13 exposes this partial-import terminal condition for operator
-review/retry.
+Previously committed batches contain fully validated rows and remain valid.
+Retry `toc.import` to finish the import. Do not delete or cancel already
+created sources, snapshots, or downstream MRF jobs. Story 13 exposes this
+partial-import terminal condition for operator review.
 
 Never store or log Parquet values, URLs, plan data, extension JSON, physical
 paths, raw schema text, or database diagnostics.
@@ -391,7 +422,12 @@ paths, raw schema text, or database diagnostics.
 - First pass checks row count/order with bounded memory and performs no writes.
 - Feed formatting is exactly `mrf-source-<positive-id>` and needs no source
   string/hash.
-- HIOS sponsor projects to null; first EIN sponsor is stable across variants.
+- Distinct locations sort by exact URL for upsert; resolved source locks are
+  ascending numeric ID.
+- Filename validation recomputes the parser derivation from `mrf_location`.
+- HTTP locations are rejected.
+- HIOS sponsor projects to null; first EIN sponsor is stable across variants,
+  and a concurrent EIN race is resolved by uniqueness.
 - Batch planning never creates attachment batches in this story.
 - All error paths redact row values and paths.
 
@@ -412,9 +448,10 @@ Prove:
   produce the union of canonical plans.
 - Sponsor variants preserve provenance but not duplicate canonical identities.
 - Same source in a different collection month reuses feed and creates a new
-  snapshot.
+  snapshot, so one shared parse can yield two consumer snapshots.
 - Different source URLs, including strings differing only by query/case,
-  create distinct sources and feeds.
+  create distinct sources and feeds. Source-based feeds are not logical
+  cross-month-network views.
 - A new snapshot for an already parsed source gets one consumer ingest job;
   an unparsed source snapshot remains blocked.
 - Crash between write batches and retry converges exactly.
@@ -437,7 +474,8 @@ go vet ./...
 - Associations import with bounded memory and retry-safe batch transactions.
 - Exact shared locations create one MRF source/download lifecycle across TOCs.
 - The conservative source-based UHC feed policy is deterministic and explicit
-  about its cross-URL limitation.
+  that current views are unsafe as logical cross-month-network views. Serving
+  must select a month or use a single-month warehouse.
 - Snapshot, provenance, and sponsor-independent plan rows converge under
   replay and overlap.
 - New MRF downloads and already-eligible consumer ingests are scheduled
@@ -448,7 +486,8 @@ go vet ./...
 
 ## Non-goals
 
-- Inferring named UHC network/feed continuity across different URLs.
+- Inferring named UHC network/feed continuity across different URLs, or using
+  `current_*` warehouse views as logical cross-month network feeds.
 - Reading TOC additional-field JSON into application tables.
 - MRF download/parse execution.
 - Consumer ingest or plan attachment execution.

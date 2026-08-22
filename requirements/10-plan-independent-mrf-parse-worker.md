@@ -35,7 +35,11 @@ err := mrfparser.Parse(ctx, cfg)
 ```
 
 The pipeline does not execute the parser CLI, import its `internal` packages,
-or fork its parsing logic. The public package emits no CLI lifecycle logs.
+or fork its parsing logic. The public package must not emit CLI lifecycle
+logs. Story 10 requires a public progress callback on `mrfparser.Config` so
+the worker can log stored-byte progress; that callback is a Story 10
+implementation prerequisite if the currently pinned parser release lacks it.
+Do not scrape parser CLI stderr or import `internal/app` to obtain progress.
 
 Parser Story 28 is normative: schema/manifest `1.1.0`, eight datasets, no
 `plans` input, no `plans` dataset, and nullable root plan fields retained only
@@ -47,15 +51,22 @@ as source audit metadata.
 - Parser configuration contains input, output, service selector, resource
   defaults, and temporary root only. It contains no TOC, payer, feed, month,
   snapshot, consumer output, plan, or batch value.
-- The pipeline always supplies `MRFPIPELINE_SERVICES_PATH`; it does not run the
-  all-services parser mode.
+- The pipeline always supplies `MRFPIPELINE_SERVICES_PATH`. Missing,
+  unreadable, or empty selector files fail worker startup. There is no
+  fallback to all-services parser mode.
 - Use the parser's pinned `DefaultConfig` resource values. Version 1 does not
   add duplicate memory/row-group/temp-limit environment knobs.
 - Set parser `TempDir` to the artifact root `.staging` directory.
-- Only one MRF parse executes in the process. This satisfies the parser's
-  prohibition on concurrent `Parse` calls.
+- Wrap every `mrfparser.Parse` call with one process-level mutex. Queue
+  concurrency one is expected to prevent a second local fetch while the
+  original slot is occupied, but it is not the parser safety contract. River
+  0.39 rescue does not terminate an existing Go invocation.
+- TOC parsing may overlap one MRF parse in version 1. Measure RSS during
+  acceptance and add coordination only if those measurements show it is
+  necessary.
 - `mrfparser.Parse` temporarily changes the process-wide Go memory limit.
-  Other small River work may continue, but no other MRF parse may overlap.
+  Other small River work, including TOC parse, may continue; no other MRF
+  parse may overlap.
 - Manifest-absent partial output is reset. Valid completed output is reused.
 - A manifest-present invalid/unsupported output is preserved and fails closed.
 - Source download bytes are deleted after output validation and before domain
@@ -95,7 +106,8 @@ modification only according to its own immutable-input contract.
 
 Changing selector contents requires stopping the worker and intentionally
 starting a new warehouse/pipeline run plan. Existing parser and consumer
-outputs are not retroactively rebuilt.
+outputs remain valid and are not retroactively rebuilt. Any extra parsed-root
+entry, including `.DS_Store`, fails closed.
 
 ## Job argument and claim
 
@@ -158,7 +170,8 @@ parser with a nonempty output.
 
 ## Parser configuration
 
-When no completed manifest is present:
+When no completed manifest is present, acquire the process-level parser mutex,
+then:
 
 ```go
 cfg := mrfparser.DefaultConfig()
@@ -166,8 +179,26 @@ cfg.Input = downloadDataPath
 cfg.Output = parsedPath
 cfg.Services = configuredServicesPath
 cfg.TempDir = artifactStagingPath
+cfg.OnProgress = throttledParseProgress // Story 03 progress logger
 err := mrfparser.Parse(ctx, cfg)
 ```
+
+`OnProgress` is the public parser hook. The expected payload is stored bytes,
+optional known total size, and optional decoded bytes, matching the parser
+CLI's stored-byte signal. The pipeline maps that to Story 03 `progress` with
+phase `mrf_parse`. When size is known, include integer `percent`; when not,
+omit `percent` and log `copied_bytes`. The worker applies the 30-second
+throttle if the parser callback is unthrottled. Do not log input/output paths
+from the callback.
+
+The field name on `Config` may match the parser's exported API (`OnProgress`
+or equivalent). If the pinned parser has no such field, add it in
+`mrfparser` and pin that release before implementing this worker. Do not
+block parse correctness on progress; a missing callback is a story-gap, not
+an acceptable silent production parse.
+
+Release the mutex after `Parse` returns, including on error and cancellation.
+Never call `Parse` outside that mutex.
 
 Retain pinned defaults unless the parser dependency itself changes through an
 explicit story:
@@ -184,7 +215,8 @@ plan, read `mrf_plans`, query TOC output, or copy root plan metadata into
 configuration.
 
 Pass the River context unchanged. `mrfparser.Parse` returns only error/success;
-the durable result is validated from output.
+the durable result is validated from output. Progress logs are not a
+completion signal.
 
 ## Completed-output layout
 
@@ -208,7 +240,9 @@ There is no `plans/` directory or any ninth dataset.
 Each dataset is a real directory containing contiguous regular non-symlink
 parts `part-00000.parquet`, `part-00001.parquet`, and so on, with no gaps or
 extra entries. Every dataset has at least part zero even when it contains no
-rows. Root entries are real/non-symlink and no unexpected root content exists.
+rows. Root entries are real/non-symlink and no unexpected root content exists. Any
+extra parsed-root entry, including `.DS_Store`, `Thumbs.db`, or similar noise,
+fails closed.
 
 Story 11 independently validates exact Parquet descriptors and relationships
 through `mrfconsumer`. Story 10 validates publication layout and metadata but
@@ -223,7 +257,9 @@ Validate:
 - exact manifest/output schema `1.1.0`;
 - exact `status=complete`;
 - `source.kind=local`;
-- source URI equals the normalized generated download data path;
+- source URI equals the normalized generated download data path. Once valid
+  parser output exists, retry compares that recorded string; the deleted
+  download file need not exist;
 - selection mode is exact `service_csv`;
 - selector URI equals normalized configured services path;
 - selector requested/matched/unmatched counts are present, nonnegative, and
@@ -283,8 +319,8 @@ blocked. A manifest-absent partial output is reset on retry; a valid completed
 output is reused.
 
 Because the public parser API intentionally exposes no stable error taxonomy,
-the pipeline does not inspect error strings. Fixed safe codes are based on the
-pipeline-observed boundary:
+the pipeline does not inspect error strings and never classifies parser errors
+by their text. Fixed safe codes are based on the pipeline-observed boundary:
 
 ```text
 mrf_parse_execution_failed
@@ -310,10 +346,14 @@ fields, service selector values, paths, URLs, or dataset counts in logs or
 ### Unit tests
 
 - Parser config starts from exact defaults and sets only input/output/services/
-  temp root.
+  temp root and the progress callback.
 - No plan, payer, feed, month, TOC, snapshot, or batch value enters config.
+- Parse progress logs are throttled, redacted, and omitted when completed
+  output is reused.
 - Selector startup/immutability checks use metadata only and no digest.
-- Output layout requires eight datasets and rejects `plans/`.
+- Output layout requires eight datasets, rejects `plans/`, and fails closed on
+  extra root entries including `.DS_Store`.
+- Every `Parse` call is documented to hold the process-level mutex.
 - Strict manifest validation requires exact 1.1.0, service CSV selection, eight
   counts, and no plans count.
 - Processing stats validation is exact and redacted.
@@ -341,7 +381,9 @@ Using small real parser fixtures plus PostgreSQL/River:
 - A source with no snapshot succeeds; a later import schedules ingest.
 - Transaction rollback leaves all snapshots blocked until retry commits.
 - Final parse failure leaves snapshot/plan rows intact and blocked.
-- Queue concurrency never executes two parser calls simultaneously.
+- Queue concurrency never executes two parser calls simultaneously; every
+  `Parse` holds the process-level mutex.
+- TOC parse may overlap MRF parse; tests do not require a TOC/MRF parse lock.
 
 Run:
 
@@ -353,9 +395,10 @@ go vet ./...
 
 ## Acceptance criteria
 
-- One shared exact MRF source is parsed once at maximum concurrency one.
+- One shared exact MRF source is parsed once. Every `mrfparser.Parse` call
+  holds the process-level mutex; queue concurrency one is not that contract.
 - Parser invocation is strictly plan-independent and always uses the configured
-  service selector.
+  service selector. Missing selector files fail startup.
 - Only exact eight-dataset parser 1.1.0 output is accepted and reused.
 - Partial output is safely reset; invalid manifest-present output is preserved.
 - Download bytes are deleted only after parse completion is proven; parsed
@@ -370,6 +413,8 @@ go vet ./...
 - Passing plans to `mrfparser` or recreating its removed plans dataset.
 - Consumer ingest or plan attachment execution.
 - Dynamic parser resource configuration.
+- Coordinating TOC parse with MRF parse before acceptance measurements show it
+  is necessary.
 - Supporting parser 1.0.0, S3 pipeline input/output, or output migration.
 - Reading every produced Parquet row in the orchestrator.
 - Deleting shared parsed output, inferring feed identity, or calculating

@@ -50,12 +50,34 @@ Story 02 migration `0001`.
   insert a replacement job through the public client transaction API.
 - Published parser output and consumer warehouse data are never deleted by
   general cleanup.
-- TOC parsed output is removable after successful import; plan JSON is
-  removable after successful attachment; shared parsed MRF output is retained.
-- The first live run admits five newly discovered TOCs by default. An operator
-  may deliberately raise the acceptance limit to at most ten.
+- TOC parsed output is removed after successful import; plan JSON is
+  removable after successful attachment; shared parsed MRF output is retained
+  with no supported automatic deletion path. Manual deletion of shared parsed
+  MRF output while stopped is possible but outside the supported contract and
+  may break later snapshots.
+- Manifest-present invalid parser output is never removed automatically. The
+  operator must stop the worker, inspect and remove or quarantine that exact
+  generated directory, then issue `retry`.
+- Parser temporary files younger than 24 hours remain after a crash. Immediate
+  reconciliation is not parse-temp cleanup.
+- The first live run admits one newly discovered TOC. Then run two, then five.
+  Ten remains the explicit maximum after sizing is known. The acceptance
+  harness defaults to one and retains a maximum of ten.
+- Default status SQL is redacted. A separate authorized debug query accepts a
+  numeric TOC or MRF ID and returns its URL.
+- Collection month is sticky. A wrong first admission requires rebuilding
+  affected pipeline/warehouse state.
+- README must prominently document possible current-view double counting after
+  URL rotation and require explicit-month or single-month serving until curated
+  feeds exist.
 - Operational acceptance is opt-in and never runs against live UHC or a
   nondisposable database in ordinary `go test ./...`.
+- Keep advisory lease `(7319, 1)` frozen. PostgreSQL advisory locks are
+  isolated per database.
+
+Before implementation lands, Story 02 migration `0001` can still be finalized.
+Once applied or released, it is immutable; all later schema changes use
+`0002+`.
 
 ## Final command surface
 
@@ -64,7 +86,7 @@ The complete executable exposes:
 ```text
 mrfpipeline migrate
 mrfpipeline work
-mrfpipeline discover --payer uhc --collection-month <YYYY-MM> [--limit <count>]
+mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
 mrfpipeline reconcile
 mrfpipeline retry --stage <job-kind> --id <domain-id>
 ```
@@ -121,7 +143,9 @@ Leading zeroes are accepted and converted to their ordinary numeric value.
 application/River schemas, acquires the worker lease, reopens the exact failed
 stage as defined below, inserts its replacement River job transactionally,
 releases the lease, and exits. The worker must be stopped while this command
-runs; lease contention fails without mutation.
+runs; lease contention fails without mutation. A remote operator may therefore
+enqueue retry using only the database URL. Actual work waits for the correctly
+configured worker host.
 
 On success it writes:
 
@@ -146,9 +170,10 @@ constant:
 pg_try_advisory_lock(7319, 1)
 ```
 
-The values are literal application constants. They are not calculated from a
-database URL, warehouse path, hostname, process ID, time, source, or content.
-They are distinct from the migration lock and are never printed.
+The values are literal application constants and remain frozen at `(7319, 1)`.
+They are not calculated from a database URL, warehouse path, hostname, process
+ID, time, source, or content. They are distinct from the migration lock and are
+never printed. PostgreSQL advisory locks are isolated per database.
 
 For `work`, `reconcile`, and `retry`:
 
@@ -245,7 +270,8 @@ ID with read-only River state:
 - River state is `cancelled` or `discarded`: do not grant another automatic
   attempt series. Mark the still-assigned domain stage failed with fixed
   `failure_code=river_terminal_without_domain_result` and its applicable
-  completion timestamp. The operator may then use `retry`.
+  completion timestamp, even if publication might exist. Explicit retry lets
+  the normal worker recognizer prove completion.
 
 Never update, delete, retry, cancel, or rescue the old River row directly.
 Never search River by serialized job arguments. The stored generated job ID is
@@ -339,6 +365,14 @@ held, so no supported pipeline job is active during the scan.
 - real regular files or real directories immediately beneath the pipeline
   artifact root `.staging` whose modification time is at least 24 hours old.
 
+Entries younger than 24 hours remain. Immediate reconciliation is not
+parse-temp cleanup. Parser temporary files created under `TMPDIR` can survive a
+crash inside that window until a later leased reconcile.
+
+Shared successful MRF `parsed` output has no supported automatic deletion
+path. Manual deletion while the worker is stopped is possible but outside the
+supported contract and may break later snapshots.
+
 For staging cleanup, lstat each immediate child, reject symlinks and special
 files, recheck its metadata immediately before removal, and never descend
 through a changed entry. There is no current job under the exclusive lease;
@@ -411,6 +445,16 @@ Final documentation provides copyable, read-only PostgreSQL queries for:
 Queries must not print source URLs, plan values, database credentials, or
 configured paths by default. The future UI may reuse equivalent read models.
 
+### Authorized URL-debug query
+
+Document a separate, clearly labeled authorized debug query for operators who
+already have database access and a numeric TOC or MRF ID. It accepts that ID
+and returns the stored URL. Default status queries remain redacted and must
+not be rewritten to include URLs. Worker logs never print URLs.
+
+The debug query is documentation, not a CLI flag. It is intended for
+incident response on an authorized connection, not for routine monitoring.
+
 ## Bounded real-data acceptance
 
 Add an opt-in operational harness or documented script that uses the actual
@@ -432,8 +476,9 @@ run otherwise and never deletes a path it did not initialize and mark for the
 acceptance run.
 
 The harness takes an optional `MRFPIPELINE_REAL_TOC_LIMIT` whose accepted range
-is `1..10` and whose default is `5`. The documented first run uses five; raising
-to ten is an explicit operator choice after inspecting disk and workload.
+is `1..10` and whose default is `1`. The documented live progression is one
+TOC, then two, then five; ten remains the explicit maximum after measuring
+fan-out and disk use.
 
 Procedure:
 
@@ -474,18 +519,30 @@ include:
 - build, environment, migration, worker, discovery, reconcile, and retry
   examples;
 - manual `mrfenricher`/taxonomy procedure and catalog pinning warning;
-- the initial `--limit 5` recommendation and disk monitoring warning;
+- the initial `--limit 1` first live run, then two, then five, with ten only
+  after measuring fan-out and disk, plus a disk-monitoring warning;
 - exact stage flow and one-worker deployment rule;
 - exact URL deduplication and why shared MRFs parse once;
 - parser plan independence and additive consumer plan attachment;
 - A/B then B/C example;
-- snapshot plan-readiness rule;
+- snapshot plan-readiness rule, and that serving must wait for that
+  PostgreSQL-derived state when planless rates should not be visible;
 - crash/retry/reconciliation behavior;
 - retention and backup guidance for PostgreSQL, the shared parsed MRFs, and
   the append-only warehouse;
-- redacted status-query examples; and
+- redacted status-query examples plus a clearly labeled authorized URL-debug
+  query;
+- optional external River UI: `RIVER_SCHEMA=mrfpipeline_river`, pause/resume
+  only, do not cancel/retry/delete jobs, pause does not stop in-flight work;
+- throttled stderr `progress` logs for downloads, MRF parse, consumer ingest,
+  and TOC parse stages;
+- a prominent warning that source-based feeds are not logical cross-month
+  networks, so `current_*` views can double-count after URL rotation, and
+  serving must use an explicit collection month or a single-month warehouse
+  until a curated feed map exists; and
 - explicit limitations: UHC only, local storage, no automatic enrichment, no
-  plan removal/correction, no recurring discovery, and no UI.
+  plan removal/correction, no recurring discovery, sticky collection month,
+  required `--limit`, and no UI in this binary.
 
 Documentation must not embed a real database URL, local developer path, payer
 source URL, signed token, provider NPI, taxonomy selection, or plan value.
@@ -563,14 +620,17 @@ raw River state rows, external errors, or response bodies.
 - Cleanup removes only proven successful TOC/MRF downloads, imported TOC
   output, succeeded plan JSON, and old safe staging entries.
 - Cleanup retains parsed MRF output, failed artifacts, all warehouse data, and
-  unsafe/symlinked targets.
+  unsafe/symlinked targets. Staging entries younger than 24 hours remain.
 - Redacted readiness/status queries match the A/B then B/C warehouse outcome.
+- The authorized URL-debug query is documented separately and is not used by
+  default status examples.
 
 ### Optional real acceptance
 
 - Harness remains skipped without the explicit opt-in environment.
 - Safety guards reject non-disposable databases, overlapping roots, symlinks,
   nonempty unmarked roots, and limits above ten before network or deletion.
+  Omitted `MRFPIPELINE_REAL_TOC_LIMIT` defaults to one.
 - An authorized bounded run exercises discovery through attachment and emits
   only aggregate local results.
 
@@ -597,8 +657,9 @@ supervision.
   warehouse rows.
 - Retention frees completed TOC/download/plan-input intermediates while keeping
   shared parsed MRFs and the append-only warehouse.
-- A guarded 5–10 TOC live run validates external compatibility and sizing;
-  deterministic fixtures prove shared-MRF and additive-plan semantics.
+- A guarded live run defaults to one TOC, then progresses through two and
+  five, with ten as the measured maximum; deterministic fixtures prove
+  shared-MRF and additive-plan semantics.
 - README and design describe the complete operable version 1 system and its
   limitations before UI work begins.
 - No recovery, retry, cleanup, or reporting identity depends on content

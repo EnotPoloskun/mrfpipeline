@@ -17,11 +17,18 @@ stories:
 
 - Discover TOCs incrementally; do not wait for an unknowable "complete" payer
   set before processing useful work.
+- Require a positive admission `--limit` on every discovery. Omitted or
+  unlimited discovery is deferred until chunked admission has its own design.
 - Download and parse one exact MRF URL once, even when several TOCs reference
   it.
-- Keep `mrfparser` plan-independent.
+- Keep `mrfparser` plan-independent and serialize every `Parse` call with a
+  process-level mutex.
 - Ingest rates once per consumer snapshot, then attach newly discovered plans
   additively without rewriting rate/provider data.
+- Treat `feed_id=mrf-source-<id>` as the latest snapshot for one exact source
+  URL, not as a curated cross-month logical network.
+- Treat the operator-supplied collection month as sticky on first TOC
+  admission. A wrong month is rebuilt, not corrected in place.
 - Use PostgreSQL domain records as durable pipeline truth and River for
   at-least-once background execution.
 - Use numeric database identities and exact database uniqueness. Do not add
@@ -59,9 +66,10 @@ records durable orchestration state.
 
 Version 1 must:
 
-- Run a manually triggered UHC TOC discovery.
-- Support a small discovery limit for initial test runs, such as five to ten
-  newly admitted TOCs.
+- Run a manually triggered UHC TOC discovery with a required positive
+  `--limit`.
+- Support a small first live progression: one newly admitted TOC, then two,
+  then five, with ten only after measuring fan-out and disk use.
 - Store discoveries, TOCs, exact MRF URLs, feed/month snapshots, plan
   associations, and stage state in PostgreSQL.
 - Execute download, parse, import, consumer-ingest, and plan-attachment work in
@@ -85,6 +93,10 @@ Version 1 does not include:
 - A web API, dashboard, or end-user plan-search UI.
 - A payer other than UHC.
 - Internal recurring discovery scheduling.
+- Omitted or unlimited discovery admission; that waits for a chunked-admission
+  story.
+- HTTP proxy environment variables, custom TLS, or private-network downloads.
+- Range-resume downloads or remote content revalidation under an exact URL.
 - Removal or replacement of an attached plan.
 - Correction of a bad plan association inside an existing warehouse.
 - MRF content deduplication across different URLs.
@@ -145,9 +157,26 @@ whether a stage completed.
 
 The parser workers call the public Go packages directly. They preserve context
 cancellation, exact version checks, output redaction, and single-invocation
-semantics. `mrfparser` temporarily changes the process-wide Go memory limit, so
-its River queue has maximum concurrency one and no concurrent `Parse` call is
-allowed.
+semantics. Module path casing must match each actual `go.mod`: this repository
+is `github.com/enotpoloskun/mrfpipeline`; sibling imports keep their published
+paths (`EnotPoloskun` or `enotpoloskun`) rather than being rewritten.
+
+`mrfparser` temporarily changes the process-wide Go memory limit.
+Its River queue has maximum concurrency one, and every call to
+`mrfparser.Parse` is additionally guarded by one process-level mutex. Queue
+concurrency is not the parser safety contract: River 0.39 rescue can mark an
+overdue running job retryable without terminating the existing Go invocation.
+Story 10 logs stored-byte parse progress through a public parser callback; if
+the pinned parser release has no callback, add it in `mrfparser` and pin that
+release before implementing the worker.
+
+`mrftocparser` has no temp-directory field. The worker process sets `TMPDIR`
+once, before starting River, to `<artifact-root>/.staging`, and never mutates
+it around individual calls. Two concurrent TOC parses are allowed. TOC parsing
+may overlap an MRF parse in version 1; measure RSS before adding coordination.
+TOC parser manifests remain capped at 1 MiB; MRF parser manifests remain
+capped at 4 MiB with a separate 64 KiB `processing_stats.json` limit. Those
+limits stay different.
 
 ## Deployment model
 
@@ -183,7 +212,7 @@ The version 1 executable has five operational commands:
 ```text
 mrfpipeline migrate
 mrfpipeline work
-mrfpipeline discover --payer uhc --collection-month <YYYY-MM> [--limit <count>]
+mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
 mrfpipeline reconcile
 mrfpipeline retry --stage <job-kind> --id <domain-id>
 ```
@@ -195,18 +224,30 @@ other command migrates automatically.
 the local workspace, starts the registered River workers, and runs until
 canceled.
 
-`discover` creates and enqueues one durable discovery run. It does not wait for
-TOC downloads, MRF parsing, consumer ingestion, or plan attachment.
+`discover` creates and enqueues one durable discovery run. `--limit` is
+required and must be a positive `int64`. The command does not wait for TOC
+downloads, MRF parsing, consumer ingestion, or plan attachment. The
+`discovery_runs.toc_limit` column remains nullable only so a later
+chunked-admission story can store unlimited runs; version 1 never writes null.
 
 `reconcile` acquires the exclusive worker lease and repairs safely inferable
 nonterminal scheduling/artifact gaps. `retry` grants one fresh River attempt
 series to one explicitly selected failed stage while preserving its database
 identity and immutable batch/output identities. Neither command runs work
-synchronously.
+synchronously. `retry` requires the worker to be stopped.
+
+Optional River UI is not a pipeline command. Operators may run River's
+open-source UI as a separate process against `MRFPIPELINE_DATABASE_URL` with
+schema `mrfpipeline_river` to inspect queues and pause them. Pause stops
+fetching new jobs; it does not cancel in-flight work. Do not cancel, retry, or
+delete jobs from that UI.
 
 Discovery is manually invoked or scheduled externally. The caller supplies
-the collection month; the pipeline does not infer it from current time, a URL,
-or payer contents.
+the collection month as an operator-owned label for that listing; the pipeline
+does not infer it from current time, a URL, or payer contents, and does not
+check it against blob dates. The first admitting run freezes that month on the
+TOC row. A wrong first admission is not corrected by rediscovery or retry; it
+requires rebuilding the affected pipeline and warehouse state.
 
 `reconcile` needs the complete worker environment. `retry` needs only the
 database URL. Both fail without mutation while the leased worker is active.
@@ -277,6 +318,13 @@ consumer `output_id`, formatted as `mrf-<mrf_snapshots.id>`.
 This avoids re-parsing shared MRFs without pretending that an exact URL is a
 stable logical feed identifier across months.
 
+Version 1 assigns `feed_id=mrf-source-<mrf_sources.id>`. That value means
+"this exact source URL," not "this logical UHC network across monthly URL
+rotations." Consumer `current_*` views are therefore unsafe as cross-month
+network current-state until a curated feed map exists. Serving must filter an
+explicit `collection_month` or treat the warehouse as single-month. Adding a
+curated cross-URL map later requires rebuilding the warehouse.
+
 ### Plan identity
 
 Plans are unique within an MRF snapshot by the exact five-field tuple:
@@ -306,7 +354,7 @@ The central application records are:
 
 | Table | Meaning |
 |---|---|
-| `discovery_runs` | One caller-requested payer listing discovery. |
+| `discovery_runs` | One caller-requested payer listing discovery, including admitted and overflow counts. |
 | `toc_files` | One exact admitted payer TOC URL and its download/parse/import stages. |
 | `discovery_run_toc_files` | Which admitted TOCs appeared in one run and in what listing order. |
 | `mrf_feeds` | Caller/orchestrator-owned payer feed identities. |
@@ -435,8 +483,9 @@ The one worker process uses these fixed initial bounds:
 
 The consumer operations share one queue so all writes to the warehouse are
 serialized. MRF parse concurrency is one because it is the heaviest resource
-stage and its current parser contract does not support concurrent invocations
-inside one process.
+stage and its parser contract forbids concurrent invocations. The process-level
+`mrfparser.Parse` mutex is the safety contract; queue concurrency is an
+additional bound.
 
 Every job has eight attempts using River's exponential retry policy with
 jitter. Workers have no ordinary execution timeout because large MRF work may
@@ -448,16 +497,18 @@ rules—not an assumption of exactly-once execution—preserve correctness.
 
 ### 1. Create a discovery run
 
-The operator runs, for example:
+The operator runs a first live discovery with `--limit 1`. After measuring
+that run, later bounded runs use `--limit 2`, then `--limit 5`. Ten is an
+explicit later maximum, not the first-run default:
 
 ```text
-mrfpipeline discover --payer uhc --collection-month 2026-08 --limit 5
+mrfpipeline discover --payer uhc --collection-month 2026-08 --limit 1
 ```
 
 The command validates current application and River schema, then atomically:
 
 - inserts one pending `discovery_runs` row with payer, caller-selected month,
-  and optional limit;
+  and required positive limit;
 - inserts one `discovery.run` River job carrying only the run ID; and
 - stores the River job ID on the run.
 
@@ -478,11 +529,16 @@ The worker records known and new URLs transactionally:
 - `--limit` bounds newly admitted TOCs, not the number of known results in the
   payer listing.
 - Newly admitted TOCs receive a `toc.download` job.
-- The discovery run records discovered, existing, and admitted counts.
+- The discovery run records discovered, existing, admitted, and overflow
+  counts. `overflow_count` is the number of distinct new first-occurrence URLs
+  excluded by `--limit`.
 
-The detailed behavior for new candidates after the limit is reached—including
-which membership rows are stored—is owned by Story 05 and must remain
-consistent with the Story 02 schema.
+Version 1 requires `--limit`. A single admission transaction is appropriate
+only because the run is bounded. Omitted or unlimited discovery is deferred
+until chunked admission is designed. The detailed behavior for new candidates
+after the limit is reached—including which membership rows are stored and how
+`overflow_count` is computed—is owned by Story 05 and must remain consistent
+with the Story 02 schema.
 
 ### 3. Download a TOC
 
@@ -540,30 +596,45 @@ The import worker validates and reads only the completed TOC
 
 In one or more bounded database transactions, it:
 
-1. Upserts the exact global `mrf_sources.source_url`.
-2. Upserts the selected payer `mrf_feeds` row.
-3. Upserts the unique source/feed/month `mrf_snapshots` row.
-4. Inserts exact TOC provenance into `toc_mrf_plan_associations`.
-5. Projects the sponsor-independent plan into `mrf_plans`.
-6. Schedules newly eligible MRF downloads or consumer ingests without
+1. Collects distinct exact `mrf_location` values and upserts them in
+   deterministic exact-URL order.
+2. Locks the resolved `mrf_sources` rows in ascending numeric ID order before
+   reading parse state.
+3. Upserts the selected payer `mrf_feeds` row.
+4. Upserts the unique source/feed/month `mrf_snapshots` row.
+5. Inserts exact TOC provenance into `toc_mrf_plan_associations`.
+6. Projects the sponsor-independent plan into `mrf_plans`.
+7. Schedules newly eligible MRF downloads or consumer ingests without
    duplicating existing stage jobs, and leaves newly inserted plans as durable
    unassigned eligibility for Story 12 batching.
+
+Imported `mrf_location` values are HTTPS-only. The worker recomputes the
+parser's documented filename derivation from that location and compares it
+exactly.
 
 Feed identity is not inferred by Story 02. Story 08 assigns the conservative
 version 1 UHC value `mrf-source-<mrf_sources.id>`. The same exact source URL
 therefore keeps one feed across collection months, while a changed URL creates
 a different feed. This policy uses no source string or hash and deliberately
-does not claim cross-URL monthly continuity. A future curated mapping requires
-an explicit warehouse/version strategy.
+does not claim cross-URL monthly continuity. Consumer `current_*` views can
+double-count after URL rotation; serving must use an explicit collection month
+or a single-month warehouse until a curated mapping exists. That later mapping
+requires rebuilding the warehouse.
+
+A shared parse may create two consumer snapshots when two TOCs in different
+collection months reference the same exact URL.
 
 Import is idempotent. Re-reading the same completed TOC output inserts no
-duplicate provenance, source, snapshot, or canonical plan.
+duplicate provenance, source, snapshot, or canonical plan. A terminal partial
+import is finished by retrying `toc.import`; already created downstream MRF
+jobs are not cancelled.
 
 After successful import, downstream scheduling and plan projection use the
 PostgreSQL association and plan rows. The consumer never queries TOC Parquet
 directly, and a later attachment does not require rerunning or reopening every
 TOC that previously referenced the MRF. Retention of imported TOC parser output
-is an operational decision for Story 13.
+is an operational decision for Story 13: succeeded imported TOC parsed output
+is deleted and is not a re-import source.
 
 ### 6. Download one shared MRF source
 
@@ -580,7 +651,8 @@ mrf/mrf-source-<id>/download/
 
 After a valid completed download, the worker marks download succeeded and
 schedules `mrf.parse` once. It does not include plans, feed, payer, month, or a
-consumer output ID in the parser job.
+consumer output ID in the parser job. A live body copy emits throttled
+`progress` logs; a reused completed download does not.
 
 ### 7. Parse one shared MRF source
 
@@ -590,8 +662,11 @@ The MRF parse worker supplies:
 - the configured `MRFPIPELINE_SERVICES_PATH` selector; and
 - `mrf/mrf-source-<id>/parsed` as output.
 
-It does not supply plans. Parser 1.1.0 writes exactly eight plan-independent
-datasets:
+It does not supply plans. Every `mrfparser.Parse` call holds the process-level
+parser mutex and a public progress callback that logs stored-byte `progress`.
+The pipeline always supplies the configured service selector;
+missing or empty selector files fail worker startup. There is no all-services
+fallback. Parser 1.1.0 writes exactly eight plan-independent datasets:
 
 ```text
 mrf_files
@@ -630,13 +705,16 @@ One `mrf_snapshots` row supplies:
 
 `mrfconsumer` 1.5.0 validates parser 1.1.0, filters providers using the pinned
 catalog, and atomically publishes one immutable six-dataset rate snapshot.
-Ingest is plan-independent and never reads TOC plans.
+Ingest is plan-independent and never reads TOC plans. Snapshot Parquet part
+names follow the consumer contract: `{output_id}-part-<ordinal>.parquet` with a
+**minimum** width of five decimal digits, contiguous ordinals, and wider
+ordinals such as `part-100000` valid. Do not impose a five-digit maximum.
 
 The worker calls the public `mrfconsumer.Ingest` Go API in process with the
 shared parsed path, configured provider catalog and warehouse, database-owned
-payer/feed/month values, and `mrf-<snapshot-id>`. It does not execute the CLI
-or provide a progress callback. The one-worker `consumer` queue serializes all
-warehouse writes.
+payer/feed/month values, and `mrf-<snapshot-id>`. It does not execute the CLI.
+It supplies a throttled `OnProgress` callback that logs Story 03 `progress`
+events. The one-worker `consumer` queue serializes all warehouse writes.
 
 Consumer-owned recovery completes a missing provider-catalog copy or missing
 zero-row plan schema seed in an otherwise recognized `1.5.0` warehouse. A
@@ -653,9 +731,11 @@ manifest identity, six dataset directories, and declared contiguous parts.
 It does not rescan facts or recreate consumer validation. A present partial or
 conflicting final target is preserved for operator reconciliation.
 
-A completed snapshot with no plan attachment is valid warehouse state, but it
-is not ready for plan-filtered serving. After ingest success, the pipeline
-batches all currently unassigned known plans for that snapshot and schedules
+A completed snapshot with no plan attachment is valid warehouse state and may
+be queryable. It is not plan-ready. Serving that must not expose planless rates
+waits on the PostgreSQL-derived plan-ready rule; the worker does not hide
+warehouse files. After ingest success, the pipeline batches all currently
+unassigned known plans for that snapshot and schedules
 `consumer.attach_plans`.
 
 ### 9. Attach plans additively
@@ -693,7 +773,13 @@ attach B, C -> successful no-op with added_plan_count = 0
 ```
 
 The pipeline stores the consumer-reported added count and marks the batch
-succeeded even when the count is zero.
+succeeded even when the count is zero. That column is the last acknowledged
+consumer report, not an independently reconstructed warehouse total.
+
+`plans.json` is compact JSON from a typed struct in exact field order, with
+`SetEscapeHTML(false)` and one trailing newline. HIOS always emits a JSON null
+sponsor. An existing `plans.json` is reusable only when it equals those
+canonical bytes exactly.
 
 The consumer publishes a new immutable plan-association Parquet part; it does
 not replace an existing plans file. Its `all_output_plans` DuckDB view reads the
@@ -766,8 +852,9 @@ The pipeline should expose an output as plan-ready only when:
 - no currently known plan is unassigned or held by a pending/running/failed
   unresolved batch.
 
-That readiness can be derived from the domain tables in version 1. A later UI
-may materialize it, but it must not redefine attachment identity.
+That readiness is derived from the domain tables. Version 1 does not store an
+`is_plan_ready` column. A later UI may materialize the same rule, but it must
+not redefine attachment identity.
 
 ## Local artifact model
 
@@ -805,7 +892,8 @@ Sibling parser output manifests remain authoritative:
   never silently delete as ordinary partial work.
 
 The artifact root must not equal, contain, or be contained by the warehouse,
-provider catalog, or services path. Generic cleanup accepts generated kind/ID
+provider catalog, or services path. Extra root entries, including `.DS_Store`
+and `Thumbs.db`, are rejected. Generic cleanup accepts generated kind/ID
 addresses, never arbitrary caller paths or globs.
 
 ## Download model
@@ -813,19 +901,31 @@ addresses, never arbitrary caller paths or globs.
 TOC and MRF stages share one streaming HTTP client:
 
 - HTTP/HTTPS only.
-- Public network destinations only; local, link-local, and private addresses
-  are rejected after resolution.
-- At most five safe redirects and no HTTPS downgrade.
-- Status 200 only.
-- No transparent HTTP decompression.
+- Public network destinations only. After DNS, if **any** resolved address is
+  loopback, unspecified, link-local, multicast, or private-use, reject that
+  resolution completely. Revalidate the chosen address again at dial time.
+- At most five safe redirects, including relative `Location` values resolved
+  against the preceding URL; no HTTPS downgrade.
+- Status 200 only, including empty bodies. Parsers reject empty or invalid
+  content.
+- No transparent HTTP decompression and no proxy environment variables.
 - Fixed memory buffer and no whole-body buffering.
 - No whole-request timeout; River context owns cancellation.
 - No internal retry loop or range resume.
 - No URL logging, response-body logging, content hashing, or URL-derived
   filename.
 
-A complete existing download is reused without another request. An incomplete
-download is removed only from its exact generated leaf and restarted.
+A complete existing download is reused without another request, even if the
+remote body later changes under the same exact URL. An incomplete download is
+removed only from its exact generated leaf and restarted from byte zero.
+
+Operation staging directories use these exact prefixes plus an OS-generated
+suffix:
+
+```text
+toc-download-<id>-
+mrf-download-<id>-
+```
 
 ## Provider enrichment boundary
 
@@ -893,8 +993,10 @@ same frozen batch merely because acknowledgement was lost.
 
 After successful successor validation, reconciliation may remove TOC/MRF
 download leaves, imported TOC parsed output, succeeded plan JSON, and old safe
-pipeline staging entries. Shared parsed MRF output, failed artifacts,
-PostgreSQL domain history, and every consumer warehouse publication remain.
+pipeline staging entries. Parser temporary files younger than 24 hours remain;
+immediate reconciliation does not reclaim them. Shared parsed MRF output, failed
+artifacts, PostgreSQL domain history, and every consumer warehouse publication
+remain. Succeeded imported TOC parsed output is not a re-import source.
 
 ## Security and privacy
 
@@ -915,7 +1017,8 @@ include:
 
 Jobs carry numeric database IDs only. Ordinary structured logs may include a
 fixed event, job kind/queue, River job ID, attempt, safe failure class,
-duration, and unlabeled counts as permitted by Story 03.
+duration, unlabeled counts, and throttled `progress` fields as permitted by
+Story 03.
 
 The downloader blocks private/local network destinations and unsafe redirects.
 The artifact workspace rejects symlinks and overlap with external data roots.
@@ -931,15 +1034,29 @@ Durable operator state comes from application tables:
 - shared MRF download/parse status;
 - snapshot consumer status;
 - attachment batch status and requested/added counts;
+- overflow counts for bounded discovery;
 - safe terminal failure classifications; and
 - created, started, completed, first-seen, last-seen, and updated timestamps.
 
 River provides execution attempts and queue mechanics but is not long-term
 business history. Artifact manifests prove publication at tool boundaries.
 
+Default status SQL is redacted and must not print URLs or plan values. Story 13
+also documents a separate authorized debug query that accepts a numeric TOC or
+MRF source ID and returns its URL.
+
 Version 1 uses structured standard-error logs and machine-readable CLI success
-reports. Prometheus, OpenTelemetry, alerting rules, and an HTTP status endpoint
-are deferred. The future UI should query a read model derived from these domain
+reports. Long in-flight work emits throttled `progress` logs for HTTP
+downloads, MRF parse, consumer ingest, and the three TOC parse stages. Percent
+is not stored in PostgreSQL. Prometheus, OpenTelemetry, alerting rules, and an
+HTTP status endpoint are deferred. The pipeline binary has no UI.
+
+Operators may run River's open-source UI separately against schema
+`mrfpipeline_river` to inspect queues and pause them. That UI is not part of
+`mrfpipeline work`. Pause does not cancel in-flight jobs. Do not use the UI to
+cancel, retry, or delete jobs.
+
+The future application UI should query a read model derived from these domain
 records rather than scrape worker logs.
 
 ## Data and resource bounds
@@ -958,11 +1075,11 @@ bounded-memory and temporary-workspace contracts. TOC association import must
 read Parquet in bounded batches and use database upserts rather than load all
 payer history into memory.
 
-The initial `--limit 5` or `--limit 10` discovery run bounds newly admitted
-TOCs, not MRF count: one TOC may reference several MRFs. Operators monitor disk
-and database growth during test runs. Safe retention removes imported TOC
-output and succeeded plan JSON but keeps shared parsed MRF output and every
-warehouse publication.
+The initial required `--limit 1` live run bounds newly admitted TOCs, not MRF
+count: one TOC may reference several MRFs. Operators then progress to two and
+five TOCs, with ten only after measuring fan-out and disk. Safe retention
+removes imported TOC output and succeeded plan JSON but keeps shared parsed MRF
+output and every warehouse publication.
 
 ## Ordering and consistency
 
@@ -989,19 +1106,19 @@ The proposed implementation sequence is:
 | 02 | PostgreSQL domain schema and application migrations. |
 | 03 | River schema/runtime, job catalog, queue, retry, and transaction contract. |
 | 04 | Local artifact workspace, completion inspection, cleanup, and HTTP downloader. |
-| 05 | UHC discovery worker, `discover` enqueue behavior, and bounded test runs. |
+| 05 | UHC discovery worker, required `--limit`, overflow counting, and bounded test runs. |
 | 06 | TOC download worker. |
 | 07 | TOC parse worker and exact `mrftocparser` validation. |
-| 08 | TOC association import, UHC feed assignment, MRF/snapshot/plan upserts, and eligibility scheduling. |
+| 08 | TOC association import, deterministic source lock order, UHC feed assignment, MRF/snapshot/plan upserts, and eligibility scheduling. |
 | 09 | Shared MRF download worker. |
-| 10 | Plan-independent MRF parse worker and exact parser 1.1.0 validation. |
+| 10 | Plan-independent MRF parse worker, process-level `Parse` mutex, and exact parser 1.1.0 validation. |
 | 11 | Consumer snapshot ingest worker and warehouse/provider-catalog recovery. |
 | 12 | Plan batch projection and additive consumer attachment worker. |
-| 13 | Reconciliation, operational acceptance, bounded real-data run, retention guidance, and final documentation. |
+| 13 | Reconciliation, operational acceptance, 1→2→5 TOC live progression, authorized URL-debug queries, retention guidance, and final documentation. |
 
 Each worker story must include its own retry/crash tests and prove it conforms
-to Stories 03 and 04. Story 13 validates the complete pipeline with a small UHC
-discovery first, then several representative MRFs before UI work begins.
+to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC
+TOC first, then two, then five representative TOCs before UI work begins.
 
 ## Cross-story acceptance
 
@@ -1009,16 +1126,19 @@ The version 1 pipeline is complete when all of the following are proven:
 
 1. A migration initializes current application and River schemas and is safe
    to rerun.
-2. A bounded UHC discovery durably admits only the requested number of new
-   TOCs while recording known results correctly.
+2. A bounded UHC discovery requires `--limit`, durably admits only that number
+   of new TOCs, and records overflow of distinct new URLs that were not
+   admitted.
 3. Every admitted TOC downloads, parses, and imports through idempotent River
-   jobs.
+   jobs. A wrong first-admitted collection month is rebuilt, not corrected in
+   place.
 4. Two or more TOCs referencing the same exact MRF URL create one source,
    download, and parse lifecycle.
-5. MRF parsing succeeds without TOC plans and produces exact parser 1.1.0
-   output.
+5. MRF parsing succeeds without TOC plans, holds the process-level parser
+   mutex, and produces exact parser 1.1.0 output.
 6. Every required feed/month snapshot is ingested once with a stable numeric
-   output ID.
+   output ID. Source-based feeds are not logical cross-month networks;
+   `current_*` serving requires an explicit month or a single-month warehouse.
 7. Plans A/B followed later by B/C result in warehouse associations A/B/C,
    while the second attachment writes only C and an identical retry writes
    nothing.
@@ -1028,5 +1148,6 @@ The version 1 pipeline is complete when all of the following are proven:
 10. The provider catalog remains manual and pinned; the pipeline never runs
     enrichment automatically.
 11. Errors and logs do not expose URLs, paths, plan values, credentials, raw
-    tool output, or response bodies.
+    tool output, or response bodies. Authorized URL inspection uses the
+    documented debug query, not worker logs.
 12. No workflow identity or deduplication rule depends on a content hash.
