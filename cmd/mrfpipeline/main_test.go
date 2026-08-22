@@ -48,6 +48,9 @@ func TestModulePathAndGoVersion(t *testing.T) {
 	if !strings.Contains(text, "github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5") {
 		t.Fatalf("expected pinned mrftocparser: %s", text)
 	}
+	if !strings.Contains(text, "github.com/EnotPoloskun/mrfparser v0.0.0-20260822232859-7197303b3fe5") {
+		t.Fatalf("expected pinned mrfparser: %s", text)
+	}
 	if !strings.Contains(text, "github.com/parquet-go/parquet-go v0.30.1") {
 		t.Fatalf("expected pinned parquet-go: %s", text)
 	}
@@ -108,6 +111,7 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 		{filepath.Join(root, "internal", "tocparse"), common},
 		{filepath.Join(root, "internal", "tocimport"), common},
 		{filepath.Join(root, "internal", "mrfdownload"), common},
+		{filepath.Join(root, "internal", "mrfparse"), common},
 		{filepath.Join(root, "internal", "work"), common},
 		{filepath.Join(root, "internal", "artifact"), []string{
 			"database/sql",

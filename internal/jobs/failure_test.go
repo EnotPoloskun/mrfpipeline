@@ -18,6 +18,11 @@ func TestFailureCodes(t *testing.T) {
 		FailureTOCParseOutputFailed,
 		FailureTOCParseOutputInvalid,
 		FailureTOCParseCleanupFailed,
+		FailureMRFParseExecutionFailed,
+		FailureMRFParseOutputInvalid,
+		FailureMRFParseSelectorChanged,
+		FailureMRFParseCleanupFailed,
+		FailureMRFParseDatabaseFailed,
 		FailureTOCImportManifestInvalid,
 		FailureTOCImportSchemaInvalid,
 		FailureTOCImportRowInvalid,
@@ -51,6 +56,21 @@ func TestFailureCodes(t *testing.T) {
 	}
 	if isImmediateFail(Failure(FailureTOCParseInputInvalid)) {
 		t.Fatal("toc parse input should retry")
+	}
+	if isImmediateFail(Failure(FailureMRFParseExecutionFailed)) {
+		t.Fatal("mrf parse execution should retry")
+	}
+	if isImmediateFail(Failure(FailureMRFParseOutputInvalid)) {
+		t.Fatal("mrf parse output should retry")
+	}
+	if isImmediateFail(Failure(FailureMRFParseSelectorChanged)) {
+		t.Fatal("mrf parse selector should retry")
+	}
+	if isImmediateFail(Failure(FailureMRFParseCleanupFailed)) {
+		t.Fatal("mrf parse cleanup should retry")
+	}
+	if isImmediateFail(Failure(FailureMRFParseDatabaseFailed)) {
+		t.Fatal("mrf parse database should retry")
 	}
 	if isImmediateFail(Failure(FailureTOCImportManifestInvalid)) {
 		t.Fatal("toc import manifest should retry")

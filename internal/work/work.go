@@ -8,6 +8,7 @@ import (
 	"github.com/enotpoloskun/mrfpipeline/internal/discovery"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/mrfdownload"
+	"github.com/enotpoloskun/mrfpipeline/internal/mrfparse"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocdownload"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocimport"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocparse"
@@ -15,18 +16,20 @@ import (
 	"github.com/riverqueue/river"
 )
 
-// Runtime is the production River process for Stories 06–09.
+// Runtime is the production River process for Stories 06–10.
 type Runtime struct {
-	Pool       *pgxpool.Pool
-	Workspace  *artifact.Workspace
-	Logger     *slog.Logger
-	Discover   discovery.DiscoverFunc
-	Downloader *artifact.Downloader
-	Parse      tocparse.ParseFunc
+	Pool         *pgxpool.Pool
+	Workspace    *artifact.Workspace
+	Logger       *slog.Logger
+	Discover     discovery.DiscoverFunc
+	Downloader   *artifact.Downloader
+	Parse        tocparse.ParseFunc
+	ParseMRF     mrfparse.ParseFunc
+	ServicesPath string
 }
 
-// Queues is the Story 09 worker map: discovery, toc_download, toc_parse,
-// toc_import, and mrf_download.
+// Queues is the Story 10 worker map: discovery, toc_download, toc_parse,
+// toc_import, mrf_download, and mrf_parse.
 func Queues() map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
 		jobs.QueueDiscovery:   {MaxWorkers: 1},
@@ -34,13 +37,15 @@ func Queues() map[string]river.QueueConfig {
 		jobs.QueueTOCParse:    {MaxWorkers: 2},
 		jobs.QueueTOCImport:   {MaxWorkers: 2},
 		jobs.QueueMRFDownload: {MaxWorkers: 2},
+		jobs.QueueMRFParse:    {MaxWorkers: 1},
 	}
 }
 
 // Run starts a River client that consumes discovery.run, toc.download,
-// toc.parse, toc.import, and mrf.download, waits until ctx is canceled
-// or the client stops, then shuts down. A requested shutdown after Start
-// succeeds returns nil.
+// toc.parse, toc.import, mrf.download, and mrf.parse, waits until ctx is
+// canceled or the client stops, then shuts down. A requested shutdown after
+// Start succeeds returns nil. Queue concurrency 1 on mrf_parse is not the
+// parser safety contract; every mrfparser.Parse holds the process mutex.
 func (r Runtime) Run(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
@@ -50,6 +55,10 @@ func (r Runtime) Run(ctx context.Context) error {
 	}
 	if r.Pool == nil || r.Workspace == nil {
 		return jobs.Failure("runtime")
+	}
+	services, err := mrfparse.InspectServices(r.ServicesPath)
+	if err != nil {
+		return err
 	}
 	logger := r.Logger
 	if logger == nil {
@@ -66,12 +75,14 @@ func (r Runtime) Run(ctx context.Context) error {
 	river.AddWorker(workers, &tocparse.Worker{Pool: r.Pool, Workspace: r.Workspace, Parse: r.Parse, Progress: progress, Logger: logger})
 	river.AddWorker(workers, &tocimport.Worker{Pool: r.Pool, Workspace: r.Workspace, Logger: logger})
 	river.AddWorker(workers, &mrfdownload.Worker{Pool: r.Pool, Downloader: downloader, Logger: logger})
+	river.AddWorker(workers, &mrfparse.Worker{Pool: r.Pool, Workspace: r.Workspace, Parse: r.ParseMRF, Progress: progress, Logger: logger, Services: services})
 	handler := jobs.NewDomainErrorHandler(r.Pool, []jobs.KindBinding{
 		{Kind: jobs.KindDiscoveryRun, Spec: jobs.DiscoveryRunStage, ArgField: jobs.FieldDiscoveryRunID},
 		{Kind: jobs.KindTOCDownload, Spec: jobs.TOCDownloadStage, ArgField: jobs.FieldTOCFileID},
 		{Kind: jobs.KindTOCParse, Spec: jobs.TOCParseStage, ArgField: jobs.FieldTOCFileID},
 		{Kind: jobs.KindTOCImport, Spec: jobs.TOCImportStage, ArgField: jobs.FieldTOCFileID},
 		{Kind: jobs.KindMRFDownload, Spec: jobs.MRFDownloadStage, ArgField: jobs.FieldMRFSourceID},
+		{Kind: jobs.KindMRFParse, Spec: jobs.MRFParseStage, ArgField: jobs.FieldMRFSourceID},
 	}, logger)
 	client, err := jobs.NewRuntime(ctx, r.Pool, workers, Queues(), handler, logger)
 	if err != nil {

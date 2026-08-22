@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -64,9 +65,15 @@ func resetPipelineSchemas(ctx context.Context, pool *pgxpool.Pool) error {
 
 const workTOCJSON = `{"reporting_entity_name":"entity","reporting_entity_type":"issuer","version":"2.2.1","reporting_structure":[{"reporting_plans":[{"plan_name":"plan","issuer_name":"issuer","plan_id_type":"hios","plan_id":"id","plan_market_type":"group"}],"in_network_files":[{"description":"file","location":"https://example.test/a.json"}]}]}`
 
+const workMRFJSON = `{"reporting_entity_name":"Example","reporting_entity_type":"issuer","last_updated_on":"2026-07-27","version":"2.2.1","in_network":[{"billing_code_type":"CPT","billing_code":"99213","negotiated_rates":[]}]}`
+
 func TestIntegrationRuntimeDownloadsAndParses(t *testing.T) {
 	pool := testDB(t)
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/a.json" {
+			_, _ = w.Write([]byte(workMRFJSON))
+			return
+		}
 		_, _ = w.Write([]byte(workTOCJSON))
 	}))
 	t.Cleanup(ts.Close)
@@ -119,23 +126,30 @@ UPDATE mrfpipeline.toc_files SET download_river_job_id = $2 WHERE id = $1`, tocI
 		t.Fatal(err)
 	}
 
+	svcPath := filepath.Join(t.TempDir(), "services.csv")
+	if err := os.WriteFile(svcPath, []byte("billing_code_type,billing_code\nCPT,99213\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Runtime{Pool: pool, Workspace: ws, Downloader: dl, Logger: jobs.NewLogger(io.Discard)}.Run(ctx)
+		done <- Runtime{
+			Pool: pool, Workspace: ws, Downloader: dl, Logger: jobs.NewLogger(io.Discard), ServicesPath: svcPath,
+		}.Run(ctx)
 	}()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
-		var status, parse, imp, mrfDL, mrfParse, dlState string
+		var status, parse, imp, mrfDL, mrfParse, parseState string
 		err := pool.QueryRow(context.Background(), `
 SELECT t.download_status, t.parse_status, t.import_status,
        COALESCE(s.download_status, ''), COALESCE(s.parse_status, ''),
        COALESCE((SELECT state FROM mrfpipeline_river.river_job WHERE kind = $2 LIMIT 1), '')
 FROM mrfpipeline.toc_files t
 LEFT JOIN mrfpipeline.mrf_sources s ON true
-WHERE t.id = $1`, tocID, jobs.KindMRFDownload).Scan(&status, &parse, &imp, &mrfDL, &mrfParse, &dlState)
+WHERE t.id = $1`, tocID, jobs.KindMRFParse).Scan(&status, &parse, &imp, &mrfDL, &mrfParse, &parseState)
 		if err == nil && status == jobs.StatusSucceeded && parse == jobs.StatusSucceeded && imp == jobs.StatusSucceeded &&
-			mrfDL == jobs.StatusSucceeded && mrfParse == jobs.StatusPending && dlState == "completed" {
+			mrfDL == jobs.StatusSucceeded && mrfParse == jobs.StatusSucceeded && parseState == "completed" {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -150,11 +164,11 @@ WHERE t.id = $1`, tocID).Scan(&status, &parse, &imp, &mrfDL, &mrfParse); err != 
 		t.Fatal(err)
 	}
 	if status != jobs.StatusSucceeded || parse != jobs.StatusSucceeded || imp != jobs.StatusSucceeded ||
-		mrfDL != jobs.StatusSucceeded || mrfParse != jobs.StatusPending {
+		mrfDL != jobs.StatusSucceeded || mrfParse != jobs.StatusSucceeded {
 		cancel()
 		t.Fatalf("toc %s %s %s mrf %s %s", status, parse, imp, mrfDL, mrfParse)
 	}
-	var sources, parses, ingests, batches, blocked int
+	var sources, parses, ingests, batches, pending, blocked int
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_sources`).Scan(&sources); err != nil || sources != 1 {
 		cancel()
 		t.Fatalf("sources %d %v", sources, err)
@@ -163,7 +177,7 @@ WHERE t.id = $1`, tocID).Scan(&status, &parse, &imp, &mrfDL, &mrfParse); err != 
 		cancel()
 		t.Fatalf("parses %d %v", parses, err)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindConsumerIngest).Scan(&ingests); err != nil || ingests != 0 {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1 AND state <> 'completed' AND state <> 'discarded'`, jobs.KindConsumerIngest).Scan(&ingests); err != nil || ingests != 1 {
 		cancel()
 		t.Fatalf("ingests %d %v", ingests, err)
 	}
@@ -171,29 +185,32 @@ WHERE t.id = $1`, tocID).Scan(&status, &parse, &imp, &mrfDL, &mrfParse); err != 
 		cancel()
 		t.Fatalf("batches %d %v", batches, err)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_snapshots WHERE consume_status = 'blocked'`).Scan(&blocked); err != nil || blocked != 1 {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_snapshots WHERE consume_status = 'pending'`).Scan(&pending); err != nil || pending != 1 {
 		cancel()
-		t.Fatalf("snapshots %d %v", blocked, err)
+		t.Fatalf("pending snapshots %d %v", pending, err)
 	}
-	var dlState string
-	if err := pool.QueryRow(context.Background(), `
-SELECT state FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload).Scan(&dlState); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_snapshots WHERE consume_status = 'blocked'`).Scan(&blocked); err != nil || blocked != 0 {
+		cancel()
+		t.Fatalf("blocked snapshots %d %v", blocked, err)
+	}
+	var sourceID int64
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM mrfpipeline.mrf_sources`).Scan(&sourceID); err != nil {
 		cancel()
 		t.Fatal(err)
 	}
-	if dlState != "completed" {
+	if _, err := os.Lstat(filepath.Join(ws.Root, "mrf", "mrf-source-"+strconv.FormatInt(sourceID, 10), "download")); !os.IsNotExist(err) {
 		cancel()
-		t.Fatalf("mrf download not consumed %s", dlState)
+		t.Fatal("download leaf remained")
 	}
-	var kind, state string
+	var parseState string
 	if err := pool.QueryRow(context.Background(), `
-SELECT kind, state FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFParse).Scan(&kind, &state); err != nil {
+SELECT state FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFParse).Scan(&parseState); err != nil {
 		cancel()
 		t.Fatal(err)
 	}
-	if kind != jobs.KindMRFParse || state == "completed" || state == "discarded" {
+	if parseState != "completed" {
 		cancel()
-		t.Fatalf("mrf parse consumed %s %s", kind, state)
+		t.Fatalf("mrf parse %s", parseState)
 	}
 	cancel()
 	select {

@@ -28,6 +28,11 @@ const (
 	FailureTOCParseOutputFailed     = "toc_parse_output_failed"
 	FailureTOCParseOutputInvalid    = "toc_parse_output_invalid"
 	FailureTOCParseCleanupFailed    = "toc_parse_cleanup_failed"
+	FailureMRFParseExecutionFailed  = "mrf_parse_execution_failed"
+	FailureMRFParseOutputInvalid    = "mrf_parse_output_invalid"
+	FailureMRFParseSelectorChanged  = "mrf_parse_selector_changed"
+	FailureMRFParseCleanupFailed    = "mrf_parse_cleanup_failed"
+	FailureMRFParseDatabaseFailed   = "mrf_parse_database_failed"
 	FailureTOCImportManifestInvalid = "toc_import_manifest_invalid"
 	FailureTOCImportSchemaInvalid   = "toc_import_schema_invalid"
 	FailureTOCImportRowInvalid      = "toc_import_row_invalid"
@@ -73,6 +78,8 @@ func allowedFailureCode(code string) bool {
 		FailureTOCDownload, FailureMRFDownload,
 		FailureTOCParseInputInvalid, FailureTOCParseResourceFailed, FailureTOCParseOutputFailed,
 		FailureTOCParseOutputInvalid, FailureTOCParseCleanupFailed,
+		FailureMRFParseExecutionFailed, FailureMRFParseOutputInvalid, FailureMRFParseSelectorChanged,
+		FailureMRFParseCleanupFailed, FailureMRFParseDatabaseFailed,
 		FailureTOCImportManifestInvalid, FailureTOCImportSchemaInvalid, FailureTOCImportRowInvalid,
 		FailureTOCImportOrderInvalid, FailureTOCImportDatabaseFailed, FailureTOCImportInvariant:
 		return true
