@@ -8,10 +8,8 @@ authoritative where they are more specific. A later story may supersede an
 earlier placeholder or refine a detail that this document deliberately assigns
 to that story.
 
-Stories 01 through 04 currently define the project foundation, PostgreSQL
-domain schema, River runtime contract, and local artifact/download boundary.
-Stories 05 through 13 are the planned delivery sequence for the production
-pipeline. This is a design document, not a claim that those stages are already
+Stories 01 through 13 define the complete planned version 1 implementation
+sequence. This is a design document, not a claim that those stages are already
 implemented.
 
 The design records the product decisions that must remain consistent across
@@ -173,14 +171,21 @@ The one-process rule is important. River queue concurrency is per client, not
 cluster-wide. Starting a second worker process would multiply download/parser
 concurrency and could permit two writers to mutate the same consumer warehouse.
 
+The supported topology is enforced with the literal PostgreSQL session
+advisory lease `pg_try_advisory_lock(7319, 1)`, held on one dedicated
+connection for the complete `work`, `reconcile`, or `retry` command. Lease
+loss cancels worker operation and prevents beginning another consumer write.
+
 ## Operator commands
 
-The version 1 executable has three operational commands:
+The version 1 executable has five operational commands:
 
 ```text
 mrfpipeline migrate
 mrfpipeline work
 mrfpipeline discover --payer uhc --collection-month <YYYY-MM> [--limit <count>]
+mrfpipeline reconcile
+mrfpipeline retry --stage <job-kind> --id <domain-id>
 ```
 
 `migrate` explicitly applies current application and River migrations. No
@@ -193,9 +198,18 @@ canceled.
 `discover` creates and enqueues one durable discovery run. It does not wait for
 TOC downloads, MRF parsing, consumer ingestion, or plan attachment.
 
+`reconcile` acquires the exclusive worker lease and repairs safely inferable
+nonterminal scheduling/artifact gaps. `retry` grants one fresh River attempt
+series to one explicitly selected failed stage while preserving its database
+identity and immutable batch/output identities. Neither command runs work
+synchronously.
+
 Discovery is manually invoked or scheduled externally. The caller supplies
 the collection month; the pipeline does not infer it from current time, a URL,
 or payer contents.
+
+`reconcile` needs the complete worker environment. `retry` needs only the
+database URL. Both fail without mutation while the leased worker is active.
 
 ## Runtime configuration
 
@@ -209,9 +223,9 @@ The established environment is:
 | `MRFPIPELINE_PROVIDER_CATALOG_PATH` | Manually prepared provider catalog. |
 | `MRFPIPELINE_SERVICES_PATH` | Service-selector CSV for `mrfparser`. |
 
-`migrate` and `discover` need only the database URL. `work` needs the complete
-set. Configuration has no file format and secrets are not accepted through
-command-line flags.
+`migrate`, `discover`, and `retry` need only the database URL. `work` and
+`reconcile` need the complete set. Configuration has no file format and
+secrets are not accepted through command-line flags.
 
 Future worker stories may need to pin a sibling-tool invocation mechanism, but
 they must not add incidental configuration merely to expose internal package
@@ -859,15 +873,28 @@ The design intentionally tolerates these boundaries:
 | During consumer ingest | Let consumer's immutable output/recovery contract decide; do not manually merge files. |
 | After snapshot publication, before database success | Validate exact output ID and reconcile domain success without re-ingesting. |
 | During plan attachment | Reuse the same batch ID for retry of that batch; consumer makes an already published batch/idempotent plan set a no-op. |
-| After stage success, before successor insertion | Normally impossible because both commit together; Story 13 repairs historical or unexpected gaps. |
+| After stage success, before successor insertion | Normally impossible because both commit together; automatic reconciliation repairs historical or unexpected gaps. |
 
-Story 13 owns explicit reconciliation and operator procedures for durable
-states that cannot be repaired by ordinary retry, including stale `running`
-claims, discarded jobs whose domain update failed, missing successors,
-consumer seed recovery, and unsupported multi-worker deployment.
+Safe reconciliation runs automatically under the exclusive lease before River
+starts. It inserts replacements for missing or
+orphaned nonterminal jobs, repairs exact predecessor/successor gaps, and runs
+the existing snapshot/plan schedulers. Cancelled/discarded River work becomes
+terminal rather than silently receiving more attempts. The operator reopens
+one exact failed stage with `retry`; an attachment retry retains its frozen
+batch and consumer batch ID.
+
+If a completed download disappeared before its nonterminal parse completed,
+and no valid parser output exists, reconciliation safely returns that parse to
+blocked and schedules the same exact source download again. Failed stages and
+manifest-present invalid artifacts still require explicit operator action.
 
 Recovery never guesses from a filename or creates a new plan-batch ID for the
 same frozen batch merely because acknowledgement was lost.
+
+After successful successor validation, reconciliation may remove TOC/MRF
+download leaves, imported TOC parsed output, succeeded plan JSON, and old safe
+pipeline staging entries. Shared parsed MRF output, failed artifacts,
+PostgreSQL domain history, and every consumer warehouse publication remain.
 
 ## Security and privacy
 
@@ -932,9 +959,10 @@ read Parquet in bounded batches and use database upserts rather than load all
 payer history into memory.
 
 The initial `--limit 5` or `--limit 10` discovery run bounds newly admitted
-TOCs, not MRF count: one TOC may reference several MRFs. Operators must monitor
-disk and database growth during test runs. Story 13 defines operational sizing
-and cleanup guidance after representative data exists.
+TOCs, not MRF count: one TOC may reference several MRFs. Operators monitor disk
+and database growth during test runs. Safe retention removes imported TOC
+output and succeeded plan JSON but keeps shared parsed MRF output and every
+warehouse publication.
 
 ## Ordering and consistency
 
@@ -1002,15 +1030,3 @@ The version 1 pipeline is complete when all of the following are proven:
 11. Errors and logs do not expose URLs, paths, plan values, credentials, raw
     tool output, or response bodies.
 12. No workflow identity or deduplication rule depends on a content hash.
-
-## Deferred decisions owned by later stories
-
-The following is an intentional story-level decision, not a reason to block
-this design document:
-
-- Story 13 pins operator reconciliation commands or procedures, stale-job
-  handling, real-data sizing, and artifact retention.
-
-Those decisions must preserve the identities, state graph, plan independence,
-additive attachment model, redaction, and single-warehouse serialization
-defined here.
