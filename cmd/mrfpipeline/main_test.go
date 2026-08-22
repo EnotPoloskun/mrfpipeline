@@ -81,6 +81,7 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 		"github.com/jackc/pgx",
 		"github.com/riverqueue/river",
 		"github.com/enotpoloskun/mrfpipeline/internal/jobs",
+		"github.com/enotpoloskun/mrfpipeline/internal/artifact",
 		"net",
 	)
 	dirs := []struct {
@@ -92,6 +93,11 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 		{filepath.Join(root, "internal", "config"), cliForbidden},
 		{filepath.Join(root, "internal", "database"), common},
 		{filepath.Join(root, "internal", "jobs"), common},
+		{filepath.Join(root, "internal", "artifact"), []string{
+			"database/sql",
+			"github.com/jackc/pgx",
+			"github.com/riverqueue/river",
+		}},
 	}
 	fset := token.NewFileSet()
 	for _, dir := range dirs {
