@@ -22,6 +22,7 @@ const (
 	FailureDiscoveryResultInvalid   = "discovery_result_invalid"
 	FailureDiscoveryDatabase        = "discovery_database_failed"
 	FailureTOCDownload              = "toc_download_failed"
+	FailureMRFDownload              = "mrf_download_failed"
 	FailureTOCParseInputInvalid     = "toc_parse_input_invalid"
 	FailureTOCParseResourceFailed   = "toc_parse_resource_failed"
 	FailureTOCParseOutputFailed     = "toc_parse_output_failed"
@@ -69,7 +70,7 @@ func allowedFailureCode(code string) bool {
 	switch code {
 	case FailureInvalidArguments, FailureMissingRecord, FailureDomainInvariant, FailureAttemptsExhausted,
 		FailureDiscoveryListing, FailureDiscoveryResultInvalid, FailureDiscoveryDatabase,
-		FailureTOCDownload,
+		FailureTOCDownload, FailureMRFDownload,
 		FailureTOCParseInputInvalid, FailureTOCParseResourceFailed, FailureTOCParseOutputFailed,
 		FailureTOCParseOutputInvalid, FailureTOCParseCleanupFailed,
 		FailureTOCImportManifestInvalid, FailureTOCImportSchemaInvalid, FailureTOCImportRowInvalid,

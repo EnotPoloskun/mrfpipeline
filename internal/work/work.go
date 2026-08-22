@@ -7,6 +7,7 @@ import (
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/discovery"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/mrfdownload"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocdownload"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocimport"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocparse"
@@ -14,7 +15,7 @@ import (
 	"github.com/riverqueue/river"
 )
 
-// Runtime is the production River process for Stories 06–08.
+// Runtime is the production River process for Stories 06–09.
 type Runtime struct {
 	Pool       *pgxpool.Pool
 	Workspace  *artifact.Workspace
@@ -24,20 +25,22 @@ type Runtime struct {
 	Parse      tocparse.ParseFunc
 }
 
-// Queues is the Story 08 worker map: discovery, toc_download, toc_parse,
-// and toc_import.
+// Queues is the Story 09 worker map: discovery, toc_download, toc_parse,
+// toc_import, and mrf_download.
 func Queues() map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
 		jobs.QueueDiscovery:   {MaxWorkers: 1},
 		jobs.QueueTOCDownload: {MaxWorkers: 4},
 		jobs.QueueTOCParse:    {MaxWorkers: 2},
 		jobs.QueueTOCImport:   {MaxWorkers: 2},
+		jobs.QueueMRFDownload: {MaxWorkers: 2},
 	}
 }
 
 // Run starts a River client that consumes discovery.run, toc.download,
-// toc.parse, and toc.import, waits until ctx is canceled or the client
-// stops, then shuts down. A requested shutdown after Start succeeds returns nil.
+// toc.parse, toc.import, and mrf.download, waits until ctx is canceled
+// or the client stops, then shuts down. A requested shutdown after Start
+// succeeds returns nil.
 func (r Runtime) Run(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
@@ -62,11 +65,13 @@ func (r Runtime) Run(ctx context.Context) error {
 	river.AddWorker(workers, &tocdownload.Worker{Pool: r.Pool, Downloader: downloader, Logger: logger})
 	river.AddWorker(workers, &tocparse.Worker{Pool: r.Pool, Workspace: r.Workspace, Parse: r.Parse, Progress: progress, Logger: logger})
 	river.AddWorker(workers, &tocimport.Worker{Pool: r.Pool, Workspace: r.Workspace, Logger: logger})
+	river.AddWorker(workers, &mrfdownload.Worker{Pool: r.Pool, Downloader: downloader, Logger: logger})
 	handler := jobs.NewDomainErrorHandler(r.Pool, []jobs.KindBinding{
 		{Kind: jobs.KindDiscoveryRun, Spec: jobs.DiscoveryRunStage, ArgField: jobs.FieldDiscoveryRunID},
 		{Kind: jobs.KindTOCDownload, Spec: jobs.TOCDownloadStage, ArgField: jobs.FieldTOCFileID},
 		{Kind: jobs.KindTOCParse, Spec: jobs.TOCParseStage, ArgField: jobs.FieldTOCFileID},
 		{Kind: jobs.KindTOCImport, Spec: jobs.TOCImportStage, ArgField: jobs.FieldTOCFileID},
+		{Kind: jobs.KindMRFDownload, Spec: jobs.MRFDownloadStage, ArgField: jobs.FieldMRFSourceID},
 	}, logger)
 	client, err := jobs.NewRuntime(ctx, r.Pool, workers, Queues(), handler, logger)
 	if err != nil {

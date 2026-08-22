@@ -65,6 +65,26 @@ var TOCImportStage = StageSpec{
 	UpdatedAtColumn:   "updated_at",
 }
 
+// MRFDownloadStage is the download stage on mrf_sources.
+var MRFDownloadStage = StageSpec{
+	Table:             "mrfpipeline.mrf_sources",
+	IDColumn:          "id",
+	StatusColumn:      "download_status",
+	JobIDColumn:       "download_river_job_id",
+	FailureCodeColumn: "failure_code",
+	UpdatedAtColumn:   "updated_at",
+}
+
+// MRFParseStage is the parse stage on mrf_sources.
+var MRFParseStage = StageSpec{
+	Table:             "mrfpipeline.mrf_sources",
+	IDColumn:          "id",
+	StatusColumn:      "parse_status",
+	JobIDColumn:       "parse_river_job_id",
+	FailureCodeColumn: "failure_code",
+	UpdatedAtColumn:   "updated_at",
+}
+
 // DiscoveryRunStage is the domain stage for discovery.run.
 var DiscoveryRunStage = StageSpec{
 	Table:             "mrfpipeline.discovery_runs",

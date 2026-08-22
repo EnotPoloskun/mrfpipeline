@@ -45,7 +45,7 @@ func NewTestDownloader(
 	resolve func(context.Context, string) ([]net.IP, error),
 	dial func(context.Context, string, string) (net.Conn, error),
 ) *Downloader {
-	return newDownloader(ws, progress, headerTimeout, nil, resolve, dial)
+	return newDownloader(ws, progress, headerTimeout, &tls.Config{InsecureSkipVerify: true}, resolve, dial)
 }
 
 func newDownloader(

@@ -36,7 +36,7 @@ const workHelp = `Usage:
   mrfpipeline work --help
 
 Run background workers. This command validates the complete worker
-configuration, starts the discovery, TOC download, TOC parse, and TOC import queues, and runs
+configuration, starts the discovery, TOC download, TOC parse, TOC import, and MRF download queues, and runs
 until canceled.
 
 Required environment:
