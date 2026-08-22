@@ -35,6 +35,26 @@ type KindBinding struct {
 	ArgField string
 }
 
+// TOCDownloadStage is the download stage on toc_files.
+var TOCDownloadStage = StageSpec{
+	Table:             "mrfpipeline.toc_files",
+	IDColumn:          "id",
+	StatusColumn:      "download_status",
+	JobIDColumn:       "download_river_job_id",
+	FailureCodeColumn: "failure_code",
+	UpdatedAtColumn:   "updated_at",
+}
+
+// TOCParseStage is the parse stage on toc_files.
+var TOCParseStage = StageSpec{
+	Table:             "mrfpipeline.toc_files",
+	IDColumn:          "id",
+	StatusColumn:      "parse_status",
+	JobIDColumn:       "parse_river_job_id",
+	FailureCodeColumn: "failure_code",
+	UpdatedAtColumn:   "updated_at",
+}
+
 // DiscoveryRunStage is the domain stage for discovery.run.
 var DiscoveryRunStage = StageSpec{
 	Table:             "mrfpipeline.discovery_runs",

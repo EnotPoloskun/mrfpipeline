@@ -98,6 +98,8 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 		{filepath.Join(root, "internal", "database"), common},
 		{filepath.Join(root, "internal", "jobs"), common},
 		{filepath.Join(root, "internal", "discovery"), common},
+		{filepath.Join(root, "internal", "tocdownload"), common},
+		{filepath.Join(root, "internal", "work"), common},
 		{filepath.Join(root, "internal", "artifact"), []string{
 			"database/sql",
 			"github.com/jackc/pgx",

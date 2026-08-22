@@ -12,6 +12,25 @@ const (
 	ParsedManifestPresent = "manifest_present"
 )
 
+// InspectDownload requires a completed Story 04 download leaf: a real
+// download directory, exact regular data and manifest.json, schema 1.0.0,
+// and a matching byte count. It does not delete. Incomplete or invalid
+// metadata is an error.
+func (w *Workspace) InspectDownload(kind string, id int64) (int64, error) {
+	dir, err := w.downloadPath(kind, id)
+	if err != nil {
+		return 0, err
+	}
+	complete, n, err := w.inspectDownloadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	if !complete {
+		return 0, artErr("inspect")
+	}
+	return n, nil
+}
+
 func (w *Workspace) inspectDownloadDir(dir string) (complete bool, n int64, err error) {
 	if err := w.verifyChain(dir, false); err != nil {
 		return false, 0, err

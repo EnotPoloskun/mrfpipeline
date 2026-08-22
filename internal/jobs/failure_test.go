@@ -11,6 +11,7 @@ func TestFailureCodes(t *testing.T) {
 		FailureDiscoveryListing,
 		FailureDiscoveryResultInvalid,
 		FailureDiscoveryDatabase,
+		FailureTOCDownload,
 		FailureDomainInvariant,
 	} {
 		err := Failure(code)
@@ -29,5 +30,8 @@ func TestFailureCodes(t *testing.T) {
 	}
 	if isImmediateFail(Failure(FailureDiscoveryListing)) {
 		t.Fatal("listing should retry")
+	}
+	if isImmediateFail(Failure(FailureTOCDownload)) {
+		t.Fatal("toc download should retry")
 	}
 }

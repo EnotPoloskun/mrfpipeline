@@ -21,6 +21,7 @@ const (
 	FailureDiscoveryListing       = "discovery_listing_failed"
 	FailureDiscoveryResultInvalid = "discovery_result_invalid"
 	FailureDiscoveryDatabase      = "discovery_database_failed"
+	FailureTOCDownload            = "toc_download_failed"
 
 	MaxAttempts    = 8
 	RescueAfter    = 24 * time.Hour
@@ -56,7 +57,8 @@ func Failure(code string) error {
 func allowedFailureCode(code string) bool {
 	switch code {
 	case FailureInvalidArguments, FailureMissingRecord, FailureDomainInvariant, FailureAttemptsExhausted,
-		FailureDiscoveryListing, FailureDiscoveryResultInvalid, FailureDiscoveryDatabase:
+		FailureDiscoveryListing, FailureDiscoveryResultInvalid, FailureDiscoveryDatabase,
+		FailureTOCDownload:
 		return true
 	default:
 		return false

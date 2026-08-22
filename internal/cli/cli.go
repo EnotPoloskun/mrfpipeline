@@ -16,6 +16,7 @@ import (
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/discovery"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/work"
 )
 
 // version defaults to dev and may be replaced with a linker flag:
@@ -148,7 +149,11 @@ func runWork(ctx context.Context, getenv func(string) string) error {
 	if err := os.Setenv("TMPDIR", ws.StagingDir()); err != nil {
 		return err
 	}
-	return discovery.RunWorkers(ctx, pool, nil, jobs.NewLogger(os.Stderr))
+	return work.Runtime{
+		Pool:      pool,
+		Workspace: ws,
+		Logger:    jobs.NewLogger(os.Stderr),
+	}.Run(ctx)
 }
 
 func runDiscover(ctx context.Context, getenv func(string) string, payer, month, limit string) (string, error) {

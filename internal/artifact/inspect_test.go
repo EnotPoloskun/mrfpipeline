@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -86,6 +87,48 @@ func TestRemoveDownloadIdempotent(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(ws.Root, dirMRF, "mrf-source-3")); err != nil {
 		t.Fatal("removed id directory")
+	}
+}
+
+func TestInspectDownloadRequiresCompletedLeaf(t *testing.T) {
+	t.Parallel()
+	ws := mustInit(t, filepath.Join(t.TempDir(), "ws"))
+	if _, err := ws.InspectDownload(KindTOC, 4); !errors.Is(err, ErrArtifact) {
+		t.Fatalf("absent: %v", err)
+	}
+	if _, err := ws.ensureRecord(KindTOC, 4); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(ws.Root, dirTOC, "toc-4", dirDownload)
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.InspectDownload(KindTOC, 4); !errors.Is(err, ErrArtifact) {
+		t.Fatalf("empty dir: %v", err)
+	}
+	body := []byte("toc-bytes")
+	if err := os.WriteFile(filepath.Join(dir, fileData), body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	man, err := downloadManifestJSON(int64(len(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fileManifest), man, 0600); err != nil {
+		t.Fatal(err)
+	}
+	n, err := ws.InspectDownload(KindTOC, 4)
+	if err != nil || n != int64(len(body)) {
+		t.Fatalf("complete %d %v", n, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fileManifest), []byte(`{"schema_version":"9.0.0","byte_count":9}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.InspectDownload(KindTOC, 4); !errors.Is(err, ErrArtifact) {
+		t.Fatalf("unsupported schema: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, fileManifest)); err != nil {
+		t.Fatal("inspect deleted unsupported schema")
 	}
 }
 

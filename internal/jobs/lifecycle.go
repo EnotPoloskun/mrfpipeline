@@ -38,10 +38,12 @@ type RunParams struct {
 	MaxAttempts int
 	Work        func(context.Context) error
 	Successor   *Successor
+	Claim       func(context.Context) (ClaimResult, error)
 }
 
 // Run executes claim, external work, success/successor, retry bookkeeping,
-// or terminal failure. Discovery uses DiscoveryRunStage; later stories pass
+// or terminal failure. Discovery uses DiscoveryRunStage and TOC download
+// uses TOCDownloadStage with an optional Claim hook; later stories pass
 // their own StageSpec.
 func Run(ctx context.Context, p RunParams) error {
 	if ctx == nil {
@@ -50,7 +52,13 @@ func Run(ctx context.Context, p RunParams) error {
 	if p.DomainID <= 0 {
 		return river.JobCancel(jobErr(FailureInvalidArguments))
 	}
-	claim, err := Claim(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID)
+	claimFn := p.Claim
+	if claimFn == nil {
+		claimFn = func(ctx context.Context) (ClaimResult, error) {
+			return Claim(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID)
+		}
+	}
+	claim, err := claimFn(ctx)
 	if err != nil {
 		if isFailure(err, FailureMissingRecord) || isFailure(err, FailureDomainInvariant) || isFailure(err, FailureInvalidArguments) {
 			return river.JobCancel(err)
@@ -177,6 +185,18 @@ func Succeed(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.T
 	}
 	if row.status != StatusRunning {
 		return jobErr(FailureDomainInvariant)
+	}
+	if succ != nil {
+		if err := succ.Spec.validate(); err != nil {
+			return err
+		}
+		next, err := lockStage(ctx, tx, succ.Spec, succ.DomainID)
+		if err != nil {
+			return err
+		}
+		if next.status != StatusBlocked {
+			return jobErr(FailureDomainInvariant)
+		}
 	}
 	if err := setSucceeded(ctx, tx, spec, domainID); err != nil {
 		return err

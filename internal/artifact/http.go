@@ -30,6 +30,24 @@ func NewDownloader(ws *Workspace, progress *jobs.Progress) *Downloader {
 	return newDownloader(ws, progress, headerTimeout, nil, nil, nil)
 }
 
+// Workspace returns the downloader's artifact workspace.
+func (d *Downloader) Workspace() *Workspace {
+	if d == nil {
+		return nil
+	}
+	return d.ws
+}
+
+// NewTestDownloader builds a Downloader with injected resolve and dial.
+func NewTestDownloader(
+	ws *Workspace,
+	progress *jobs.Progress,
+	resolve func(context.Context, string) ([]net.IP, error),
+	dial func(context.Context, string, string) (net.Conn, error),
+) *Downloader {
+	return newDownloader(ws, progress, headerTimeout, nil, resolve, dial)
+}
+
 func newDownloader(
 	ws *Workspace,
 	progress *jobs.Progress,
