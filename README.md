@@ -22,9 +22,8 @@ documentation.
 
 ## River UI (optional, not part of this binary)
 
-The pipeline does not embed a dashboard. River's open-source UI can run as a
-separate process against the same PostgreSQL database to inspect queues and
-pause them:
+River's open-source UI can run as a separate process against the same
+PostgreSQL database to inspect queues and pause them:
 
 ```text
 export DATABASE_URL=<same URL as the worker>
@@ -32,10 +31,5 @@ export RIVER_SCHEMA=mrfpipeline_river
 riverui
 ```
 
-Pause stops fetching **new** jobs on that queue. It does not cancel an already
-running download, parse, or ingest. To let the consumer drain remaining
-snapshots, pause `toc_download`, `toc_parse`, `toc_import`, `mrf_download`, and
-`mrf_parse`, and leave `consumer` running.
-
-Do not cancel, retry, or delete jobs from the UI. Those actions fight
-PostgreSQL domain state. Use `mrfpipeline retry` after the worker is stopped.
+Pause stops fetching new jobs. It does not cancel in-flight work. Do not
+cancel, retry, or delete jobs from the UI.

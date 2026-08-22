@@ -1,0 +1,346 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+
+	"github.com/enotpoloskun/mrfpipeline/internal/config"
+)
+
+// version defaults to dev and may be replaced with a linker flag:
+// -X github.com/enotpoloskun/mrfpipeline/internal/cli.version=<value>
+var version = "dev"
+
+const (
+	cmdMigrate  = "migrate"
+	cmdWork     = "work"
+	cmdDiscover = "discover"
+)
+
+var (
+	errMigrateNotImplemented  = errors.New("migrate is not implemented")
+	errWorkNotImplemented     = errors.New("work is not implemented")
+	errDiscoverNotImplemented = errors.New("discover enqueue is not implemented")
+)
+
+// Main is the process entry: signals, os.Args, and standard streams.
+func Main() int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return Run(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr)
+}
+
+// Run is the testable command entry point.
+func Run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	text, err := execute(ctx, args, getenv)
+	if err == nil {
+		if _, werr := io.WriteString(stdout, text); werr != nil {
+			return 1
+		}
+		return 0
+	}
+	return report(err, stderr)
+}
+
+func execute(ctx context.Context, args []string, getenv func(string) string) (string, error) {
+	parsed, err := parse(args)
+	if err != nil {
+		return "", err
+	}
+	if parsed.help {
+		return parsed.helpText, nil
+	}
+	if parsed.version {
+		return "mrfpipeline " + version + "\n", nil
+	}
+
+	var opErr error
+	switch parsed.command {
+	case cmdMigrate:
+		opErr = runMigrate(ctx, getenv)
+	case cmdWork:
+		opErr = runWork(ctx, getenv)
+	case cmdDiscover:
+		opErr = runDiscover(ctx, getenv, parsed.payer, parsed.month, parsed.limit)
+	default:
+		return "", &usageError{reason: "unknown command"}
+	}
+	if opErr != nil {
+		return "", &cmdError{command: parsed.command, err: opErr}
+	}
+	return "", nil
+}
+
+func runMigrate(ctx context.Context, getenv func(string) string) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errMigrateNotImplemented
+}
+
+func runWork(ctx context.Context, getenv func(string) string) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
+		return err
+	}
+	if _, err := config.NormalizeLocalPath(config.EnvArtifactRoot, getenv(config.EnvArtifactRoot)); err != nil {
+		return err
+	}
+	if _, err := config.NormalizeLocalPath(config.EnvWarehousePath, getenv(config.EnvWarehousePath)); err != nil {
+		return err
+	}
+	if _, err := config.NormalizeLocalPath(config.EnvProviderCatalogPath, getenv(config.EnvProviderCatalogPath)); err != nil {
+		return err
+	}
+	if _, err := config.NormalizeLocalPath(config.EnvServicesPath, getenv(config.EnvServicesPath)); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errWorkNotImplemented
+}
+
+func runDiscover(ctx context.Context, getenv func(string) string, payer, month, limit string) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
+		return err
+	}
+	if err := config.ValidatePayer(payer); err != nil {
+		return err
+	}
+	if err := config.ValidateCollectionMonth(month); err != nil {
+		return err
+	}
+	if _, err := config.ValidateLimit(limit); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errDiscoverNotImplemented
+}
+
+type parsed struct {
+	command  string
+	help     bool
+	helpText string
+	version  bool
+	payer    string
+	month    string
+	limit    string
+}
+
+func parse(args []string) (parsed, error) {
+	if len(args) == 0 {
+		return parsed{}, &usageError{reason: "missing command"}
+	}
+	if args[0] == "--help" {
+		if len(args) != 1 {
+			return parsed{}, &usageError{reason: "invalid help invocation"}
+		}
+		return parsed{help: true, helpText: rootHelp}, nil
+	}
+	if args[0] == "--version" {
+		if len(args) != 1 {
+			return parsed{}, &usageError{reason: "invalid version invocation"}
+		}
+		return parsed{version: true}, nil
+	}
+	switch args[0] {
+	case cmdMigrate, cmdWork, cmdDiscover:
+		return parseCommand(args[0], args[1:])
+	default:
+		return parsed{}, &usageError{reason: "unknown command"}
+	}
+}
+
+func parseCommand(command string, rest []string) (parsed, error) {
+	if len(rest) == 1 && rest[0] == "--help" {
+		return parsed{command: command, help: true, helpText: helpFor(command)}, nil
+	}
+	switch command {
+	case cmdMigrate, cmdWork:
+		if err := rejectExtra(command, rest); err != nil {
+			return parsed{}, err
+		}
+		return parsed{command: command}, nil
+	case cmdDiscover:
+		payer, month, limit, err := parseDiscoverFlags(rest)
+		if err != nil {
+			return parsed{}, err
+		}
+		return parsed{command: command, payer: payer, month: month, limit: limit}, nil
+	default:
+		return parsed{}, &usageError{reason: "unknown command"}
+	}
+}
+
+func rejectExtra(command string, rest []string) error {
+	for _, arg := range rest {
+		if arg == "--" || isSingleDash(arg) || strings.HasPrefix(arg, "--") {
+			return &usageError{command: command, reason: "unsupported flag"}
+		}
+		return &usageError{command: command, reason: "unexpected argument"}
+	}
+	return nil
+}
+
+func parseDiscoverFlags(rest []string) (payer, month, limit string, err error) {
+	var havePayer, haveMonth, haveLimit bool
+	for i := 0; i < len(rest); {
+		arg := rest[i]
+		if arg == "--" {
+			return "", "", "", &usageError{command: cmdDiscover, reason: "unsupported flag"}
+		}
+		if isSingleDash(arg) {
+			return "", "", "", &usageError{command: cmdDiscover, reason: "unsupported flag"}
+		}
+		if !strings.HasPrefix(arg, "--") {
+			return "", "", "", &usageError{command: cmdDiscover, reason: "unexpected argument"}
+		}
+		name, value, next, ferr := takeFlag(rest, i)
+		if ferr != nil {
+			return "", "", "", ferr
+		}
+		switch name {
+		case "payer":
+			payer = value
+			havePayer = true
+		case "collection-month":
+			month = value
+			haveMonth = true
+		case "limit":
+			limit = value
+			haveLimit = true
+		default:
+			return "", "", "", &usageError{command: cmdDiscover, reason: "unsupported flag"}
+		}
+		i = next
+	}
+	switch {
+	case !havePayer:
+		return "", "", "", &usageError{command: cmdDiscover, reason: "missing required flag --payer"}
+	case !haveMonth:
+		return "", "", "", &usageError{command: cmdDiscover, reason: "missing required flag --collection-month"}
+	case !haveLimit:
+		return "", "", "", &usageError{command: cmdDiscover, reason: "missing required flag --limit"}
+	}
+	return payer, month, limit, nil
+}
+
+func takeFlag(args []string, i int) (name, value string, next int, err error) {
+	body := strings.TrimPrefix(args[i], "--")
+	if body == "" || body[0] == '-' {
+		return "", "", 0, &usageError{command: cmdDiscover, reason: "unsupported flag"}
+	}
+	if name, value, ok := strings.Cut(body, "="); ok {
+		if name == "" {
+			return "", "", 0, &usageError{command: cmdDiscover, reason: "unsupported flag"}
+		}
+		return name, value, i + 1, nil
+	}
+	if i+1 >= len(args) || strings.HasPrefix(args[i+1], "--") {
+		return "", "", 0, &usageError{command: cmdDiscover, reason: "missing flag argument"}
+	}
+	return body, args[i+1], i + 2, nil
+}
+
+func isSingleDash(arg string) bool {
+	return strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--")
+}
+
+type usageError struct {
+	command string
+	reason  string
+}
+
+func (e *usageError) Error() string {
+	if e.reason == "" {
+		return "invalid usage"
+	}
+	return e.reason
+}
+
+type cmdError struct {
+	command string
+	err     error
+}
+
+func (e *cmdError) Error() string { return e.err.Error() }
+func (e *cmdError) Unwrap() error { return e.err }
+
+func report(err error, stderr io.Writer) int {
+	command := commandOf(err)
+	if isUsage(err) || errors.Is(err, config.ErrInvalidConfig) {
+		if _, werr := fmt.Fprintln(stderr, err.Error()); werr != nil {
+			return 1
+		}
+		if _, werr := fmt.Fprintln(stderr, hint(command)); werr != nil {
+			return 1
+		}
+		return 2
+	}
+	if _, werr := fmt.Fprintln(stderr, err.Error()); werr != nil {
+		return 1
+	}
+	return 1
+}
+
+func isUsage(err error) bool {
+	var u *usageError
+	return errors.As(err, &u)
+}
+
+func commandOf(err error) string {
+	var c *cmdError
+	if errors.As(err, &c) {
+		return c.command
+	}
+	var u *usageError
+	if errors.As(err, &u) {
+		return u.command
+	}
+	return ""
+}
+
+func hint(command string) string {
+	switch command {
+	case cmdMigrate:
+		return "Try 'mrfpipeline migrate --help'."
+	case cmdWork:
+		return "Try 'mrfpipeline work --help'."
+	case cmdDiscover:
+		return "Try 'mrfpipeline discover --help'."
+	default:
+		return "Try 'mrfpipeline --help'."
+	}
+}
