@@ -618,9 +618,26 @@ One `mrf_snapshots` row supplies:
 catalog, and atomically publishes one immutable six-dataset rate snapshot.
 Ingest is plan-independent and never reads TOC plans.
 
+The worker calls the public `mrfconsumer.Ingest` Go API in process with the
+shared parsed path, configured provider catalog and warehouse, database-owned
+payer/feed/month values, and `mrf-<snapshot-id>`. It does not execute the CLI
+or provide a progress callback. The one-worker `consumer` queue serializes all
+warehouse writes.
+
+Consumer-owned recovery completes a missing provider-catalog copy or missing
+zero-row plan schema seed in an otherwise recognized `1.5.0` warehouse. A
+present corrupt copy/seed, unexpected warehouse entry, unsupported warehouse,
+or catalog identity conflict fails closed and is not overwritten.
+
 Consumer output IDs are immutable. A successful retry must recognize durable
 domain success or the consumer's published output rather than attempt a second
 ingest with the same ID.
+
+For the lost-acknowledgement crash window, the pipeline strictly recognizes
+the exact expected snapshot path, warehouse and snapshot versions, immutable
+manifest identity, six dataset directories, and declared contiguous parts.
+It does not rescan facts or recreate consumer validation. A present partial or
+conflicting final target is preserved for operator reconciliation.
 
 A completed snapshot with no plan attachment is valid warehouse state, but it
 is not ready for plan-filtered serving. After ingest success, the pipeline
@@ -979,8 +996,8 @@ The version 1 pipeline is complete when all of the following are proven:
 The following are intentional story-level decisions, not reasons to block this
 design document:
 
-- Stories 11 and 12 pin the consumer integration boundary and recovery mapping
-  from consumer reports to domain state.
+- Story 12 pins plan-batch scheduling, JSON projection, and recovery mapping
+  from additive attachment reports to domain state.
 - Story 13 pins operator reconciliation commands or procedures, stale-job
   handling, real-data sizing, and artifact retention.
 
