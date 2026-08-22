@@ -12,6 +12,11 @@ func TestFailureCodes(t *testing.T) {
 		FailureDiscoveryResultInvalid,
 		FailureDiscoveryDatabase,
 		FailureTOCDownload,
+		FailureTOCParseInputInvalid,
+		FailureTOCParseResourceFailed,
+		FailureTOCParseOutputFailed,
+		FailureTOCParseOutputInvalid,
+		FailureTOCParseCleanupFailed,
 		FailureDomainInvariant,
 	} {
 		err := Failure(code)
@@ -33,5 +38,8 @@ func TestFailureCodes(t *testing.T) {
 	}
 	if isImmediateFail(Failure(FailureTOCDownload)) {
 		t.Fatal("toc download should retry")
+	}
+	if isImmediateFail(Failure(FailureTOCParseInputInvalid)) {
+		t.Fatal("toc parse input should retry")
 	}
 }

@@ -100,13 +100,14 @@ type Progress struct {
 	mu     sync.Mutex
 	last   map[int64]time.Time
 	begun  map[int64]bool
+	phase  map[int64]string
 }
 
 func NewProgress(logger *slog.Logger) *Progress {
 	if logger == nil {
 		logger = NewLogger(io.Discard)
 	}
-	return &Progress{logger: logger, last: map[int64]time.Time{}, begun: map[int64]bool{}}
+	return &Progress{logger: logger, last: map[int64]time.Time{}, begun: map[int64]bool{}, phase: map[int64]string{}}
 }
 
 // ProgressParams is one progress observation.
@@ -138,15 +139,18 @@ func (p *Progress) Log(params ProgressParams) error {
 	if start {
 		p.begun[params.JobID] = true
 	}
-	if !start && !params.Done {
+	samePhase := p.phase[params.JobID] == params.Phase
+	if !start && !params.Done && samePhase {
 		if prev, ok := p.last[params.JobID]; ok && now.Sub(prev) < ProgressEvery {
 			return nil
 		}
 	}
 	p.last[params.JobID] = now
+	p.phase[params.JobID] = params.Phase
 	if params.Done {
 		delete(p.last, params.JobID)
 		delete(p.begun, params.JobID)
+		delete(p.phase, params.JobID)
 	}
 	attrs := []slog.Attr{
 		slog.String("kind", params.Kind),

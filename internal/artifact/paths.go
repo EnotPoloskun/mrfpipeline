@@ -88,6 +88,20 @@ func (w *Workspace) parsedPath(kind string, id int64) (string, error) {
 	return filepath.Join(rec, dirParsed), nil
 }
 
+// DownloadDataPath is the generated download/data path for one record.
+func (w *Workspace) DownloadDataPath(kind string, id int64) (string, error) {
+	dir, err := w.downloadPath(kind, id)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, fileData), nil
+}
+
+// ParsedDir is the generated parsed directory for one record.
+func (w *Workspace) ParsedDir(kind string, id int64) (string, error) {
+	return w.parsedPath(kind, id)
+}
+
 func stagingPrefix(kind string, id int64) (string, error) {
 	s, err := formatID(id)
 	if err != nil {

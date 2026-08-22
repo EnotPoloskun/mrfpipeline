@@ -1,0 +1,1 @@
+{"reporting_entity_name":"entity","reporting_entity_type":"issuer","version":"2.2.1","reporting_structure":[{"reporting_plans":[{"plan_name":"plan","issuer_name":"issuer","plan_id_type":"hios","plan_id":"id","plan_market_type":"group"}],"allowed_amount_file":{"description":"aa","location":"https://example.test/aa.json"}}]}

@@ -22,6 +22,11 @@ const (
 	FailureDiscoveryResultInvalid = "discovery_result_invalid"
 	FailureDiscoveryDatabase      = "discovery_database_failed"
 	FailureTOCDownload            = "toc_download_failed"
+	FailureTOCParseInputInvalid   = "toc_parse_input_invalid"
+	FailureTOCParseResourceFailed = "toc_parse_resource_failed"
+	FailureTOCParseOutputFailed   = "toc_parse_output_failed"
+	FailureTOCParseOutputInvalid  = "toc_parse_output_invalid"
+	FailureTOCParseCleanupFailed  = "toc_parse_cleanup_failed"
 
 	MaxAttempts    = 8
 	RescueAfter    = 24 * time.Hour
@@ -58,7 +63,9 @@ func allowedFailureCode(code string) bool {
 	switch code {
 	case FailureInvalidArguments, FailureMissingRecord, FailureDomainInvariant, FailureAttemptsExhausted,
 		FailureDiscoveryListing, FailureDiscoveryResultInvalid, FailureDiscoveryDatabase,
-		FailureTOCDownload:
+		FailureTOCDownload,
+		FailureTOCParseInputInvalid, FailureTOCParseResourceFailed, FailureTOCParseOutputFailed,
+		FailureTOCParseOutputInvalid, FailureTOCParseCleanupFailed:
 		return true
 	default:
 		return false

@@ -55,6 +55,16 @@ var TOCParseStage = StageSpec{
 	UpdatedAtColumn:   "updated_at",
 }
 
+// TOCImportStage is the import stage on toc_files.
+var TOCImportStage = StageSpec{
+	Table:             "mrfpipeline.toc_files",
+	IDColumn:          "id",
+	StatusColumn:      "import_status",
+	JobIDColumn:       "import_river_job_id",
+	FailureCodeColumn: "failure_code",
+	UpdatedAtColumn:   "updated_at",
+}
+
 // DiscoveryRunStage is the domain stage for discovery.run.
 var DiscoveryRunStage = StageSpec{
 	Table:             "mrfpipeline.discovery_runs",

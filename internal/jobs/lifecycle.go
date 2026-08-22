@@ -39,12 +39,13 @@ type RunParams struct {
 	Work        func(context.Context) error
 	Successor   *Successor
 	Claim       func(context.Context) (ClaimResult, error)
+	Confirm     func(context.Context, pgx.Tx) error
 }
 
 // Run executes claim, external work, success/successor, retry bookkeeping,
-// or terminal failure. Discovery uses DiscoveryRunStage and TOC download
-// uses TOCDownloadStage with an optional Claim hook; later stories pass
-// their own StageSpec.
+// or terminal failure. Discovery uses DiscoveryRunStage, TOC download
+// uses TOCDownloadStage, and TOC parse uses TOCParseStage with an optional
+// Claim hook; later stories pass their own StageSpec.
 func Run(ctx context.Context, p RunParams) error {
 	if ctx == nil {
 		panic("nil context")
@@ -70,7 +71,7 @@ func Run(ctx context.Context, p RunParams) error {
 	}
 	workErr := p.Work(ctx)
 	if workErr == nil {
-		return Succeed(ctx, p.Pool, p.Client, p.Spec, p.DomainID, p.RiverJobID, p.Successor)
+		return Succeed(ctx, p.Pool, p.Client, p.Spec, p.DomainID, p.RiverJobID, p.Successor, p.Confirm)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -151,7 +152,7 @@ func Claim(ctx context.Context, pool *pgxpool.Pool, spec StageSpec, domainID, ri
 // Succeed marks the assigned running stage succeeded and may publish a
 // successor in the same transaction. An already-succeeded row is a no-op
 // and does not enqueue another successor.
-func Succeed(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], spec StageSpec, domainID, riverJobID int64, succ *Successor) error {
+func Succeed(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], spec StageSpec, domainID, riverJobID int64, succ *Successor, confirm func(context.Context, pgx.Tx) error) error {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -185,6 +186,11 @@ func Succeed(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.T
 	}
 	if row.status != StatusRunning {
 		return jobErr(FailureDomainInvariant)
+	}
+	if confirm != nil {
+		if err := confirm(ctx, tx); err != nil {
+			return err
+		}
 	}
 	if succ != nil {
 		if err := succ.Spec.validate(); err != nil {

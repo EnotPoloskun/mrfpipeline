@@ -62,16 +62,19 @@ func resetPipelineSchemas(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-func TestIntegrationRuntimeDownloadsAndLeavesParse(t *testing.T) {
+const workTOCJSON = `{"reporting_entity_name":"entity","reporting_entity_type":"issuer","version":"2.2.1","reporting_structure":[{"reporting_plans":[{"plan_name":"plan","issuer_name":"issuer","plan_id_type":"hios","plan_id":"id","plan_market_type":"group"}],"in_network_files":[{"description":"file","location":"https://example.test/a.json"}]}]}`
+
+func TestIntegrationRuntimeDownloadsAndParses(t *testing.T) {
 	pool := testDB(t)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("from-work"))
+		_, _ = w.Write([]byte(workTOCJSON))
 	}))
 	t.Cleanup(ts.Close)
 	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("TMPDIR", ws.StagingDir())
 	dl := artifact.NewTestDownloader(ws, jobs.NewProgress(jobs.NewLogger(io.Discard)),
 		func(context.Context, string) ([]net.IP, error) {
 			return []net.IP{net.ParseIP("203.0.113.10")}, nil
@@ -121,33 +124,33 @@ UPDATE mrfpipeline.toc_files SET download_river_job_id = $2 WHERE id = $1`, tocI
 	go func() {
 		done <- Runtime{Pool: pool, Workspace: ws, Downloader: dl, Logger: jobs.NewLogger(io.Discard)}.Run(ctx)
 	}()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		var status, parse string
+		var status, parse, imp string
 		err := pool.QueryRow(context.Background(), `
-SELECT download_status, parse_status FROM mrfpipeline.toc_files WHERE id = $1`, tocID).Scan(&status, &parse)
-		if err == nil && status == jobs.StatusSucceeded && parse == jobs.StatusPending {
+SELECT download_status, parse_status, import_status FROM mrfpipeline.toc_files WHERE id = $1`, tocID).Scan(&status, &parse, &imp)
+		if err == nil && status == jobs.StatusSucceeded && parse == jobs.StatusSucceeded && imp == jobs.StatusPending {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	var status, parse, kind, state string
+	var status, parse, imp, kind, state string
 	if err := pool.QueryRow(context.Background(), `
-SELECT download_status, parse_status FROM mrfpipeline.toc_files WHERE id = $1`, tocID).Scan(&status, &parse); err != nil {
+SELECT download_status, parse_status, import_status FROM mrfpipeline.toc_files WHERE id = $1`, tocID).Scan(&status, &parse, &imp); err != nil {
 		t.Fatal(err)
 	}
-	if status != jobs.StatusSucceeded || parse != jobs.StatusPending {
+	if status != jobs.StatusSucceeded || parse != jobs.StatusSucceeded || imp != jobs.StatusPending {
 		cancel()
-		t.Fatalf("download=%s parse=%s", status, parse)
+		t.Fatalf("download=%s parse=%s import=%s", status, parse, imp)
 	}
 	if err := pool.QueryRow(context.Background(), `
-SELECT kind, state FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindTOCParse).Scan(&kind, &state); err != nil {
+SELECT kind, state FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindTOCImport).Scan(&kind, &state); err != nil {
 		cancel()
 		t.Fatal(err)
 	}
-	if kind != jobs.KindTOCParse || state == "completed" || state == "discarded" {
+	if kind != jobs.KindTOCImport || state == "completed" || state == "discarded" {
 		cancel()
-		t.Fatalf("parse consumed %s %s", kind, state)
+		t.Fatalf("import consumed %s %s", kind, state)
 	}
 	cancel()
 	select {

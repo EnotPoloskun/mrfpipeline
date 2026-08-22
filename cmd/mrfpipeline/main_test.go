@@ -45,6 +45,9 @@ func TestModulePathAndGoVersion(t *testing.T) {
 	if !strings.Contains(text, "github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260821182039-590460f1448b") {
 		t.Fatalf("expected pinned mrfdiscoverer: %s", text)
 	}
+	if !strings.Contains(text, "github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5") {
+		t.Fatalf("expected pinned mrftocparser: %s", text)
+	}
 	if strings.Contains(text, "\nreplace ") || strings.HasPrefix(text, "replace ") {
 		t.Fatal("go.mod must not contain a replace directive")
 	}
@@ -99,6 +102,7 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 		{filepath.Join(root, "internal", "jobs"), common},
 		{filepath.Join(root, "internal", "discovery"), common},
 		{filepath.Join(root, "internal", "tocdownload"), common},
+		{filepath.Join(root, "internal", "tocparse"), common},
 		{filepath.Join(root, "internal", "work"), common},
 		{filepath.Join(root, "internal", "artifact"), []string{
 			"database/sql",
