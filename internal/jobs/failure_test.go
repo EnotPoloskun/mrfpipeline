@@ -35,6 +35,12 @@ func TestFailureCodes(t *testing.T) {
 		FailureConsumerIngestOutputInvalid,
 		FailureConsumerIngestProviderChanged,
 		FailureConsumerIngestDatabaseFailed,
+		FailurePlanAttachConfigInvalid,
+		FailurePlanAttachInputInvalid,
+		FailurePlanAttachOutputFailed,
+		FailurePlanAttachOutputInvalid,
+		FailurePlanAttachDatabaseFailed,
+		FailurePlanAttachInvariant,
 		FailureDomainInvariant,
 	} {
 		err := Failure(code)
@@ -101,5 +107,23 @@ func TestFailureCodes(t *testing.T) {
 	}
 	if isImmediateFail(Failure(FailureConsumerIngestDatabaseFailed)) {
 		t.Fatal("consumer ingest database should retry")
+	}
+	if isImmediateFail(Failure(FailurePlanAttachConfigInvalid)) {
+		t.Fatal("plan attach config should retry")
+	}
+	if isImmediateFail(Failure(FailurePlanAttachInputInvalid)) {
+		t.Fatal("plan attach input should retry")
+	}
+	if isImmediateFail(Failure(FailurePlanAttachOutputFailed)) {
+		t.Fatal("plan attach output failed should retry")
+	}
+	if isImmediateFail(Failure(FailurePlanAttachOutputInvalid)) {
+		t.Fatal("plan attach output invalid should retry")
+	}
+	if isImmediateFail(Failure(FailurePlanAttachDatabaseFailed)) {
+		t.Fatal("plan attach database should retry")
+	}
+	if isImmediateFail(Failure(FailurePlanAttachInvariant)) {
+		t.Fatal("plan attach invariant should retry")
 	}
 }

@@ -40,6 +40,7 @@ type RunParams struct {
 	Successor   *Successor
 	Claim       func(context.Context) (ClaimResult, error)
 	Confirm     func(context.Context, pgx.Tx) error
+	PreLock     func(context.Context, pgx.Tx) error
 }
 
 // Run executes claim, external work, success/successor, retry bookkeeping,
@@ -71,7 +72,7 @@ func Run(ctx context.Context, p RunParams) error {
 	}
 	workErr := p.Work(ctx)
 	if workErr == nil {
-		return Succeed(ctx, p.Pool, p.Client, p.Spec, p.DomainID, p.RiverJobID, p.Successor, p.Confirm)
+		return Succeed(ctx, p.Pool, p.Client, p.Spec, p.DomainID, p.RiverJobID, p.Successor, p.Confirm, p.PreLock)
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -152,7 +153,7 @@ func Claim(ctx context.Context, pool *pgxpool.Pool, spec StageSpec, domainID, ri
 // Succeed marks the assigned running stage succeeded and may publish a
 // successor in the same transaction. An already-succeeded row is a no-op
 // and does not enqueue another successor.
-func Succeed(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], spec StageSpec, domainID, riverJobID int64, succ *Successor, confirm func(context.Context, pgx.Tx) error) error {
+func Succeed(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], spec StageSpec, domainID, riverJobID int64, succ *Successor, confirm, preLock func(context.Context, pgx.Tx) error) error {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -171,7 +172,7 @@ func Succeed(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.T
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	row, err := lockStage(ctx, tx, spec, domainID)
+	row, err := lockForSucceed(ctx, tx, spec, domainID, preLock)
 	if err != nil {
 		return err
 	}
@@ -219,6 +220,15 @@ func Succeed(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.T
 		return classifyJob(ctx, "succeed", fmt.Errorf("%w", database.ErrDatabase))
 	}
 	return nil
+}
+
+func lockForSucceed(ctx context.Context, tx pgx.Tx, spec StageSpec, domainID int64, preLock func(context.Context, pgx.Tx) error) (stageRow, error) {
+	if preLock != nil {
+		if err := preLock(ctx, tx); err != nil {
+			return stageRow{}, err
+		}
+	}
+	return lockStage(ctx, tx, spec, domainID)
 }
 
 // MarkRetryable puts a still-assigned running stage back to pending.

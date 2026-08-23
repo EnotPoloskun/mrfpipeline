@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/planbatch"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 )
 
 type claimIdentity struct {
@@ -130,7 +132,7 @@ WHERE id = $1`, snapshotID, jobs.StatusRunning)
 	return jobs.ClaimResult{Action: jobs.ClaimWork}, ident, nil
 }
 
-func confirmIngestSuccess(ctx context.Context, tx pgx.Tx, ident claimIdentity) error {
+func confirmIngestSuccess(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], ident claimIdentity) error {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -153,6 +155,9 @@ FROM mrfpipeline.mrf_snapshots WHERE id = $1`, ident.SnapshotID).Scan(&consume, 
 		return jobs.Failure(jobs.FailureDomainInvariant)
 	}
 	if consume == jobs.StatusSucceeded {
+		if err := planbatch.Schedule(ctx, tx, client, ident.SnapshotID); err != nil {
+			return err
+		}
 		return nil
 	}
 	if consume != jobs.StatusRunning {
@@ -175,6 +180,16 @@ SELECT payer_id, feed_id FROM mrfpipeline.mrf_feeds WHERE id = $1 FOR UPDATE`, i
 	if sourceID != ident.SourceID || feedRowID != ident.FeedRowID ||
 		formatMonth(month) != ident.MonthText || payer != ident.PayerID || feedID != ident.FeedID {
 		return jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	tag, err := tx.Exec(ctx, `
+UPDATE mrfpipeline.mrf_snapshots
+SET consume_status = $2, failure_code = NULL, updated_at = transaction_timestamp()
+WHERE id = $1`, ident.SnapshotID, jobs.StatusSucceeded)
+	if err != nil || tag.RowsAffected() != 1 {
+		return classifyDB(ctx, err)
+	}
+	if err := planbatch.Schedule(ctx, tx, client, ident.SnapshotID); err != nil {
+		return err
 	}
 	return nil
 }

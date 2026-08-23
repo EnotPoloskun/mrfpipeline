@@ -48,7 +48,7 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ConsumerIngestArg
 			return w.ingest(ctx, job, ident)
 		},
 		Confirm: func(ctx context.Context, tx pgx.Tx) error {
-			return confirmIngestSuccess(ctx, tx, ident)
+			return confirmIngestSuccess(ctx, tx, client, ident)
 		},
 	})
 }

@@ -264,7 +264,7 @@ func TestIntegrationRecognizeSkipsSecondIngest(t *testing.T) {
 			return errors.New("rollback")
 		}
 		return nil
-	}); err == nil {
+	}, nil); err == nil {
 		t.Fatal("expected rollback")
 	}
 	if err := w.ingest(context.Background(), ingestJob(jobID, snapID), ident); err != nil {
@@ -274,8 +274,8 @@ func TestIntegrationRecognizeSkipsSecondIngest(t *testing.T) {
 		t.Fatalf("calls %d", calls.Load())
 	}
 	if err := jobs.Succeed(context.Background(), pool, client, jobs.ConsumerIngestStage, snapID, jobID, nil, func(ctx context.Context, tx pgx.Tx) error {
-		return confirmIngestSuccess(ctx, tx, ident)
-	}); err != nil {
+		return confirmIngestSuccess(ctx, tx, client, ident)
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -376,6 +376,39 @@ func TestIntegrationCancelLeavesNoTarget(t *testing.T) {
 	final, _ := expectedFinalPath(warehouse, "uhc", "2026-08", "mrf-11")
 	if _, err := os.Lstat(final); !os.IsNotExist(err) {
 		t.Fatal("target created")
+	}
+}
+
+func TestIntegrationIngestWithPlansCreatesBatch(t *testing.T) {
+	pool := testDB(t)
+	ws := mustWorkspace(t)
+	t.Setenv("TMPDIR", ws.StagingDir())
+	svc := mustServices(t)
+	cat := mustCatalog(t)
+	warehouse := filepath.Join(t.TempDir(), "wh")
+	client := insertClient(t, pool)
+	sourceID, snapID, _ := insertIngestJob(t, pool, client, "2026-08-01")
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.mrf_plans (
+    mrf_snapshot_id, plan_name, issuer_name, plan_sponsor_name, plan_id_type, plan_id, plan_market_type
+) VALUES ($1, 'plan', 'issuer', NULL, 'hios', 'id', 'group')`, snapID); err != nil {
+		t.Fatal(err)
+	}
+	writeRealParsed(t, ws, sourceID, svc)
+	startIngestRuntime(t, pool, &Worker{
+		Pool: pool, Workspace: ws, WarehousePath: warehouse, ServicesPath: svc, Catalog: cat,
+		Logger: jobs.NewLogger(io.Discard),
+	}, 8)
+	waitConsume(t, pool, snapID, jobs.StatusSucceeded)
+	var batches, items, attaches int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.plan_attachment_batches WHERE mrf_snapshot_id = $1`, snapID).Scan(&batches); err != nil || batches != 1 {
+		t.Fatalf("batches %d", batches)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT requested_plan_count FROM mrfpipeline.plan_attachment_batches WHERE mrf_snapshot_id = $1`, snapID).Scan(&items); err != nil || items != 1 {
+		t.Fatalf("items %d", items)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindConsumerAttachPlans).Scan(&attaches); err != nil || attaches != 1 {
+		t.Fatalf("attach %d", attaches)
 	}
 }
 

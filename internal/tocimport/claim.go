@@ -9,8 +9,10 @@ import (
 
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/planbatch"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 )
 
 type claimInfo struct {
@@ -100,6 +102,48 @@ SELECT parse_status FROM mrfpipeline.toc_files WHERE id = $1`, tocFileID).Scan(&
 	}
 	if parse != jobs.StatusSucceeded {
 		return jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	return nil
+}
+
+func confirmImportSuccess(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], tocFileID int64) error {
+	if err := confirmParseSucceeded(ctx, tx, tocFileID); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `
+SELECT DISTINCT mrf_snapshot_id
+FROM mrfpipeline.toc_mrf_plan_associations
+WHERE toc_file_id = $1
+ORDER BY 1`, tocFileID)
+	if err != nil {
+		if ctx != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w: %w: confirm", jobs.ErrJob, database.ErrDatabase)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("%w: %w: confirm", jobs.ErrJob, database.ErrDatabase)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("%w: %w: confirm", jobs.ErrJob, database.ErrDatabase)
+	}
+	for _, id := range ids {
+		if err := tx.QueryRow(ctx, `
+SELECT id FROM mrfpipeline.mrf_snapshots WHERE id = $1 FOR UPDATE`, id).Scan(&id); err != nil {
+			if ctx != nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("%w: %w: confirm", jobs.ErrJob, database.ErrDatabase)
+		}
+		if err := planbatch.Schedule(ctx, tx, client, id); err != nil {
+			return err
+		}
 	}
 	return nil
 }

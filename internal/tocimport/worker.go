@@ -41,7 +41,7 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.TOCImportArgs]) e
 			return w.importTOC(ctx, river.ClientFromContext[pgx.Tx](ctx), job.Args.TOCFileID, info)
 		},
 		Confirm: func(ctx context.Context, tx pgx.Tx) error {
-			return confirmParseSucceeded(ctx, tx, job.Args.TOCFileID)
+			return confirmImportSuccess(ctx, tx, river.ClientFromContext[pgx.Tx](ctx), job.Args.TOCFileID)
 		},
 	})
 }

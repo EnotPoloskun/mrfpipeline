@@ -229,7 +229,7 @@ func TestIntegrationSuccessRollbackLeavesBlocked(t *testing.T) {
 			return errors.New("rollback")
 		}
 		return nil
-	}); err == nil {
+	}, nil); err == nil {
 		t.Fatal("expected rollback")
 	}
 	var parse string
@@ -317,7 +317,7 @@ UPDATE mrfpipeline.mrf_sources SET parse_status = 'running' WHERE id = $1`, sour
 	}
 	err := jobs.Succeed(context.Background(), pool, client, jobs.MRFParseStage, sourceID, jobID, nil, func(ctx context.Context, tx pgx.Tx) error {
 		return confirmParseSuccess(ctx, tx, client, sourceID)
-	})
+	}, nil)
 	if !jobs.IsFailure(err, jobs.FailureDomainInvariant) {
 		t.Fatalf("got %v", err)
 	}

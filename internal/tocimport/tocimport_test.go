@@ -1,7 +1,6 @@
 package tocimport
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -259,17 +258,6 @@ func TestCanonicalSponsorProjection(t *testing.T) {
 	ein := validAssoc("https://example.test/a.json", "plan", "issuer", &sponsor, "ein", "12", "group")
 	if canonicalSponsor(ein) == nil || *canonicalSponsor(ein) != sponsor {
 		t.Fatal("ein sponsor")
-	}
-}
-
-func TestNoAttachmentBatchPlanning(t *testing.T) {
-	t.Parallel()
-	src, err := os.ReadFile("import.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(src, []byte("plan_attachment")) || bytes.Contains(src, []byte("KindConsumerAttachPlans")) {
-		t.Fatal("attachment hook")
 	}
 }
 

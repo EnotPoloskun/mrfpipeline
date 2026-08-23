@@ -95,6 +95,18 @@ var ConsumerIngestStage = StageSpec{
 	UpdatedAtColumn:   "updated_at",
 }
 
+// ConsumerAttachPlansStage is the attachment stage on plan_attachment_batches.
+var ConsumerAttachPlansStage = StageSpec{
+	Table:             "mrfpipeline.plan_attachment_batches",
+	IDColumn:          "id",
+	StatusColumn:      "status",
+	JobIDColumn:       "river_job_id",
+	StartedAtColumn:   "started_at",
+	CompletedAtColumn: "completed_at",
+	FailureCodeColumn: "failure_code",
+	UpdatedAtColumn:   "updated_at",
+}
+
 // DiscoveryRunStage is the domain stage for discovery.run.
 var DiscoveryRunStage = StageSpec{
 	Table:             "mrfpipeline.discovery_runs",

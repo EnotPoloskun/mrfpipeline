@@ -354,7 +354,7 @@ func TestIntegrationSuccessRollbackRetainsDownload(t *testing.T) {
 			return errors.New("rollback")
 		}
 		return nil
-	}); err == nil {
+	}, nil); err == nil {
 		t.Fatal("expected rollback")
 	}
 	download, parse, parseJob, _ := sourceRow(t, pool, sourceID)

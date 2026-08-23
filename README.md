@@ -19,7 +19,7 @@ mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
 `migrate` applies application and River schemas. `discover` enqueues one
 bounded UHC discovery run. `work` currently consumes the discovery, TOC
 download, TOC parse, TOC import, MRF download, MRF parse, and consumer
-ingest queues.
+ingest and attach queues.
 Story 13 adds `reconcile` and `retry` and replaces this README with
 operational documentation.
 

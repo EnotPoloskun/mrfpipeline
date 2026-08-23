@@ -45,6 +45,12 @@ const (
 	FailureConsumerIngestOutputInvalid   = "consumer_ingest_output_invalid"
 	FailureConsumerIngestProviderChanged = "consumer_ingest_provider_changed"
 	FailureConsumerIngestDatabaseFailed  = "consumer_ingest_database_failed"
+	FailurePlanAttachConfigInvalid       = "plan_attach_config_invalid"
+	FailurePlanAttachInputInvalid        = "plan_attach_input_invalid"
+	FailurePlanAttachOutputFailed        = "plan_attach_output_failed"
+	FailurePlanAttachOutputInvalid       = "plan_attach_output_invalid"
+	FailurePlanAttachDatabaseFailed      = "plan_attach_database_failed"
+	FailurePlanAttachInvariant           = "plan_attach_invariant"
 
 	MaxAttempts    = 8
 	RescueAfter    = 24 * time.Hour
@@ -89,7 +95,9 @@ func allowedFailureCode(code string) bool {
 		FailureTOCImportManifestInvalid, FailureTOCImportSchemaInvalid, FailureTOCImportRowInvalid,
 		FailureTOCImportOrderInvalid, FailureTOCImportDatabaseFailed, FailureTOCImportInvariant,
 		FailureConsumerIngestConfigInvalid, FailureConsumerIngestInputInvalid, FailureConsumerIngestOutputFailed,
-		FailureConsumerIngestOutputInvalid, FailureConsumerIngestProviderChanged, FailureConsumerIngestDatabaseFailed:
+		FailureConsumerIngestOutputInvalid, FailureConsumerIngestProviderChanged, FailureConsumerIngestDatabaseFailed,
+		FailurePlanAttachConfigInvalid, FailurePlanAttachInputInvalid, FailurePlanAttachOutputFailed,
+		FailurePlanAttachOutputInvalid, FailurePlanAttachDatabaseFailed, FailurePlanAttachInvariant:
 		return true
 	default:
 		return false

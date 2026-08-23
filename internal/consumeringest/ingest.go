@@ -35,6 +35,11 @@ func formatSnapshotOutputID(id int64) string {
 	return "mrf-" + strconv.FormatInt(id, 10)
 }
 
+// FormatSnapshotOutputID emits mrf-<positive snapshot ID> without padding.
+func FormatSnapshotOutputID(id int64) string {
+	return formatSnapshotOutputID(id)
+}
+
 func expectedFinalPath(warehouse, payer, feedMonth, outputID string) (string, error) {
 	root, err := normalizePath(warehouse)
 	if err != nil {

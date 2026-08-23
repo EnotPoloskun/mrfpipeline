@@ -7,6 +7,16 @@ import (
 	"path/filepath"
 )
 
+// InspectCompletedSnapshot requires a recognized 1.5.0 warehouse and one
+// completed rate snapshot for the expected output ID.
+func InspectCompletedSnapshot(warehouse, payer, feedID, month, outputID string) error {
+	wh, err := InspectWarehouse(warehouse)
+	if err != nil || wh.Kind != warehouseRecognized {
+		return errOutputInvalid
+	}
+	return inspectCompletedSnapshot(warehouse, payer, feedID, month, outputID, wh.Catalog)
+}
+
 func inspectCompletedSnapshot(warehouse, payer, feedID, month, outputID string, want catalogIdentity) error {
 	final, err := expectedFinalPath(warehouse, payer, month, outputID)
 	if err != nil {

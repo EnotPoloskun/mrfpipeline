@@ -147,19 +147,23 @@ UPDATE mrfpipeline.toc_files SET download_river_job_id = $2 WHERE id = $1`, tocI
 	}()
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		var status, parse, imp, mrfDL, mrfParse, consume, ingestState string
+		var status, parse, imp, mrfDL, mrfParse, consume, ingestState, attachState, batch string
 		err := pool.QueryRow(context.Background(), `
 SELECT t.download_status, t.parse_status, t.import_status,
        COALESCE(s.download_status, ''), COALESCE(s.parse_status, ''),
        COALESCE(n.consume_status, ''),
-       COALESCE((SELECT state FROM mrfpipeline_river.river_job WHERE kind = $2 LIMIT 1), '')
+       COALESCE((SELECT state FROM mrfpipeline_river.river_job WHERE kind = $2 LIMIT 1), ''),
+       COALESCE((SELECT state FROM mrfpipeline_river.river_job WHERE kind = $3 LIMIT 1), ''),
+       COALESCE((SELECT status FROM mrfpipeline.plan_attachment_batches WHERE mrf_snapshot_id = n.id LIMIT 1), '')
 FROM mrfpipeline.toc_files t
 LEFT JOIN mrfpipeline.mrf_sources s ON true
 LEFT JOIN mrfpipeline.mrf_snapshots n ON n.mrf_source_id = s.id
-WHERE t.id = $1`, tocID, jobs.KindConsumerIngest).Scan(&status, &parse, &imp, &mrfDL, &mrfParse, &consume, &ingestState)
+WHERE t.id = $1`, tocID, jobs.KindConsumerIngest, jobs.KindConsumerAttachPlans).Scan(
+			&status, &parse, &imp, &mrfDL, &mrfParse, &consume, &ingestState, &attachState, &batch)
 		if err == nil && status == jobs.StatusSucceeded && parse == jobs.StatusSucceeded && imp == jobs.StatusSucceeded &&
 			mrfDL == jobs.StatusSucceeded && mrfParse == jobs.StatusSucceeded &&
-			consume == jobs.StatusSucceeded && ingestState == "completed" {
+			consume == jobs.StatusSucceeded && ingestState == "completed" &&
+			attachState == "completed" && batch == jobs.StatusSucceeded {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -191,11 +195,11 @@ WHERE t.id = $1`, tocID).Scan(&status, &parse, &imp, &mrfDL, &mrfParse, &consume
 		cancel()
 		t.Fatalf("ingests %d %v", ingests, err)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindConsumerAttachPlans).Scan(&attaches); err != nil || attaches != 0 {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1 AND state = 'completed'`, jobs.KindConsumerAttachPlans).Scan(&attaches); err != nil || attaches != 1 {
 		cancel()
 		t.Fatalf("attach %d %v", attaches, err)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.plan_attachment_batches`).Scan(&batches); err != nil || batches != 0 {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.plan_attachment_batches WHERE status = 'succeeded'`).Scan(&batches); err != nil || batches != 1 {
 		cancel()
 		t.Fatalf("batches %d %v", batches, err)
 	}

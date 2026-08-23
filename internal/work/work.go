@@ -10,6 +10,8 @@ import (
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/mrfdownload"
 	"github.com/enotpoloskun/mrfpipeline/internal/mrfparse"
+	"github.com/enotpoloskun/mrfpipeline/internal/planattach"
+	"github.com/enotpoloskun/mrfpipeline/internal/planbatch"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocdownload"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocimport"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocparse"
@@ -17,7 +19,7 @@ import (
 	"github.com/riverqueue/river"
 )
 
-// Runtime is the production River process for Stories 06–11.
+// Runtime is the production River process for Stories 06–12.
 type Runtime struct {
 	Pool                *pgxpool.Pool
 	Workspace           *artifact.Workspace
@@ -27,12 +29,13 @@ type Runtime struct {
 	Parse               tocparse.ParseFunc
 	ParseMRF            mrfparse.ParseFunc
 	Ingest              consumeringest.IngestFunc
+	Attach              planattach.AttachFunc
 	ServicesPath        string
 	WarehousePath       string
 	ProviderCatalogPath string
 }
 
-// Queues is the Story 11 worker map: discovery through mrf_parse plus consumer.
+// Queues is the Story 12 worker map: discovery through mrf_parse plus consumer.
 func Queues() map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
 		jobs.QueueDiscovery:   {MaxWorkers: 1},
@@ -46,11 +49,12 @@ func Queues() map[string]river.QueueConfig {
 }
 
 // Run starts a River client that consumes discovery.run, toc.download,
-// toc.parse, toc.import, mrf.download, mrf.parse, and consumer.ingest, waits
-// until ctx is canceled or the client stops, then shuts down. A requested
-// shutdown after Start succeeds returns nil. Queue concurrency 1 on mrf_parse
-// is not the parser safety contract; every mrfparser.Parse holds the process
-// mutex. consumer max 1 is the only warehouse writer.
+// toc.parse, toc.import, mrf.download, mrf.parse, consumer.ingest, and
+// consumer.attach_plans, waits until ctx is canceled or the client stops,
+// then shuts down. A requested shutdown after Start succeeds returns nil.
+// Queue concurrency 1 on mrf_parse is not the parser safety contract; every
+// mrfparser.Parse holds the process mutex. consumer max 1 is the only
+// warehouse writer.
 func (r Runtime) Run(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
@@ -96,6 +100,10 @@ func (r Runtime) Run(ctx context.Context) error {
 		Pool: r.Pool, Workspace: r.Workspace, WarehousePath: r.WarehousePath,
 		ServicesPath: services.Path, Catalog: catalog, Ingest: r.Ingest, Progress: progress, Logger: logger,
 	})
+	river.AddWorker(workers, &planattach.Worker{
+		Pool: r.Pool, Workspace: r.Workspace, WarehousePath: r.WarehousePath,
+		Attach: r.Attach, Logger: logger,
+	})
 	handler := jobs.NewDomainErrorHandler(r.Pool, []jobs.KindBinding{
 		{Kind: jobs.KindDiscoveryRun, Spec: jobs.DiscoveryRunStage, ArgField: jobs.FieldDiscoveryRunID},
 		{Kind: jobs.KindTOCDownload, Spec: jobs.TOCDownloadStage, ArgField: jobs.FieldTOCFileID},
@@ -104,7 +112,15 @@ func (r Runtime) Run(ctx context.Context) error {
 		{Kind: jobs.KindMRFDownload, Spec: jobs.MRFDownloadStage, ArgField: jobs.FieldMRFSourceID},
 		{Kind: jobs.KindMRFParse, Spec: jobs.MRFParseStage, ArgField: jobs.FieldMRFSourceID},
 		{Kind: jobs.KindConsumerIngest, Spec: jobs.ConsumerIngestStage, ArgField: jobs.FieldMRFSnapshotID},
+		{Kind: jobs.KindConsumerAttachPlans, Spec: jobs.ConsumerAttachPlansStage, ArgField: jobs.FieldPlanAttachmentBatchID},
 	}, logger)
+	insert, err := jobs.NewInsertClient(ctx, r.Pool, logger)
+	if err != nil {
+		return err
+	}
+	if err := planbatch.SweepConsumed(ctx, r.Pool, insert); err != nil {
+		return err
+	}
 	client, err := jobs.NewRuntime(ctx, r.Pool, workers, Queues(), handler, logger)
 	if err != nil {
 		return err

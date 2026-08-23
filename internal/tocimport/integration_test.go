@@ -17,6 +17,7 @@ import (
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/planbatch"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -619,6 +620,59 @@ func TestIntegrationQueueConcurrencyTwo(t *testing.T) {
 	gate.Done()
 	for _, id := range ids {
 		waitImport(t, pool, id, jobs.StatusSucceeded)
+	}
+}
+
+func TestIntegrationTOCImportAfterConsumeCreatesBatch(t *testing.T) {
+	pool := testDB(t)
+	client := insertClient(t, pool)
+	ws := mustWorkspace(t)
+	loc := "https://files.test/toc-after/" + strconv.FormatInt(tocURLSeq.Add(1), 10) + ".json"
+	tocID, _ := insertImportJob(t, pool, client, time.Time{})
+	writeParsedTOC(t, ws, tocID, "2026-08", sampleTOC(loc, "A", "issuer", "hios", "1", "group", ""))
+	startImportRuntime(t, pool, ws, 8, nil)
+	waitImport(t, pool, tocID, jobs.StatusSucceeded)
+	var snapID int64
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM mrfpipeline.mrf_snapshots`).Scan(&snapID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+UPDATE mrfpipeline.mrf_snapshots
+SET consume_status = 'succeeded', consume_river_job_id = 1, updated_at = transaction_timestamp()
+WHERE id = $1`, snapID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := planbatch.Schedule(context.Background(), tx, client, snapID); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+UPDATE mrfpipeline.plan_attachment_batches
+SET status = 'succeeded', added_plan_count = 1, completed_at = transaction_timestamp()
+WHERE mrf_snapshot_id = $1`, snapID); err != nil {
+		t.Fatal(err)
+	}
+	toc2, _ := insertImportJob(t, pool, client, time.Time{})
+	writeParsedTOC(t, ws, toc2, "2026-08", sampleTOC(loc, "C", "issuer", "hios", "3", "group", ""))
+	waitImport(t, pool, toc2, jobs.StatusSucceeded)
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.plan_attachment_batches WHERE mrf_snapshot_id = $1`, snapID) != 2 {
+		t.Fatal("second batch")
+	}
+	var name string
+	if err := pool.QueryRow(context.Background(), `
+SELECT p.plan_name FROM mrfpipeline.plan_attachment_batches b
+JOIN mrfpipeline.plan_attachment_batch_items i ON i.plan_attachment_batch_id = b.id
+JOIN mrfpipeline.mrf_plans p ON p.id = i.mrf_plan_id
+WHERE b.mrf_snapshot_id = $1
+ORDER BY b.id DESC LIMIT 1`, snapID).Scan(&name); err != nil || name != "C" {
+		t.Fatalf("second plan %s", name)
 	}
 }
 

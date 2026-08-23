@@ -334,7 +334,7 @@ func TestIntegrationSuccessRollbackRetainsOutput(t *testing.T) {
 	succ := &jobs.Successor{Spec: jobs.TOCImportStage, DomainID: tocID, Args: &jobs.TOCImportArgs{TOCFileID: tocID}}
 	err = jobs.Succeed(context.Background(), pool, client, jobs.TOCParseStage, tocID, jobID, succ, func(context.Context, pgx.Tx) error {
 		return errors.New("forced success rollback")
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("succeed should roll back")
 	}

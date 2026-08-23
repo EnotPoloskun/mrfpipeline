@@ -116,6 +116,8 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 		{filepath.Join(root, "internal", "mrfdownload"), common},
 		{filepath.Join(root, "internal", "mrfparse"), common},
 		{filepath.Join(root, "internal", "consumeringest"), common},
+		{filepath.Join(root, "internal", "planbatch"), common},
+		{filepath.Join(root, "internal", "planattach"), common},
 		{filepath.Join(root, "internal", "work"), common},
 		{filepath.Join(root, "internal", "artifact"), []string{
 			"database/sql",

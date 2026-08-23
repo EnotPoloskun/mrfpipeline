@@ -37,7 +37,7 @@ const workHelp = `Usage:
 
 Run background workers. This command validates the complete worker
 configuration, starts the discovery, TOC download, TOC parse, TOC import,
-MRF download, MRF parse, and consumer ingest queues, and runs until canceled.
+MRF download, MRF parse, and consumer ingest and attach queues, and runs until canceled.
 
 Required environment:
   MRFPIPELINE_DATABASE_URL
