@@ -128,7 +128,7 @@ func scheduleBatch(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.Tx
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := planbatch.Schedule(context.Background(), tx, client, snapID); err != nil {
+	if _, err := planbatch.Schedule(context.Background(), tx, client, snapID); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(context.Background()); err != nil {

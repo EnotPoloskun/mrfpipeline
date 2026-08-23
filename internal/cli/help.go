@@ -11,13 +11,17 @@ Usage:
   mrfpipeline migrate
   mrfpipeline work
   mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
+  mrfpipeline reconcile
+  mrfpipeline retry --stage <job-kind> --id <domain-id>
   mrfpipeline --help
   mrfpipeline --version
 
 Commands:
-  migrate   Apply application and River database migrations
-  work      Run background workers
-  discover  Enqueue one bounded UHC discovery run
+  migrate    Apply application and River database migrations
+  work       Run background workers
+  discover   Enqueue one bounded UHC discovery run
+  reconcile  Repair safe nonterminal scheduling and artifact gaps
+  retry      Reopen one exact failed stage with a fresh River series
 `
 
 const migrateHelp = `Usage:
@@ -36,8 +40,10 @@ const workHelp = `Usage:
   mrfpipeline work --help
 
 Run background workers. This command validates the complete worker
-configuration, starts the discovery, TOC download, TOC parse, TOC import,
-MRF download, MRF parse, and consumer ingest and attach queues, and runs until canceled.
+configuration, acquires the exclusive worker lease, runs the same safe
+reconciliation as reconcile, then starts the discovery, TOC download, TOC
+parse, TOC import, MRF download, MRF parse, and consumer ingest and attach
+queues, and runs until canceled.
 
 Required environment:
   MRFPIPELINE_DATABASE_URL
@@ -69,6 +75,40 @@ Required environment:
   MRFPIPELINE_DATABASE_URL  PostgreSQL connection string
 `
 
+const reconcileHelp = `Usage:
+  mrfpipeline reconcile
+  mrfpipeline reconcile --help
+
+Acquire the exclusive worker lease and perform only safe nonterminal
+repairs: missing successor jobs, orphaned current jobs, plan-batch
+scheduling, and eligible artifact cleanup. Terminal failed stages are
+not reopened; use retry for those.
+
+Required environment:
+  MRFPIPELINE_DATABASE_URL
+  MRFPIPELINE_ARTIFACT_ROOT
+  MRFPIPELINE_WAREHOUSE_PATH
+  MRFPIPELINE_PROVIDER_CATALOG_PATH
+  MRFPIPELINE_SERVICES_PATH
+`
+
+const retryHelp = `Usage:
+  mrfpipeline retry --stage <job-kind> --id <domain-id>
+  mrfpipeline retry --help
+
+Reopen one exact failed domain stage and insert a replacement River
+job. The command does not run the job. The worker must be stopped.
+The same stage identity is retained. An attachment retry reuses the
+frozen plan batch rather than creating a new batch for its items.
+
+Required flags:
+  --stage   One production job kind
+  --id      Positive domain row ID
+
+Required environment:
+  MRFPIPELINE_DATABASE_URL  PostgreSQL connection string
+`
+
 func helpFor(command string) string {
 	switch command {
 	case cmdMigrate:
@@ -77,6 +117,10 @@ func helpFor(command string) string {
 		return workHelp
 	case cmdDiscover:
 		return discoverHelp
+	case cmdReconcile:
+		return reconcileHelp
+	case cmdRetry:
+		return retryHelp
 	default:
 		return rootHelp
 	}

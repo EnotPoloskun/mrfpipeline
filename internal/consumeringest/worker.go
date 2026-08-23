@@ -26,6 +26,7 @@ type Worker struct {
 	Ingest        IngestFunc
 	Progress      *jobs.Progress
 	Logger        *slog.Logger
+	Health        func(context.Context) error
 }
 
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ConsumerIngestArgs]) error {
@@ -90,6 +91,11 @@ func (w *Worker) ingest(ctx context.Context, job *river.Job[jobs.ConsumerIngestA
 	progress := w.Progress
 	if progress == nil {
 		progress = jobs.NewProgress(w.Logger)
+	}
+	if w.Health != nil {
+		if err := w.Health(ctx); err != nil {
+			return err
+		}
 	}
 	cfg := mrfconsumer.Config{
 		InputPath:           parsed,

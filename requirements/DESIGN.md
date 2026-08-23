@@ -2,15 +2,11 @@
 
 ## Document status
 
-This document describes the intended version 1 end state of `mrfpipeline`.
+This document describes the version 1 contract of `mrfpipeline`.
 The numbered requirement stories are the implementation sequence and remain
-authoritative where they are more specific. A later story may supersede an
-earlier placeholder or refine a detail that this document deliberately assigns
-to that story.
+authoritative where they are more specific.
 
-Stories 01 through 13 define the complete planned version 1 implementation
-sequence. This is a design document, not a claim that those stages are already
-implemented.
+Stories 01 through 13 specify the full version 1 implementation sequence.
 
 The design records the product decisions that must remain consistent across
 stories:
@@ -221,8 +217,9 @@ mrfpipeline retry --stage <job-kind> --id <domain-id>
 other command migrates automatically.
 
 `work` validates the complete worker configuration and current schema, opens
-the local workspace, starts the registered River workers, and runs until
-canceled.
+the local workspace, acquires the exclusive worker lease, runs the same safe
+reconciliation as `reconcile`, starts the registered River workers, and runs
+until canceled.
 
 `discover` creates and enqueues one durable discovery run. `--limit` is
 required and must be a positive `int64`. The command does not wait for TOC
@@ -267,11 +264,6 @@ The established environment is:
 `migrate`, `discover`, and `retry` need only the database URL. `work` and
 `reconcile` need the complete set. Configuration has no file format and
 secrets are not accepted through command-line flags.
-
-Future worker stories may need to pin a sibling-tool invocation mechanism, but
-they must not add incidental configuration merely to expose internal package
-structure. Any new required deployment value must be introduced explicitly in
-its story and reflected here.
 
 ## Durable identity model
 
@@ -1098,7 +1090,7 @@ advances.
 
 ## Story sequence
 
-The proposed implementation sequence is:
+Stories 01–13 are the full version 1 implementation sequence:
 
 | Story | Deliverable |
 |---:|---|

@@ -34,8 +34,25 @@ func TestProductionJobContracts(t *testing.T) {
 		{KindConsumerIngest, QueueConsumer, FieldMRFSnapshotID, ConsumerIngestArgs{}.Kind, ConsumerIngestArgs{}.InsertOpts(), ConsumerIngestArgs{MRFSnapshotID: 7}},
 		{KindConsumerAttachPlans, QueueConsumer, FieldPlanAttachmentBatchID, ConsumerAttachPlansArgs{}.Kind, ConsumerAttachPlansArgs{}.InsertOpts(), ConsumerAttachPlansArgs{PlanAttachmentBatchID: 7}},
 	}
-	if len(cases) != len(ProductionKinds()) {
-		t.Fatalf("catalog size %d", len(cases))
+	if len(cases) != len(ProductionKinds()) || len(ProductionBindings()) != len(ProductionKinds()) {
+		t.Fatalf("catalog size %d bindings %d", len(cases), len(ProductionBindings()))
+	}
+	for i, b := range ProductionBindings() {
+		if b.Kind != cases[i].kind || b.ArgField != cases[i].field {
+			t.Fatalf("binding %s", b.Kind)
+		}
+		args, err := ArgsFor(b.Kind, 7)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := DomainIDFromEncodedArgs(b.Kind, raw)
+		if err != nil || got != 7 {
+			t.Fatalf("args %s %d %v", b.Kind, got, err)
+		}
 	}
 	for i, tc := range cases {
 		if tc.kindFn() != tc.kind || ProductionKinds()[i] != tc.kind {

@@ -24,6 +24,7 @@ type Worker struct {
 	WarehousePath string
 	Attach        AttachFunc
 	Logger        *slog.Logger
+	Health        func(context.Context) error
 }
 
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ConsumerAttachPlansArgs]) error {
@@ -83,6 +84,11 @@ func (w *Worker) attach(ctx context.Context, ident claimIdentity) (int64, error)
 
 	outputID := consumeringest.FormatSnapshotOutputID(ident.SnapshotID)
 	batchName := formatBatchID(ident.BatchID)
+	if w.Health != nil {
+		if err := w.Health(ctx); err != nil {
+			return 0, err
+		}
+	}
 	cfg := mrfconsumer.AttachPlansConfig{
 		PlansPath:   plansFile,
 		OutputPath:  w.WarehousePath,
@@ -199,7 +205,7 @@ WHERE id = $1`, ident.BatchID, jobs.StatusSucceeded, added)
 	if err != nil || tag.RowsAffected() != 1 {
 		return classifyDB(ctx, err)
 	}
-	if err := planbatch.Schedule(ctx, tx, client, ident.SnapshotID); err != nil {
+	if _, err := planbatch.Schedule(ctx, tx, client, ident.SnapshotID); err != nil {
 		return err
 	}
 	return nil

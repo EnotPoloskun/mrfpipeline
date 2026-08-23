@@ -112,7 +112,7 @@ func schedule(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.Tx], sn
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := Schedule(context.Background(), tx, client, snapID); err != nil {
+	if _, err := Schedule(context.Background(), tx, client, snapID); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(context.Background()); err != nil {
@@ -272,11 +272,11 @@ func TestSweepConsumedBacklog(t *testing.T) {
 	client := insertClient(t, pool)
 	snap := insertConsumedSnapshot(t, pool)
 	insertPlan(t, pool, snap, "A", "hios", "1", nil)
-	if err := SweepConsumed(context.Background(), pool, client); err != nil {
-		t.Fatal(err)
+	if n, err := SweepConsumed(context.Background(), pool, client); err != nil || n != 1 {
+		t.Fatalf("first sweep %d %v", n, err)
 	}
-	if err := SweepConsumed(context.Background(), pool, client); err != nil {
-		t.Fatal(err)
+	if n, err := SweepConsumed(context.Background(), pool, client); err != nil || n != 0 {
+		t.Fatalf("second sweep %d %v", n, err)
 	}
 	var n int
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.plan_attachment_batches`).Scan(&n); err != nil || n != 1 {

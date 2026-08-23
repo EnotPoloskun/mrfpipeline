@@ -22,6 +22,8 @@ const (
 	FieldPayer           = "payer"
 	FieldCollectionMonth = "collection_month"
 	FieldLimit           = "limit"
+	FieldStage           = "stage"
+	FieldID              = "id"
 )
 
 // ValidateDatabaseURL accepts a nonempty opaque secret. It does not parse,
@@ -74,28 +76,44 @@ func ValidateCollectionMonth(raw string) error {
 // ValidateLimit parses a required positive base-10 int64. Leading zeroes have
 // ordinary decimal meaning. A leading plus sign is invalid.
 func ValidateLimit(raw string) (int64, error) {
+	return ValidatePositiveID(FieldLimit, raw)
+}
+
+// ValidatePositiveID parses a required positive base-10 int64 with the same
+// rules as --limit (leading zeroes ok, no sign, no separators).
+func ValidatePositiveID(field, raw string) (int64, error) {
 	if raw == "" {
-		return 0, wrap(FieldLimit, "must be a positive integer")
+		return 0, wrap(field, "must be a positive integer")
 	}
 	if !utf8.ValidString(raw) {
-		return 0, wrap(FieldLimit, "invalid UTF-8")
+		return 0, wrap(field, "invalid UTF-8")
 	}
 	if raw[0] == '+' || raw[0] == '-' {
-		return 0, wrap(FieldLimit, "must be a positive integer")
+		return 0, wrap(field, "must be a positive integer")
 	}
 	for i := 0; i < len(raw); i++ {
 		if raw[i] < '0' || raw[i] > '9' {
-			return 0, wrap(FieldLimit, "must be a positive integer")
+			return 0, wrap(field, "must be a positive integer")
 		}
 	}
 	n, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return 0, wrap(FieldLimit, "must fit in a signed 64-bit integer")
+		return 0, wrap(field, "must fit in a signed 64-bit integer")
 	}
 	if n <= 0 {
-		return 0, wrap(FieldLimit, "must be a positive integer")
+		return 0, wrap(field, "must be a positive integer")
 	}
 	return n, nil
+}
+
+// ValidateStage accepts exactly one production job kind.
+func ValidateStage(raw string, kinds []string) error {
+	for _, k := range kinds {
+		if raw == k {
+			return nil
+		}
+	}
+	return wrap(FieldStage, "must be a production job kind")
 }
 
 func checkOpaqueText(name, raw string) error {

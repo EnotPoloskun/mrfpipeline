@@ -141,7 +141,7 @@ SELECT id FROM mrfpipeline.mrf_snapshots WHERE id = $1 FOR UPDATE`, id).Scan(&id
 			}
 			return fmt.Errorf("%w: %w: confirm", jobs.ErrJob, database.ErrDatabase)
 		}
-		if err := planbatch.Schedule(ctx, tx, client, id); err != nil {
+		if _, err := planbatch.Schedule(ctx, tx, client, id); err != nil {
 			return err
 		}
 	}

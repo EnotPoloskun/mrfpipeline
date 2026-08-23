@@ -3,15 +3,17 @@ package work
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/consumeringest"
+	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/discovery"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/mrfdownload"
 	"github.com/enotpoloskun/mrfpipeline/internal/mrfparse"
 	"github.com/enotpoloskun/mrfpipeline/internal/planattach"
-	"github.com/enotpoloskun/mrfpipeline/internal/planbatch"
+	"github.com/enotpoloskun/mrfpipeline/internal/reconcile"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocdownload"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocimport"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocparse"
@@ -80,10 +82,31 @@ func (r Runtime) Run(ctx context.Context) error {
 	if err := consumeringest.CheckWarehouseCatalog(warehouse, catalog, r.Workspace.Root, r.ServicesPath); err != nil {
 		return err
 	}
+	lease, err := database.AcquireWorkerLease(ctx, r.Pool)
+	if err != nil {
+		if database.IsLeaseUnavailable(err) {
+			return jobs.Failure(jobs.FailureWorkerLeaseUnavailable)
+		}
+		return err
+	}
+	defer func() { _ = lease.Release(context.Background()) }()
+
 	logger := r.Logger
 	if logger == nil {
 		logger = jobs.NewLogger(nil)
 	}
+	if _, err := reconcile.Run(ctx, reconcile.Params{
+		Pool: r.Pool, Workspace: r.Workspace, WarehousePath: r.WarehousePath,
+		ProviderCatalogPath: r.ProviderCatalogPath, ServicesPath: r.ServicesPath, Logger: logger,
+	}); err != nil {
+		return err
+	}
+
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var lost atomic.Bool
+	health := reconcile.Health(lease, cancel, &lost)
+
 	progress := jobs.NewProgress(logger)
 	downloader := r.Downloader
 	if downloader == nil {
@@ -98,33 +121,18 @@ func (r Runtime) Run(ctx context.Context) error {
 	river.AddWorker(workers, &mrfparse.Worker{Pool: r.Pool, Workspace: r.Workspace, Parse: r.ParseMRF, Progress: progress, Logger: logger, Services: services})
 	river.AddWorker(workers, &consumeringest.Worker{
 		Pool: r.Pool, Workspace: r.Workspace, WarehousePath: r.WarehousePath,
-		ServicesPath: services.Path, Catalog: catalog, Ingest: r.Ingest, Progress: progress, Logger: logger,
+		ServicesPath: services.Path, Catalog: catalog, Ingest: r.Ingest, Progress: progress, Logger: logger, Health: health,
 	})
 	river.AddWorker(workers, &planattach.Worker{
 		Pool: r.Pool, Workspace: r.Workspace, WarehousePath: r.WarehousePath,
-		Attach: r.Attach, Logger: logger,
+		Attach: r.Attach, Logger: logger, Health: health,
 	})
-	handler := jobs.NewDomainErrorHandler(r.Pool, []jobs.KindBinding{
-		{Kind: jobs.KindDiscoveryRun, Spec: jobs.DiscoveryRunStage, ArgField: jobs.FieldDiscoveryRunID},
-		{Kind: jobs.KindTOCDownload, Spec: jobs.TOCDownloadStage, ArgField: jobs.FieldTOCFileID},
-		{Kind: jobs.KindTOCParse, Spec: jobs.TOCParseStage, ArgField: jobs.FieldTOCFileID},
-		{Kind: jobs.KindTOCImport, Spec: jobs.TOCImportStage, ArgField: jobs.FieldTOCFileID},
-		{Kind: jobs.KindMRFDownload, Spec: jobs.MRFDownloadStage, ArgField: jobs.FieldMRFSourceID},
-		{Kind: jobs.KindMRFParse, Spec: jobs.MRFParseStage, ArgField: jobs.FieldMRFSourceID},
-		{Kind: jobs.KindConsumerIngest, Spec: jobs.ConsumerIngestStage, ArgField: jobs.FieldMRFSnapshotID},
-		{Kind: jobs.KindConsumerAttachPlans, Spec: jobs.ConsumerAttachPlansStage, ArgField: jobs.FieldPlanAttachmentBatchID},
-	}, logger)
-	insert, err := jobs.NewInsertClient(ctx, r.Pool, logger)
-	if err != nil {
-		return err
-	}
-	if err := planbatch.SweepConsumed(ctx, r.Pool, insert); err != nil {
-		return err
-	}
+	handler := jobs.NewDomainErrorHandler(r.Pool, jobs.ProductionBindings(), logger)
 	client, err := jobs.NewRuntime(ctx, r.Pool, workers, Queues(), handler, logger)
 	if err != nil {
 		return err
 	}
+	go reconcile.WatchLease(workCtx, lease, cancel, &lost)
 	if err := client.Start(context.Background()); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -132,11 +140,17 @@ func (r Runtime) Run(ctx context.Context) error {
 		return jobs.Failure("start")
 	}
 	select {
-	case <-ctx.Done():
+	case <-workCtx.Done():
 		if err := jobs.Shutdown(context.Background(), client); err != nil {
 			return err
 		}
-		return nil
+		if lost.Load() {
+			return jobs.Failure(jobs.FailureWorkerLeaseLost)
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		return jobs.Failure(jobs.FailureWorkerLeaseLost)
 	case <-client.Stopped():
 		return jobs.Failure("runtime")
 	}

@@ -155,7 +155,7 @@ FROM mrfpipeline.mrf_snapshots WHERE id = $1`, ident.SnapshotID).Scan(&consume, 
 		return jobs.Failure(jobs.FailureDomainInvariant)
 	}
 	if consume == jobs.StatusSucceeded {
-		if err := planbatch.Schedule(ctx, tx, client, ident.SnapshotID); err != nil {
+		if _, err := planbatch.Schedule(ctx, tx, client, ident.SnapshotID); err != nil {
 			return err
 		}
 		return nil
@@ -188,7 +188,7 @@ WHERE id = $1`, ident.SnapshotID, jobs.StatusSucceeded)
 	if err != nil || tag.RowsAffected() != 1 {
 		return classifyDB(ctx, err)
 	}
-	if err := planbatch.Schedule(ctx, tx, client, ident.SnapshotID); err != nil {
+	if _, err := planbatch.Schedule(ctx, tx, client, ident.SnapshotID); err != nil {
 		return err
 	}
 	return nil

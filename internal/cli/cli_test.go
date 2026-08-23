@@ -61,6 +61,8 @@ func TestInformationalInvocations(t *testing.T) {
 		{"migrate", "--help"},
 		{"work", "--help"},
 		{"discover", "--help"},
+		{"reconcile", "--help"},
+		{"retry", "--help"},
 		{"--version"},
 	}
 	for _, args := range cases {
@@ -73,8 +75,13 @@ func TestInformationalInvocations(t *testing.T) {
 			if stdout == "" {
 				t.Fatal("expected informational stdout")
 			}
-			if strings.Contains(stdout, "reconcile") || strings.Contains(stdout, "retry") || strings.Contains(stdout, "later story") {
-				t.Fatalf("help mentioned later commands: %q", stdout)
+			if strings.Contains(stdout, "later story") {
+				t.Fatalf("help mentioned later story: %q", stdout)
+			}
+			if args[0] == "--help" {
+				if !strings.Contains(stdout, "reconcile") || !strings.Contains(stdout, "retry") {
+					t.Fatalf("root help must list five commands: %q", stdout)
+				}
 			}
 		})
 	}
@@ -123,6 +130,12 @@ func TestUsageErrors(t *testing.T) {
 		{"discover limit no arg", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit"}, "Try 'mrfpipeline discover --help'."},
 		{"discover limit then flag", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "--payer", "uhc"}, "Try 'mrfpipeline discover --help'."},
 		{"discover help combo", []string{"discover", "--payer", "uhc", "--help"}, "Try 'mrfpipeline discover --help'."},
+		{"reconcile extra", []string{"reconcile", "now"}, "Try 'mrfpipeline reconcile --help'."},
+		{"reconcile flag", []string{"reconcile", "--all"}, "Try 'mrfpipeline reconcile --help'."},
+		{"retry missing id", []string{"retry", "--stage", "toc.parse"}, "Try 'mrfpipeline retry --help'."},
+		{"retry missing stage", []string{"retry", "--id", "1"}, "Try 'mrfpipeline retry --help'."},
+		{"retry unknown flag", []string{"retry", "--stage", "toc.parse", "--id", "1", "--foo"}, "Try 'mrfpipeline retry --help'."},
+		{"retry positional", []string{"retry", "toc.parse", "1"}, "Try 'mrfpipeline retry --help'."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -228,6 +241,27 @@ func TestCommandEnvironmentRequirements(t *testing.T) {
 		}
 	})
 
+	t.Run("reconcile requires every worker path", func(t *testing.T) {
+		t.Parallel()
+		env := validWorkEnv(t)
+		delete(env, config.EnvServicesPath)
+		code, stdout, stderr := runCLI(context.Background(), []string{"reconcile"}, envMap(env))
+		if code != 2 || stdout != "" {
+			t.Fatalf("exit %d", code)
+		}
+		if !strings.Contains(stderr, config.EnvServicesPath) {
+			t.Fatalf("stderr %q", stderr)
+		}
+	})
+
+	t.Run("retry requires only database", func(t *testing.T) {
+		t.Parallel()
+		_, err := execute(context.Background(), []string{"retry", "--stage", "toc.parse", "--id", "1"}, envMap(invalidWorker))
+		if !errors.Is(err, database.ErrDatabase) {
+			t.Fatalf("got %v", err)
+		}
+	})
+
 	t.Run("work requires every worker path", func(t *testing.T) {
 		t.Parallel()
 		env := validWorkEnv(t)
@@ -324,6 +358,37 @@ func TestDiscoverSemanticValidation(t *testing.T) {
 	}
 }
 
+func TestRetrySemanticValidation(t *testing.T) {
+	t.Parallel()
+	env := envMap(validDB())
+	cases := []struct {
+		name  string
+		args  []string
+		field string
+	}{
+		{"stage", []string{"retry", "--stage", "not.a.kind", "--id", "1"}, config.FieldStage},
+		{"id zero", []string{"retry", "--stage", "toc.parse", "--id", "0"}, config.FieldID},
+		{"id plus", []string{"retry", "--stage", "toc.parse", "--id", "+5"}, config.FieldID},
+		{"id hex", []string{"retry", "--stage", "toc.parse", "--id", "0x10"}, config.FieldID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			code, stdout, stderr := runCLI(context.Background(), tc.args, env)
+			if code != 2 || stdout != "" {
+				t.Fatalf("exit %d stderr=%q", code, stderr)
+			}
+			if !strings.Contains(stderr, tc.field) {
+				t.Fatalf("stderr %q missing %s", stderr, tc.field)
+			}
+		})
+	}
+	_, err := execute(context.Background(), []string{"retry", "--stage", "consumer.attach_plans", "--id", "0230"}, env)
+	if !errors.Is(err, database.ErrDatabase) {
+		t.Fatalf("leading zeroes: %v", err)
+	}
+}
+
 func TestNilContextPanicsBeforeValidation(t *testing.T) {
 	t.Parallel()
 	getenv := func(string) string {
@@ -334,6 +399,8 @@ func TestNilContextPanicsBeforeValidation(t *testing.T) {
 		func() { _, _ = runMigrate(nil, getenv) },
 		func() { _ = runWork(nil, getenv) },
 		func() { _, _ = runDiscover(nil, getenv, "UHC", "bad", "0") },
+		func() { _, _ = runReconcile(nil, getenv) },
+		func() { _, _ = runRetry(nil, getenv, "toc.parse", "1") },
 	} {
 		func() {
 			defer func() {

@@ -51,6 +51,13 @@ const (
 	FailurePlanAttachOutputInvalid       = "plan_attach_output_invalid"
 	FailurePlanAttachDatabaseFailed      = "plan_attach_database_failed"
 	FailurePlanAttachInvariant           = "plan_attach_invariant"
+	FailureWorkerLeaseUnavailable        = "worker_lease_unavailable"
+	FailureWorkerLeaseLost               = "worker_lease_lost"
+	FailureRiverTerminalWithoutResult    = "river_terminal_without_domain_result"
+	FailureReconciliationDatabaseFailed  = "reconciliation_database_failed"
+	FailureArtifactReconciliationFailed  = "artifact_reconciliation_failed"
+	FailureRetryStageNotFailed           = "retry_stage_not_failed"
+	FailureRetryStageInvariant           = "retry_stage_invariant"
 
 	MaxAttempts    = 8
 	RescueAfter    = 24 * time.Hour
@@ -97,7 +104,10 @@ func allowedFailureCode(code string) bool {
 		FailureConsumerIngestConfigInvalid, FailureConsumerIngestInputInvalid, FailureConsumerIngestOutputFailed,
 		FailureConsumerIngestOutputInvalid, FailureConsumerIngestProviderChanged, FailureConsumerIngestDatabaseFailed,
 		FailurePlanAttachConfigInvalid, FailurePlanAttachInputInvalid, FailurePlanAttachOutputFailed,
-		FailurePlanAttachOutputInvalid, FailurePlanAttachDatabaseFailed, FailurePlanAttachInvariant:
+		FailurePlanAttachOutputInvalid, FailurePlanAttachDatabaseFailed, FailurePlanAttachInvariant,
+		FailureWorkerLeaseUnavailable, FailureWorkerLeaseLost, FailureRiverTerminalWithoutResult,
+		FailureReconciliationDatabaseFailed, FailureArtifactReconciliationFailed,
+		FailureRetryStageNotFailed, FailureRetryStageInvariant:
 		return true
 	default:
 		return false
@@ -126,6 +136,11 @@ func isFailure(err error, code string) bool {
 // IsFailure reports whether err is a coded terminal/retryable job failure.
 func IsFailure(err error, code string) bool {
 	return isFailure(err, code)
+}
+
+// IsRecognizedFailureCode reports whether code is a fixed persisted/runtime code.
+func IsRecognizedFailureCode(code string) bool {
+	return allowedFailureCode(code)
 }
 
 func classifyJob(ctx context.Context, op string, err error) error {

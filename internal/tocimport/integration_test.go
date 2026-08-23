@@ -646,7 +646,7 @@ WHERE id = $1`, snapID); err != nil {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := planbatch.Schedule(context.Background(), tx, client, snapID); err != nil {
+	if _, err := planbatch.Schedule(context.Background(), tx, client, snapID); err != nil {
 		_ = tx.Rollback(context.Background())
 		t.Fatal(err)
 	}

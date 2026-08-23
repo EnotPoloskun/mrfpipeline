@@ -20,6 +20,31 @@ func repoRoot(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
 }
 
+func TestREADMEDescribesVersion1(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"mrfpipeline reconcile",
+		"mrfpipeline retry",
+		"current_*",
+		"RIVER_SCHEMA=mrfpipeline_river",
+		"--limit 1",
+		"Authorized URL-debug",
+		"plan-ready",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("README missing %q", want)
+		}
+	}
+	if strings.Contains(text, "postgres://") || strings.Contains(text, "Story 13 adds") {
+		t.Fatal("README still looks unfinished or embeds a url")
+	}
+}
+
 func TestModulePathAndGoVersion(t *testing.T) {
 	t.Parallel()
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), "go.mod"))
@@ -118,6 +143,7 @@ func TestNoForbiddenProductionImports(t *testing.T) {
 		{filepath.Join(root, "internal", "consumeringest"), common},
 		{filepath.Join(root, "internal", "planbatch"), common},
 		{filepath.Join(root, "internal", "planattach"), common},
+		{filepath.Join(root, "internal", "reconcile"), common},
 		{filepath.Join(root, "internal", "work"), common},
 		{filepath.Join(root, "internal", "artifact"), []string{
 			"database/sql",

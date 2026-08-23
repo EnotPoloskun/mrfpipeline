@@ -25,39 +25,39 @@ func FormatPlanBatchID(id int64) string {
 // transaction. If the caller already holds the snapshot row, FOR UPDATE
 // re-reads it. Uniqueness or serialization conflicts retry from a fresh
 // snapshot lock in this same transaction.
-func Schedule(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], snapshotID int64) error {
+func Schedule(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], snapshotID int64) (bool, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	if tx == nil || snapshotID <= 0 {
-		return jobs.Failure(jobs.FailureInvalidArguments)
+		return false, jobs.Failure(jobs.FailureInvalidArguments)
 	}
 	var last error
 	for i := 0; i < scheduleRetries; i++ {
 		if _, err := tx.Exec(ctx, `SAVEPOINT plan_batch_schedule`); err != nil {
-			return classifyDB(ctx, err)
+			return false, classifyDB(ctx, err)
 		}
-		err := scheduleOnce(ctx, tx, client, snapshotID)
+		created, err := scheduleOnce(ctx, tx, client, snapshotID)
 		if err == nil {
 			_, _ = tx.Exec(ctx, `RELEASE SAVEPOINT plan_batch_schedule`)
-			return nil
+			return created, nil
 		}
 		_, _ = tx.Exec(ctx, `ROLLBACK TO SAVEPOINT plan_batch_schedule`)
 		if !isConflict(err) {
-			return err
+			return false, err
 		}
 		last = err
 	}
 	if last == nil {
-		return jobs.Failure(jobs.FailureDomainInvariant)
+		return false, jobs.Failure(jobs.FailureDomainInvariant)
 	}
-	return last
+	return false, last
 }
 
-func scheduleOnce(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], snapshotID int64) error {
+func scheduleOnce(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], snapshotID int64) (bool, error) {
 	var consume string
 	var jobID *int64
 	err := tx.QueryRow(ctx, `
@@ -66,16 +66,16 @@ FROM mrfpipeline.mrf_snapshots
 WHERE id = $1
 FOR UPDATE`, snapshotID).Scan(&consume, &jobID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return jobs.Failure(jobs.FailureMissingRecord)
+		return false, jobs.Failure(jobs.FailureMissingRecord)
 	}
 	if err != nil {
-		return classifyDB(ctx, err)
+		return false, classifyDB(ctx, err)
 	}
 	if err := snapshotLifecycle(consume, jobID); err != nil {
-		return err
+		return false, err
 	}
 	if consume != jobs.StatusSucceeded {
-		return nil
+		return false, nil
 	}
 
 	var blocked bool
@@ -84,10 +84,10 @@ SELECT EXISTS (
     SELECT 1 FROM mrfpipeline.plan_attachment_batches
     WHERE mrf_snapshot_id = $1 AND status IN ('pending', 'running', 'failed')
 )`, snapshotID).Scan(&blocked); err != nil {
-		return classifyDB(ctx, err)
+		return false, classifyDB(ctx, err)
 	}
 	if blocked {
-		return nil
+		return false, nil
 	}
 
 	rows, err := tx.Query(ctx, `
@@ -101,25 +101,25 @@ WHERE p.mrf_snapshot_id = $1
 ORDER BY p.plan_name, p.issuer_name, p.plan_id_type, p.plan_id, p.plan_market_type, p.id
 FOR UPDATE`, snapshotID)
 	if err != nil {
-		return classifyDB(ctx, err)
+		return false, classifyDB(ctx, err)
 	}
 	defer rows.Close()
 	var planIDs []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return classifyDB(ctx, err)
+			return false, classifyDB(ctx, err)
 		}
 		planIDs = append(planIDs, id)
 	}
 	if err := rows.Err(); err != nil {
-		return classifyDB(ctx, err)
+		return false, classifyDB(ctx, err)
 	}
 	if len(planIDs) == 0 {
-		return nil
+		return false, nil
 	}
 	if client == nil {
-		return jobs.Failure(jobs.FailureInvalidArguments)
+		return false, jobs.Failure(jobs.FailureInvalidArguments)
 	}
 
 	var batchID int64
@@ -127,27 +127,27 @@ FOR UPDATE`, snapshotID)
 INSERT INTO mrfpipeline.plan_attachment_batches (mrf_snapshot_id, requested_plan_count)
 VALUES ($1, $2)
 RETURNING id`, snapshotID, int64(len(planIDs))).Scan(&batchID); err != nil {
-		return classifyDB(ctx, err)
+		return false, classifyDB(ctx, err)
 	}
 	for _, planID := range planIDs {
 		if _, err := tx.Exec(ctx, `
 INSERT INTO mrfpipeline.plan_attachment_batch_items (plan_attachment_batch_id, mrf_plan_id)
 VALUES ($1, $2)`, batchID, planID); err != nil {
-			return classifyDB(ctx, err)
+			return false, classifyDB(ctx, err)
 		}
 	}
 	riverJobID, err := jobs.InsertTx(ctx, client, tx, &jobs.ConsumerAttachPlansArgs{PlanAttachmentBatchID: batchID})
 	if err != nil {
-		return err
+		return false, err
 	}
 	tag, err := tx.Exec(ctx, `
 UPDATE mrfpipeline.plan_attachment_batches
 SET river_job_id = $2, updated_at = transaction_timestamp()
 WHERE id = $1`, batchID, riverJobID)
 	if err != nil || tag.RowsAffected() != 1 {
-		return classifyDB(ctx, err)
+		return false, classifyDB(ctx, err)
 	}
-	return nil
+	return true, nil
 }
 
 func snapshotLifecycle(consume string, jobID *int64) error {
@@ -177,17 +177,18 @@ func snapshotLifecycle(consume string, jobID *int64) error {
 // SweepConsumed pages consumed snapshots by ascending ID and invokes Schedule
 // in one short transaction per snapshot. It is repeat-safe and does not reset
 // failed or running batches.
-func SweepConsumed(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx]) error {
+func SweepConsumed(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx]) (int, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	if pool == nil || client == nil {
-		return jobs.Failure(jobs.FailureInvalidArguments)
+		return 0, jobs.Failure(jobs.FailureInvalidArguments)
 	}
 	var after int64
+	created := 0
 	for {
 		rows, err := pool.Query(ctx, `
 SELECT id FROM mrfpipeline.mrf_snapshots
@@ -195,36 +196,40 @@ WHERE consume_status = $1 AND id > $2
 ORDER BY id
 LIMIT $3`, jobs.StatusSucceeded, after, snapshotPage)
 		if err != nil {
-			return classifyDB(ctx, err)
+			return created, classifyDB(ctx, err)
 		}
 		var ids []int64
 		for rows.Next() {
 			var id int64
 			if err := rows.Scan(&id); err != nil {
 				rows.Close()
-				return classifyDB(ctx, err)
+				return created, classifyDB(ctx, err)
 			}
 			ids = append(ids, id)
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
-			return classifyDB(ctx, err)
+			return created, classifyDB(ctx, err)
 		}
 		rows.Close()
 		if len(ids) == 0 {
-			return nil
+			return created, nil
 		}
 		for _, id := range ids {
 			tx, err := pool.Begin(ctx)
 			if err != nil {
-				return classifyDB(ctx, err)
+				return created, classifyDB(ctx, err)
 			}
-			if err := Schedule(ctx, tx, client, id); err != nil {
+			ok, err := Schedule(ctx, tx, client, id)
+			if err != nil {
 				_ = tx.Rollback(ctx)
-				return err
+				return created, err
 			}
 			if err := tx.Commit(ctx); err != nil {
-				return classifyDB(ctx, err)
+				return created, classifyDB(ctx, err)
+			}
+			if ok {
+				created++
 			}
 			after = id
 		}

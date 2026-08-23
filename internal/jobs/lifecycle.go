@@ -74,8 +74,8 @@ func Run(ctx context.Context, p RunParams) error {
 	if workErr == nil {
 		return Succeed(ctx, p.Pool, p.Client, p.Spec, p.DomainID, p.RiverJobID, p.Successor, p.Confirm, p.PreLock)
 	}
-	if ctx.Err() != nil {
-		return ctx.Err()
+	if isFailure(workErr, FailureWorkerLeaseLost) || ctx.Err() != nil {
+		return nil
 	}
 	if isImmediateFail(workErr) {
 		code := terminalFailureCode(workErr)

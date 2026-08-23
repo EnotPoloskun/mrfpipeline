@@ -10,6 +10,10 @@ const (
 	ParsedEmpty           = "empty"
 	ParsedIncomplete      = "incomplete"
 	ParsedManifestPresent = "manifest_present"
+
+	DownloadAbsent     = "absent"
+	DownloadIncomplete = "incomplete"
+	DownloadComplete   = "complete"
 )
 
 // InspectDownload requires a completed Story 04 download leaf: a real
@@ -188,6 +192,95 @@ func (w *Workspace) RemoveDownload(kind string, id int64) error {
 		return err
 	}
 	return removeExactDir(dir)
+}
+
+// InspectDownloadState classifies a download leaf without treating incomplete
+// as an inspect error.
+func (w *Workspace) InspectDownloadState(kind string, id int64) (string, error) {
+	dir, err := w.downloadPath(kind, id)
+	if err != nil {
+		return "", err
+	}
+	complete, _, err := w.inspectDownloadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	if complete {
+		return DownloadComplete, nil
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return DownloadAbsent, nil
+		}
+		return "", artErr("stat")
+	}
+	if isSymlink(info) {
+		return "", artErr("symlink")
+	}
+	return DownloadIncomplete, nil
+}
+
+// RemoveParsed removes one exact parsed leaf. Absent is success. It does not
+// recreate directories and does not refuse manifest-present output.
+func (w *Workspace) RemoveParsed(kind string, id int64) error {
+	dir, err := w.parsedPath(kind, id)
+	if err != nil {
+		return err
+	}
+	if err := w.verifyChain(dir, false); err != nil {
+		return err
+	}
+	return removeExactDir(dir)
+}
+
+// RemovePlanBatch removes one exact plan-batches/plan-batch-<id> leaf.
+// Absent is success.
+func (w *Workspace) RemovePlanBatch(id int64) error {
+	dir, err := w.recordPath(KindPlanBatch, id)
+	if err != nil {
+		return err
+	}
+	if err := w.verifyChain(dir, false); err != nil {
+		return err
+	}
+	return removeExactDir(dir)
+}
+
+// RemoveStagingEntry removes one immediate real file or directory under
+// .staging after a matching re-stat. It never follows a symlink.
+func (w *Workspace) RemoveStagingEntry(name string, want os.FileInfo) error {
+	if w == nil || name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		return artErr("path")
+	}
+	dir := w.StagingDir()
+	target := filepath.Join(dir, name)
+	if err := w.verifyChain(target, true); err != nil {
+		return err
+	}
+	again, err := os.Lstat(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return artErr("stat")
+	}
+	if isSymlink(again) {
+		return artErr("symlink")
+	}
+	if again.Mode()&os.ModeType != want.Mode()&os.ModeType || again.IsDir() != want.IsDir() {
+		return artErr("type")
+	}
+	if again.IsDir() {
+		return removeExactDir(target)
+	}
+	if !again.Mode().IsRegular() {
+		return artErr("type")
+	}
+	if err := os.Remove(target); err != nil {
+		return artErr("remove")
+	}
+	return nil
 }
 
 func (w *Workspace) ensureRecord(kind string, id int64) (string, error) {

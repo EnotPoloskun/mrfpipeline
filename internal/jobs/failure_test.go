@@ -42,6 +42,13 @@ func TestFailureCodes(t *testing.T) {
 		FailurePlanAttachDatabaseFailed,
 		FailurePlanAttachInvariant,
 		FailureDomainInvariant,
+		FailureWorkerLeaseUnavailable,
+		FailureWorkerLeaseLost,
+		FailureRiverTerminalWithoutResult,
+		FailureReconciliationDatabaseFailed,
+		FailureArtifactReconciliationFailed,
+		FailureRetryStageNotFailed,
+		FailureRetryStageInvariant,
 	} {
 		err := Failure(code)
 		if !errors.Is(err, ErrJob) || !IsFailure(err, code) {
@@ -125,5 +132,14 @@ func TestFailureCodes(t *testing.T) {
 	}
 	if isImmediateFail(Failure(FailurePlanAttachInvariant)) {
 		t.Fatal("plan attach invariant should retry")
+	}
+	if isImmediateFail(Failure(FailureWorkerLeaseUnavailable)) {
+		t.Fatal("lease unavailable is not an immediate worker fail")
+	}
+	if isImmediateFail(Failure(FailureRiverTerminalWithoutResult)) {
+		t.Fatal("river terminal is not an immediate worker fail")
+	}
+	if isImmediateFail(Failure(FailureRetryStageNotFailed)) {
+		t.Fatal("retry not-failed is not an immediate worker fail")
 	}
 }

@@ -153,6 +153,99 @@ func ProductionKinds() []string {
 	}
 }
 
+// ProductionBindings maps each production kind to its domain stage and argument field.
+func ProductionBindings() []KindBinding {
+	return []KindBinding{
+		{Kind: KindDiscoveryRun, Spec: DiscoveryRunStage, ArgField: FieldDiscoveryRunID},
+		{Kind: KindTOCDownload, Spec: TOCDownloadStage, ArgField: FieldTOCFileID},
+		{Kind: KindTOCParse, Spec: TOCParseStage, ArgField: FieldTOCFileID},
+		{Kind: KindTOCImport, Spec: TOCImportStage, ArgField: FieldTOCFileID},
+		{Kind: KindMRFDownload, Spec: MRFDownloadStage, ArgField: FieldMRFSourceID},
+		{Kind: KindMRFParse, Spec: MRFParseStage, ArgField: FieldMRFSourceID},
+		{Kind: KindConsumerIngest, Spec: ConsumerIngestStage, ArgField: FieldMRFSnapshotID},
+		{Kind: KindConsumerAttachPlans, Spec: ConsumerAttachPlansStage, ArgField: FieldPlanAttachmentBatchID},
+	}
+}
+
+// ArgsFor constructs typed River args for one production kind and domain ID.
+func ArgsFor(kind string, domainID int64) (river.JobArgs, error) {
+	if domainID <= 0 {
+		return nil, Failure(FailureInvalidArguments)
+	}
+	switch kind {
+	case KindDiscoveryRun:
+		return &DiscoveryRunArgs{DiscoveryRunID: domainID}, nil
+	case KindTOCDownload:
+		return &TOCDownloadArgs{TOCFileID: domainID}, nil
+	case KindTOCParse:
+		return &TOCParseArgs{TOCFileID: domainID}, nil
+	case KindTOCImport:
+		return &TOCImportArgs{TOCFileID: domainID}, nil
+	case KindMRFDownload:
+		return &MRFDownloadArgs{MRFSourceID: domainID}, nil
+	case KindMRFParse:
+		return &MRFParseArgs{MRFSourceID: domainID}, nil
+	case KindConsumerIngest:
+		return &ConsumerIngestArgs{MRFSnapshotID: domainID}, nil
+	case KindConsumerAttachPlans:
+		return &ConsumerAttachPlansArgs{PlanAttachmentBatchID: domainID}, nil
+	default:
+		return nil, Failure(FailureInvalidArguments)
+	}
+}
+
+// DomainIDFromEncodedArgs reads the single numeric argument from River JSON.
+func DomainIDFromEncodedArgs(kind string, raw []byte) (int64, error) {
+	args, err := ArgsFor(kind, 1)
+	if err != nil {
+		return 0, err
+	}
+	switch a := args.(type) {
+	case *DiscoveryRunArgs:
+		if err := a.UnmarshalJSON(raw); err != nil {
+			return 0, err
+		}
+		return a.DiscoveryRunID, nil
+	case *TOCDownloadArgs:
+		if err := a.UnmarshalJSON(raw); err != nil {
+			return 0, err
+		}
+		return a.TOCFileID, nil
+	case *TOCParseArgs:
+		if err := a.UnmarshalJSON(raw); err != nil {
+			return 0, err
+		}
+		return a.TOCFileID, nil
+	case *TOCImportArgs:
+		if err := a.UnmarshalJSON(raw); err != nil {
+			return 0, err
+		}
+		return a.TOCFileID, nil
+	case *MRFDownloadArgs:
+		if err := a.UnmarshalJSON(raw); err != nil {
+			return 0, err
+		}
+		return a.MRFSourceID, nil
+	case *MRFParseArgs:
+		if err := a.UnmarshalJSON(raw); err != nil {
+			return 0, err
+		}
+		return a.MRFSourceID, nil
+	case *ConsumerIngestArgs:
+		if err := a.UnmarshalJSON(raw); err != nil {
+			return 0, err
+		}
+		return a.MRFSnapshotID, nil
+	case *ConsumerAttachPlansArgs:
+		if err := a.UnmarshalJSON(raw); err != nil {
+			return 0, err
+		}
+		return a.PlanAttachmentBatchID, nil
+	default:
+		return 0, Failure(FailureInvalidArguments)
+	}
+}
+
 var (
 	_ river.JobArgs               = DiscoveryRunArgs{}
 	_ river.JobArgsWithInsertOpts = DiscoveryRunArgs{}

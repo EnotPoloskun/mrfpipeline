@@ -102,6 +102,11 @@ func (w *Workspace) ParsedDir(kind string, id int64) (string, error) {
 	return w.parsedPath(kind, id)
 }
 
+// PlanBatchDir is the exact plan-batches/plan-batch-<id> leaf.
+func (w *Workspace) PlanBatchDir(id int64) (string, error) {
+	return w.recordPath(KindPlanBatch, id)
+}
+
 func stagingPrefix(kind string, id int64) (string, error) {
 	s, err := formatID(id)
 	if err != nil {

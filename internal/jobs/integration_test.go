@@ -614,3 +614,49 @@ func TestIntegrationClaimNoops(t *testing.T) {
 		t.Fatalf("nil job id claim mutated row: %s %v", status, jobID)
 	}
 }
+
+func TestIntegrationRunLeaseLostLeavesRunning(t *testing.T) {
+	url, pool := testDB(t)
+	migrateAndFixtures(t, url, pool)
+	client, err := NewInsertClient(context.Background(), pool, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stageID := insertStage(t, pool, StatusPending)
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := Schedule(context.Background(), tx, client, testStageSpec(), stageID, &testArgs{StageID: stageID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	err = Run(context.Background(), RunParams{
+		Pool:        pool,
+		Client:      client,
+		Spec:        testStageSpec(),
+		DomainID:    stageID,
+		RiverJobID:  res.JobID,
+		Attempt:     8,
+		MaxAttempts: 8,
+		Work: func(context.Context) error {
+			return Failure(FailureWorkerLeaseLost)
+		},
+	})
+	if err != nil {
+		t.Fatalf("want nil to River, got %v", err)
+	}
+	var status string
+	var code *string
+	var jobID int64
+	if err := pool.QueryRow(context.Background(), `
+SELECT status, failure_code, river_job_id FROM mrfpipeline_test.stages WHERE id = $1`, stageID).Scan(&status, &code, &jobID); err != nil {
+		t.Fatal(err)
+	}
+	if status != StatusRunning || code != nil || jobID != res.JobID {
+		t.Fatalf("domain mutated: %s %v %d", status, code, jobID)
+	}
+}

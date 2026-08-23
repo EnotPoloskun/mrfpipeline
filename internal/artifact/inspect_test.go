@@ -63,6 +63,41 @@ func TestParserInspectAndReset(t *testing.T) {
 	}
 }
 
+func TestRemoveParsedDoesNotRecreate(t *testing.T) {
+	t.Parallel()
+	ws := mustInit(t, filepath.Join(t.TempDir(), "ws"))
+	if err := ws.RemoveParsed(KindTOC, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.ensureRecord(KindTOC, 2); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(ws.Root, dirTOC, "toc-2", dirParsed)
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fileManifest), []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RemoveParsed(KindTOC, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatal("parsed remained")
+	}
+	if _, err := os.Lstat(filepath.Join(ws.Root, dirTOC, "toc-2")); err != nil {
+		t.Fatal("removed record dir")
+	}
+}
+
+func TestRemovePlanBatchIdempotent(t *testing.T) {
+	t.Parallel()
+	ws := mustInit(t, filepath.Join(t.TempDir(), "ws"))
+	if err := ws.RemovePlanBatch(5); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRemoveDownloadIdempotent(t *testing.T) {
 	t.Parallel()
 	ws := mustInit(t, filepath.Join(t.TempDir(), "ws"))
