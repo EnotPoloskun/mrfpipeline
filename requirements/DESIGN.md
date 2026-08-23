@@ -2,14 +2,14 @@
 
 ## Document status
 
-This document describes the version 1 contract of `mrfpipeline`.
-The numbered requirement stories are the implementation sequence and remain
-authoritative where they are more specific.
+This document describes the implemented Stories 01–13 architecture and the
+approved Stories 14–19 target below. The numbered requirement stories remain
+authoritative where they are more specific. Until Stories 14–19 are
+implemented, sections explicitly labeled version 1 describe the current
+binary; the target addendum describes the next rebuild-only contract.
 
-Stories 01 through 13 specify the full version 1 implementation sequence.
-
-The design records the product decisions that must remain consistent across
-stories:
+The design records the implemented version 1 decisions that remain normative
+except where the target addendum explicitly replaces them:
 
 - Discover TOCs incrementally; do not wait for an unknowable "complete" payer
   set before processing useful work.
@@ -29,6 +29,95 @@ stories:
   at-least-once background execution.
 - Use numeric database identities and exact database uniqueness. Do not add
   hashes as URL, artifact, job, plan, or output identity.
+
+## Approved Stories 14–19 target
+
+The next contract is defined by:
+
+- [Story 14: Feed-free domain schema](14-feed-free-domain-schema.md)
+- [Story 15: Month-specific TOC captures](15-month-specific-toc-captures.md)
+- [Story 16: Feed-free TOC import and snapshot scheduling](16-feed-free-toc-import-and-snapshot-scheduling.md)
+- [Story 17: Consumer 2.0 feed-free integration](17-consumer-2-feed-free-integration.md)
+- [Story 18: Monthly release activation](18-monthly-release-activation.md)
+- [Story 19: Release-aware reconciliation, acceptance, and documentation](19-release-aware-reconciliation-acceptance-and-documentation.md)
+
+Stories 14–17 are one atomic breaking delivery batch. They may be separate
+implementation commits, but none is independently mergeable, releasable, or
+deployable. Consumer `2.0.0` is available first, and there is no adapter,
+compatibility mode, feature flag, dual consumer version, temporary feed state,
+or supported intermediate runtime.
+
+Stories 14–19 intentionally replace these version 1 decisions:
+
+1. `mrf_feeds` and `feed_id` are removed. Snapshot identity is exact MRF
+   source + payer + collection month.
+2. TOC identity is payer + collection month + exact URL. A stable TOC URL is
+   downloaded and processed independently in each admitted month.
+3. MRF source capture identity is exact URL + collection month. A stable MRF
+   URL is downloaded and parsed independently in each admitted month, without
+   hashes, ETags, byte comparison, or URL normalization.
+4. The pipeline integrates exact feed-free `mrfconsumer 2.0.0`; old database
+   and warehouse state is rebuild-only.
+5. Serving uses a manually activated monthly release per payer, not consumer
+   `current_*` views or greatest-month inference.
+
+The target source/snapshot model is:
+
+```text
+mrf_source   = one exact MRF URL + collection month capture and lifecycle
+mrf_snapshot = one mrf_source + payer + collection month
+output_id    = mrf-<mrf_snapshot.id>
+```
+
+The target release model is:
+
+```text
+building -> active -> inactive
+             ^           |
+             +-----------+  manual rollback/reactivation
+```
+
+A building month may receive bounded discovery and background processing. An
+activation readiness gate requires every admitted TOC, source, snapshot, and
+initial plan attachment to be complete, then atomically deactivates the former
+month and activates the target for that payer. Activation seals the month;
+active and inactive releases reject new discovery. Warehouse files are never
+rewritten by activation or rollback.
+
+Active state is a relation rather than one global month. The compact release
+view is:
+
+```text
+uhc   -> 2026-09
+aetna -> 2026-08
+```
+
+A future query service joins each active release to its immutable
+`mrf_snapshots` rows and captures the complete
+`(payer_id, collection_month, output_id)` relation once per request, deriving
+`output_id` as `mrf-<snapshot-id>`. A payer-filtered query uses that payer's
+output rows; a query without a payer filter uses every active output row.
+Payers with no active release contribute no served data. Consumer outputs with
+no pipeline snapshot are not release members even when payer/month matches.
+Query planning, partition pruning, and performance acceptance remain consumer
+or future query-service responsibilities.
+
+The target keeps these version 1 invariants:
+
+- exact URL strings and numeric database identities, without hashes;
+- one MRF source parse per exact URL/month reused by overlapping same-month
+  TOCs and payer snapshots;
+- one independent consumer output per source/payer/month;
+- plan-independent parse/ingest and additive output-scoped plan attachment;
+- PostgreSQL domain truth plus River at-least-once execution;
+- one leased worker and serialized consumer writers;
+- immutable parser/consumer publication boundaries; and
+- explicit retry, conservative reconciliation, redaction, and local-only
+  storage.
+
+The target remains UHC-only for production discovery. Generic payer columns
+and per-payer release state prepare the domain/query boundary for later payer
+adapters without claiming they exist now.
 
 ## Purpose
 
@@ -1118,6 +1207,17 @@ Stories 01–13 are the full version 1 implementation sequence:
 | 11 | Consumer snapshot ingest worker and warehouse/provider-catalog recovery. |
 | 12 | Plan batch projection and additive consumer attachment worker. |
 | 13 | Reconciliation, operational acceptance, 1→2→5 TOC live progression, authorized URL-debug queries, retention guidance, and final documentation. |
+
+Stories 14–19 are the approved rebuild-only next sequence:
+
+| Story | Deliverable |
+|---:|---|
+| 14 | Remove feed domain state, generalize payer constraints, capture MRF URLs monthly, and key snapshots by source/payer/month. |
+| 15 | Admit one independent TOC capture per payer/month/exact URL. |
+| 16 | Import TOCs into feed-free same-month shared sources, monthly snapshots, provenance, plans, and jobs. |
+| 17 | Integrate exact feed-free consumer `2.0.0` ingestion, attachment, and recovery recognition. |
+| 18 | Add building/active/inactive monthly releases, readiness, atomic per-payer activation, and rollback. |
+| 19 | Make reconciliation/acceptance/documentation release-aware and hand off the complete active-output query contract. |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC

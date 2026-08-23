@@ -7,6 +7,39 @@ Version 1 is specified by Stories 01–13 in [`requirements/`](requirements/).
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
+## Planned feed-free monthly-release contract
+
+Stories [14](requirements/14-feed-free-domain-schema.md) through
+[19](requirements/19-release-aware-reconciliation-acceptance-and-documentation.md)
+define the approved next rebuild-only contract. They are requirements, not the
+currently implemented command/schema behavior documented below.
+
+The target removes `mrf_feeds` and `feed_id`, identifies an MRF source capture
+by exact URL + collection month, identifies a consumer snapshot by source +
+payer + collection month, admits stable TOC and MRF URLs as new captures in a
+later month, and integrates exact feed-free `mrfconsumer 2.0.0`.
+
+Stories 14–17 form one atomic breaking delivery batch. They may be implemented
+as separate commits but are not independently mergeable, releasable, or
+deployable. There is no compatibility adapter, temporary feed state, feature
+flag, or supported intermediate runtime.
+
+The pipeline will keep one monthly release per payer in `building`, `active`,
+or `inactive` state. An operator completes and validates a building month, then
+atomically activates it without rewriting warehouse data. Activation seals the
+month against new discovery; rollback reactivates an already sealed historical
+month. Different payers may have different active months.
+
+A future query service will capture the complete active
+`(payer_id, collection_month, output_id)` relation derived from the pipeline's
+sealed snapshots once per request. Queries with no payer filter must apply
+every active output row, not one global month and not every warehouse output
+that happens to share an active payer/month. Query planning, partition pruning,
+and performance acceptance belong to that query service and the consumer.
+
+Until Stories 14–19 are implemented, use the Story 01–13 commands, schema,
+consumer `1.5.0`, and operational guidance in the remaining README.
+
 ## Prerequisites
 
 - Go 1.26
