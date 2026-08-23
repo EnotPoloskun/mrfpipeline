@@ -1,0 +1,187 @@
+package consumeringest
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type claimIdentity struct {
+	SnapshotID   int64
+	SourceID     int64
+	FeedRowID    int64
+	PayerID      string
+	FeedID       string
+	Month        time.Time
+	MonthText    string
+	ConsumeJobID int64
+}
+
+func classifyClaim(consume, parse string, stored *int64, riverJobID int64) (string, error) {
+	switch consume {
+	case jobs.StatusSucceeded, jobs.StatusFailed:
+		return jobs.ClaimNoop, nil
+	case jobs.StatusPending:
+		if stored == nil {
+			return "", jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		if *stored != riverJobID {
+			return jobs.ClaimNoop, nil
+		}
+		if parse != jobs.StatusSucceeded {
+			return "", jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		return jobs.ClaimWork, nil
+	case jobs.StatusRunning:
+		if stored == nil {
+			return "", jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		if *stored != riverJobID {
+			return jobs.ClaimNoop, nil
+		}
+		if parse != jobs.StatusSucceeded {
+			return "", jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		return jobs.ClaimWork, nil
+	default:
+		return "", jobs.Failure(jobs.FailureDomainInvariant)
+	}
+}
+
+func claimIngest(ctx context.Context, pool *pgxpool.Pool, snapshotID, riverJobID int64) (jobs.ClaimResult, claimIdentity, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	var zero claimIdentity
+	if err := ctx.Err(); err != nil {
+		return jobs.ClaimResult{}, zero, err
+	}
+	if pool == nil || snapshotID <= 0 || riverJobID <= 0 {
+		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureInvalidArguments)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var consume string
+	var stored *int64
+	var sourceID, feedRowID int64
+	var month time.Time
+	err = tx.QueryRow(ctx, `
+SELECT consume_status, consume_river_job_id, mrf_source_id, mrf_feed_id, collection_month
+FROM mrfpipeline.mrf_snapshots
+WHERE id = $1
+FOR UPDATE`, snapshotID).Scan(&consume, &stored, &sourceID, &feedRowID, &month)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
+	}
+
+	var parse string
+	err = tx.QueryRow(ctx, `
+SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1 FOR UPDATE`, sourceID).Scan(&parse)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
+	}
+
+	var payer, feedID string
+	err = tx.QueryRow(ctx, `
+SELECT payer_id, feed_id FROM mrfpipeline.mrf_feeds WHERE id = $1 FOR UPDATE`, feedRowID).Scan(&payer, &feedID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
+	}
+
+	action, err := classifyClaim(consume, parse, stored, riverJobID)
+	if err != nil {
+		return jobs.ClaimResult{}, zero, err
+	}
+	ident := claimIdentity{
+		SnapshotID: snapshotID, SourceID: sourceID, FeedRowID: feedRowID,
+		PayerID: payer, FeedID: feedID, Month: month, MonthText: formatMonth(month),
+		ConsumeJobID: riverJobID,
+	}
+	if action == jobs.ClaimNoop {
+		return jobs.ClaimResult{Action: jobs.ClaimNoop}, ident, nil
+	}
+	tag, err := tx.Exec(ctx, `
+UPDATE mrfpipeline.mrf_snapshots
+SET consume_status = $2, failure_code = NULL, updated_at = transaction_timestamp()
+WHERE id = $1`, snapshotID, jobs.StatusRunning)
+	if err != nil || tag.RowsAffected() != 1 {
+		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
+	}
+	return jobs.ClaimResult{Action: jobs.ClaimWork}, ident, nil
+}
+
+func confirmIngestSuccess(ctx context.Context, tx pgx.Tx, ident claimIdentity) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if tx == nil || ident.SnapshotID <= 0 {
+		return jobs.Failure(jobs.FailureConsumerIngestDatabaseFailed)
+	}
+	var consume string
+	var stored *int64
+	var sourceID, feedRowID int64
+	var month time.Time
+	if err := tx.QueryRow(ctx, `
+SELECT consume_status, consume_river_job_id, mrf_source_id, mrf_feed_id, collection_month
+FROM mrfpipeline.mrf_snapshots WHERE id = $1`, ident.SnapshotID).Scan(&consume, &stored, &sourceID, &feedRowID, &month); err != nil {
+		return classifyDB(ctx, err)
+	}
+	if stored == nil || *stored != ident.ConsumeJobID {
+		return jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	if consume == jobs.StatusSucceeded {
+		return nil
+	}
+	if consume != jobs.StatusRunning {
+		return jobs.Failure(jobs.FailureDomainInvariant)
+	}
+
+	var parse string
+	if err := tx.QueryRow(ctx, `
+SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1 FOR UPDATE`, ident.SourceID).Scan(&parse); err != nil {
+		return classifyDB(ctx, err)
+	}
+	var payer, feedID string
+	if err := tx.QueryRow(ctx, `
+SELECT payer_id, feed_id FROM mrfpipeline.mrf_feeds WHERE id = $1 FOR UPDATE`, ident.FeedRowID).Scan(&payer, &feedID); err != nil {
+		return classifyDB(ctx, err)
+	}
+	if parse != jobs.StatusSucceeded {
+		return jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	if sourceID != ident.SourceID || feedRowID != ident.FeedRowID ||
+		formatMonth(month) != ident.MonthText || payer != ident.PayerID || feedID != ident.FeedID {
+		return jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	return nil
+}
+
+func classifyDB(ctx context.Context, err error) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return jobs.Failure(jobs.FailureConsumerIngestDatabaseFailed)
+}

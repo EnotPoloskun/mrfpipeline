@@ -1,0 +1,129 @@
+package consumeringest
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+)
+
+const (
+	warehouseAbsent     = "absent"
+	warehouseEmpty      = "empty"
+	warehouseRecognized = "recognized"
+	fileWarehouse       = "warehouse.json"
+	warehouseVersion    = "1.5.0"
+	catalogSchema       = int64(1)
+)
+
+// WarehouseState is the shallow startup view of the configured warehouse.
+type WarehouseState struct {
+	Path    string
+	Kind    string
+	Catalog catalogIdentity
+}
+
+type catalogIdentity struct {
+	SchemaVersion int64
+	ReleaseMonth  string
+}
+
+func (c catalogIdentity) equal(other catalogIdentity) bool {
+	return c.SchemaVersion == other.SchemaVersion && c.ReleaseMonth == other.ReleaseMonth
+}
+
+// InspectWarehouse accepts absent, empty real dir, or a real dir whose
+// warehouse.json is exact consumer 1.5.0. It does not require catalog copy or seed.
+func InspectWarehouse(path string) (WarehouseState, error) {
+	var zero WarehouseState
+	if path == "" {
+		return zero, jobs.Failure("runtime")
+	}
+	clean, err := normalizePath(path)
+	if err != nil {
+		return zero, jobs.Failure("runtime")
+	}
+	info, err := os.Lstat(clean)
+	if errors.Is(err, os.ErrNotExist) {
+		return WarehouseState{Path: clean, Kind: warehouseAbsent}, nil
+	}
+	if err != nil || isSymlink(info) || !info.IsDir() {
+		return zero, jobs.Failure("runtime")
+	}
+	entries, err := os.ReadDir(clean)
+	if err != nil {
+		return zero, jobs.Failure("runtime")
+	}
+	if len(entries) == 0 {
+		return WarehouseState{Path: clean, Kind: warehouseEmpty}, nil
+	}
+	ident, err := readWarehouseIdentity(filepath.Join(clean, fileWarehouse))
+	if err != nil {
+		return zero, jobs.Failure("runtime")
+	}
+	return WarehouseState{Path: clean, Kind: warehouseRecognized, Catalog: ident}, nil
+}
+
+func CheckWarehouseCatalog(ws WarehouseState, catalog CatalogID, artifactRoot, servicesPath string) error {
+	if !catalog.ok {
+		return jobs.Failure("runtime")
+	}
+	art, err := normalizePath(artifactRoot)
+	if err != nil {
+		return jobs.Failure("runtime")
+	}
+	svc, err := normalizePath(servicesPath)
+	if err != nil {
+		return jobs.Failure("runtime")
+	}
+	if lexicalOverlap(catalog.Path, art) || lexicalOverlap(catalog.Path, svc) {
+		return jobs.Failure("runtime")
+	}
+	owned := filepath.Join(ws.Path, "provider_catalog")
+	if catalog.Path == owned {
+		if ws.Kind != warehouseRecognized {
+			return jobs.Failure("runtime")
+		}
+		return nil
+	}
+	if lexicalOverlap(catalog.Path, ws.Path) {
+		return jobs.Failure("runtime")
+	}
+	return nil
+}
+
+func lexicalOverlap(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return hasPrefixPath(a, b) || hasPrefixPath(b, a)
+}
+
+func hasPrefixPath(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil || rel == "." {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+func readWarehouseIdentity(path string) (catalogIdentity, error) {
+	data, err := readRegularFile(path)
+	if err != nil {
+		return catalogIdentity{}, errOutputInvalid
+	}
+	return decodeWarehouseJSON(data)
+}
+
+func readRegularFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil || isSymlink(info) || !info.Mode().IsRegular() {
+		return nil, errOutputInvalid
+	}
+	return os.ReadFile(path)
+}

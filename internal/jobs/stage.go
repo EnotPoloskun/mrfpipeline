@@ -85,6 +85,16 @@ var MRFParseStage = StageSpec{
 	UpdatedAtColumn:   "updated_at",
 }
 
+// ConsumerIngestStage is the consume stage on mrf_snapshots.
+var ConsumerIngestStage = StageSpec{
+	Table:             "mrfpipeline.mrf_snapshots",
+	IDColumn:          "id",
+	StatusColumn:      "consume_status",
+	JobIDColumn:       "consume_river_job_id",
+	FailureCodeColumn: "failure_code",
+	UpdatedAtColumn:   "updated_at",
+}
+
 // DiscoveryRunStage is the domain stage for discovery.run.
 var DiscoveryRunStage = StageSpec{
 	Table:             "mrfpipeline.discovery_runs",

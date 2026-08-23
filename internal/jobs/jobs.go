@@ -14,31 +14,37 @@ import (
 var ErrJob = errors.New("background job operation failed")
 
 const (
-	FailureInvalidArguments         = "invalid_job_arguments"
-	FailureMissingRecord            = "missing_domain_record"
-	FailureDomainInvariant          = "domain_invariant"
-	FailureAttemptsExhausted        = "job_attempts_exhausted"
-	FailureDiscoveryListing         = "discovery_listing_failed"
-	FailureDiscoveryResultInvalid   = "discovery_result_invalid"
-	FailureDiscoveryDatabase        = "discovery_database_failed"
-	FailureTOCDownload              = "toc_download_failed"
-	FailureMRFDownload              = "mrf_download_failed"
-	FailureTOCParseInputInvalid     = "toc_parse_input_invalid"
-	FailureTOCParseResourceFailed   = "toc_parse_resource_failed"
-	FailureTOCParseOutputFailed     = "toc_parse_output_failed"
-	FailureTOCParseOutputInvalid    = "toc_parse_output_invalid"
-	FailureTOCParseCleanupFailed    = "toc_parse_cleanup_failed"
-	FailureMRFParseExecutionFailed  = "mrf_parse_execution_failed"
-	FailureMRFParseOutputInvalid    = "mrf_parse_output_invalid"
-	FailureMRFParseSelectorChanged  = "mrf_parse_selector_changed"
-	FailureMRFParseCleanupFailed    = "mrf_parse_cleanup_failed"
-	FailureMRFParseDatabaseFailed   = "mrf_parse_database_failed"
-	FailureTOCImportManifestInvalid = "toc_import_manifest_invalid"
-	FailureTOCImportSchemaInvalid   = "toc_import_schema_invalid"
-	FailureTOCImportRowInvalid      = "toc_import_row_invalid"
-	FailureTOCImportOrderInvalid    = "toc_import_order_invalid"
-	FailureTOCImportDatabaseFailed  = "toc_import_database_failed"
-	FailureTOCImportInvariant       = "toc_import_invariant"
+	FailureInvalidArguments              = "invalid_job_arguments"
+	FailureMissingRecord                 = "missing_domain_record"
+	FailureDomainInvariant               = "domain_invariant"
+	FailureAttemptsExhausted             = "job_attempts_exhausted"
+	FailureDiscoveryListing              = "discovery_listing_failed"
+	FailureDiscoveryResultInvalid        = "discovery_result_invalid"
+	FailureDiscoveryDatabase             = "discovery_database_failed"
+	FailureTOCDownload                   = "toc_download_failed"
+	FailureMRFDownload                   = "mrf_download_failed"
+	FailureTOCParseInputInvalid          = "toc_parse_input_invalid"
+	FailureTOCParseResourceFailed        = "toc_parse_resource_failed"
+	FailureTOCParseOutputFailed          = "toc_parse_output_failed"
+	FailureTOCParseOutputInvalid         = "toc_parse_output_invalid"
+	FailureTOCParseCleanupFailed         = "toc_parse_cleanup_failed"
+	FailureMRFParseExecutionFailed       = "mrf_parse_execution_failed"
+	FailureMRFParseOutputInvalid         = "mrf_parse_output_invalid"
+	FailureMRFParseSelectorChanged       = "mrf_parse_selector_changed"
+	FailureMRFParseCleanupFailed         = "mrf_parse_cleanup_failed"
+	FailureMRFParseDatabaseFailed        = "mrf_parse_database_failed"
+	FailureTOCImportManifestInvalid      = "toc_import_manifest_invalid"
+	FailureTOCImportSchemaInvalid        = "toc_import_schema_invalid"
+	FailureTOCImportRowInvalid           = "toc_import_row_invalid"
+	FailureTOCImportOrderInvalid         = "toc_import_order_invalid"
+	FailureTOCImportDatabaseFailed       = "toc_import_database_failed"
+	FailureTOCImportInvariant            = "toc_import_invariant"
+	FailureConsumerIngestConfigInvalid   = "consumer_ingest_config_invalid"
+	FailureConsumerIngestInputInvalid    = "consumer_ingest_input_invalid"
+	FailureConsumerIngestOutputFailed    = "consumer_ingest_output_failed"
+	FailureConsumerIngestOutputInvalid   = "consumer_ingest_output_invalid"
+	FailureConsumerIngestProviderChanged = "consumer_ingest_provider_changed"
+	FailureConsumerIngestDatabaseFailed  = "consumer_ingest_database_failed"
 
 	MaxAttempts    = 8
 	RescueAfter    = 24 * time.Hour
@@ -81,7 +87,9 @@ func allowedFailureCode(code string) bool {
 		FailureMRFParseExecutionFailed, FailureMRFParseOutputInvalid, FailureMRFParseSelectorChanged,
 		FailureMRFParseCleanupFailed, FailureMRFParseDatabaseFailed,
 		FailureTOCImportManifestInvalid, FailureTOCImportSchemaInvalid, FailureTOCImportRowInvalid,
-		FailureTOCImportOrderInvalid, FailureTOCImportDatabaseFailed, FailureTOCImportInvariant:
+		FailureTOCImportOrderInvalid, FailureTOCImportDatabaseFailed, FailureTOCImportInvariant,
+		FailureConsumerIngestConfigInvalid, FailureConsumerIngestInputInvalid, FailureConsumerIngestOutputFailed,
+		FailureConsumerIngestOutputInvalid, FailureConsumerIngestProviderChanged, FailureConsumerIngestDatabaseFailed:
 		return true
 	default:
 		return false

@@ -118,6 +118,7 @@ type ProgressParams struct {
 	Phase       string
 	CopiedBytes int64
 	TotalBytes  int64
+	Percent     *int
 	Done        bool
 	now         time.Time
 }
@@ -127,6 +128,9 @@ func (p *Progress) Log(params ProgressParams) error {
 		return jobErr("progress")
 	}
 	if params.JobID <= 0 || params.CopiedBytes < 0 || params.TotalBytes < 0 {
+		return jobErr("progress")
+	}
+	if params.Percent != nil && (*params.Percent < 0 || *params.Percent > 100) {
 		return jobErr("progress")
 	}
 	now := params.now
@@ -158,7 +162,9 @@ func (p *Progress) Log(params ProgressParams) error {
 		slog.Int64("job_id", params.JobID),
 		slog.String("phase", params.Phase),
 	}
-	if params.TotalBytes > 0 {
+	if params.Percent != nil {
+		attrs = append(attrs, slog.Int("percent", *params.Percent))
+	} else if params.TotalBytes > 0 {
 		percent := 100 * params.CopiedBytes / params.TotalBytes
 		if percent > 100 {
 			percent = 100

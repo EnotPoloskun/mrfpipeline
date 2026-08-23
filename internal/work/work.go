@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
+	"github.com/enotpoloskun/mrfpipeline/internal/consumeringest"
 	"github.com/enotpoloskun/mrfpipeline/internal/discovery"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/mrfdownload"
@@ -16,20 +17,22 @@ import (
 	"github.com/riverqueue/river"
 )
 
-// Runtime is the production River process for Stories 06–10.
+// Runtime is the production River process for Stories 06–11.
 type Runtime struct {
-	Pool         *pgxpool.Pool
-	Workspace    *artifact.Workspace
-	Logger       *slog.Logger
-	Discover     discovery.DiscoverFunc
-	Downloader   *artifact.Downloader
-	Parse        tocparse.ParseFunc
-	ParseMRF     mrfparse.ParseFunc
-	ServicesPath string
+	Pool                *pgxpool.Pool
+	Workspace           *artifact.Workspace
+	Logger              *slog.Logger
+	Discover            discovery.DiscoverFunc
+	Downloader          *artifact.Downloader
+	Parse               tocparse.ParseFunc
+	ParseMRF            mrfparse.ParseFunc
+	Ingest              consumeringest.IngestFunc
+	ServicesPath        string
+	WarehousePath       string
+	ProviderCatalogPath string
 }
 
-// Queues is the Story 10 worker map: discovery, toc_download, toc_parse,
-// toc_import, mrf_download, and mrf_parse.
+// Queues is the Story 11 worker map: discovery through mrf_parse plus consumer.
 func Queues() map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
 		jobs.QueueDiscovery:   {MaxWorkers: 1},
@@ -38,14 +41,16 @@ func Queues() map[string]river.QueueConfig {
 		jobs.QueueTOCImport:   {MaxWorkers: 2},
 		jobs.QueueMRFDownload: {MaxWorkers: 2},
 		jobs.QueueMRFParse:    {MaxWorkers: 1},
+		jobs.QueueConsumer:    {MaxWorkers: 1},
 	}
 }
 
 // Run starts a River client that consumes discovery.run, toc.download,
-// toc.parse, toc.import, mrf.download, and mrf.parse, waits until ctx is
-// canceled or the client stops, then shuts down. A requested shutdown after
-// Start succeeds returns nil. Queue concurrency 1 on mrf_parse is not the
-// parser safety contract; every mrfparser.Parse holds the process mutex.
+// toc.parse, toc.import, mrf.download, mrf.parse, and consumer.ingest, waits
+// until ctx is canceled or the client stops, then shuts down. A requested
+// shutdown after Start succeeds returns nil. Queue concurrency 1 on mrf_parse
+// is not the parser safety contract; every mrfparser.Parse holds the process
+// mutex. consumer max 1 is the only warehouse writer.
 func (r Runtime) Run(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
@@ -58,6 +63,17 @@ func (r Runtime) Run(ctx context.Context) error {
 	}
 	services, err := mrfparse.InspectServices(r.ServicesPath)
 	if err != nil {
+		return err
+	}
+	catalog, err := consumeringest.InspectCatalog(r.ProviderCatalogPath)
+	if err != nil {
+		return err
+	}
+	warehouse, err := consumeringest.InspectWarehouse(r.WarehousePath)
+	if err != nil {
+		return err
+	}
+	if err := consumeringest.CheckWarehouseCatalog(warehouse, catalog, r.Workspace.Root, r.ServicesPath); err != nil {
 		return err
 	}
 	logger := r.Logger
@@ -76,6 +92,10 @@ func (r Runtime) Run(ctx context.Context) error {
 	river.AddWorker(workers, &tocimport.Worker{Pool: r.Pool, Workspace: r.Workspace, Logger: logger})
 	river.AddWorker(workers, &mrfdownload.Worker{Pool: r.Pool, Downloader: downloader, Logger: logger})
 	river.AddWorker(workers, &mrfparse.Worker{Pool: r.Pool, Workspace: r.Workspace, Parse: r.ParseMRF, Progress: progress, Logger: logger, Services: services})
+	river.AddWorker(workers, &consumeringest.Worker{
+		Pool: r.Pool, Workspace: r.Workspace, WarehousePath: r.WarehousePath,
+		ServicesPath: services.Path, Catalog: catalog, Ingest: r.Ingest, Progress: progress, Logger: logger,
+	})
 	handler := jobs.NewDomainErrorHandler(r.Pool, []jobs.KindBinding{
 		{Kind: jobs.KindDiscoveryRun, Spec: jobs.DiscoveryRunStage, ArgField: jobs.FieldDiscoveryRunID},
 		{Kind: jobs.KindTOCDownload, Spec: jobs.TOCDownloadStage, ArgField: jobs.FieldTOCFileID},
@@ -83,6 +103,7 @@ func (r Runtime) Run(ctx context.Context) error {
 		{Kind: jobs.KindTOCImport, Spec: jobs.TOCImportStage, ArgField: jobs.FieldTOCFileID},
 		{Kind: jobs.KindMRFDownload, Spec: jobs.MRFDownloadStage, ArgField: jobs.FieldMRFSourceID},
 		{Kind: jobs.KindMRFParse, Spec: jobs.MRFParseStage, ArgField: jobs.FieldMRFSourceID},
+		{Kind: jobs.KindConsumerIngest, Spec: jobs.ConsumerIngestStage, ArgField: jobs.FieldMRFSnapshotID},
 	}, logger)
 	client, err := jobs.NewRuntime(ctx, r.Pool, workers, Queues(), handler, logger)
 	if err != nil {

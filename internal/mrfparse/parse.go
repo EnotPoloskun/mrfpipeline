@@ -65,6 +65,12 @@ func normalizePath(path string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
+// ExpectedSourceURI is the Story 10 generated download URI: EvalSymlinks of
+// the record directory plus download/data, so the deleted leaf is not required.
+func ExpectedSourceURI(generatedDownloadDataPath string) string {
+	return expectedSourceURI(generatedDownloadDataPath)
+}
+
 func expectedSourceURI(generated string) string {
 	rec := filepath.Dir(filepath.Dir(generated))
 	if resolved, err := filepath.EvalSymlinks(rec); err == nil {

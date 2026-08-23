@@ -64,6 +64,12 @@ type sourceCounts struct {
 	Filtered int64
 }
 
+// ValidateCompletedOutput is the Story 10 exact parser 1.1.0 layout and
+// manifest check. Ingest reuses it and never resets parsed output.
+func ValidateCompletedOutput(dir, sourceURI, servicesPath string) error {
+	return validateCompletedOutput(dir, sourceURI, servicesPath)
+}
+
 func validateCompletedOutput(dir, sourceURI, servicesPath string) error {
 	if err := validateRootLayout(dir); err != nil {
 		return err

@@ -150,10 +150,12 @@ func runWork(ctx context.Context, getenv func(string) string) error {
 		return err
 	}
 	return work.Runtime{
-		Pool:         pool,
-		Workspace:    ws,
-		Logger:       jobs.NewLogger(os.Stderr),
-		ServicesPath: services,
+		Pool:                pool,
+		Workspace:           ws,
+		Logger:              jobs.NewLogger(os.Stderr),
+		ServicesPath:        services,
+		WarehousePath:       warehouse,
+		ProviderCatalogPath: catalog,
 	}.Run(ctx)
 }
 

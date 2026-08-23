@@ -130,45 +130,55 @@ UPDATE mrfpipeline.toc_files SET download_river_job_id = $2 WHERE id = $1`, tocI
 	if err := os.WriteFile(svcPath, []byte("billing_code_type,billing_code\nCPT,99213\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	catPath := filepath.Join(t.TempDir(), "catalog")
+	if err := os.Mkdir(catPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkCatalog(t, catPath)
+	warehouse := filepath.Join(t.TempDir(), "warehouse")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
 		done <- Runtime{
-			Pool: pool, Workspace: ws, Downloader: dl, Logger: jobs.NewLogger(io.Discard), ServicesPath: svcPath,
+			Pool: pool, Workspace: ws, Downloader: dl, Logger: jobs.NewLogger(io.Discard),
+			ServicesPath: svcPath, WarehousePath: warehouse, ProviderCatalogPath: catPath,
 		}.Run(ctx)
 	}()
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		var status, parse, imp, mrfDL, mrfParse, parseState string
+		var status, parse, imp, mrfDL, mrfParse, consume, ingestState string
 		err := pool.QueryRow(context.Background(), `
 SELECT t.download_status, t.parse_status, t.import_status,
        COALESCE(s.download_status, ''), COALESCE(s.parse_status, ''),
+       COALESCE(n.consume_status, ''),
        COALESCE((SELECT state FROM mrfpipeline_river.river_job WHERE kind = $2 LIMIT 1), '')
 FROM mrfpipeline.toc_files t
 LEFT JOIN mrfpipeline.mrf_sources s ON true
-WHERE t.id = $1`, tocID, jobs.KindMRFParse).Scan(&status, &parse, &imp, &mrfDL, &mrfParse, &parseState)
+LEFT JOIN mrfpipeline.mrf_snapshots n ON n.mrf_source_id = s.id
+WHERE t.id = $1`, tocID, jobs.KindConsumerIngest).Scan(&status, &parse, &imp, &mrfDL, &mrfParse, &consume, &ingestState)
 		if err == nil && status == jobs.StatusSucceeded && parse == jobs.StatusSucceeded && imp == jobs.StatusSucceeded &&
-			mrfDL == jobs.StatusSucceeded && mrfParse == jobs.StatusSucceeded && parseState == "completed" {
+			mrfDL == jobs.StatusSucceeded && mrfParse == jobs.StatusSucceeded &&
+			consume == jobs.StatusSucceeded && ingestState == "completed" {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	var status, parse, imp, mrfDL, mrfParse string
+	var status, parse, imp, mrfDL, mrfParse, consume string
 	if err := pool.QueryRow(context.Background(), `
 SELECT t.download_status, t.parse_status, t.import_status,
-       s.download_status, s.parse_status
-FROM mrfpipeline.toc_files t, mrfpipeline.mrf_sources s
-WHERE t.id = $1`, tocID).Scan(&status, &parse, &imp, &mrfDL, &mrfParse); err != nil {
+       s.download_status, s.parse_status, n.consume_status
+FROM mrfpipeline.toc_files t, mrfpipeline.mrf_sources s, mrfpipeline.mrf_snapshots n
+WHERE t.id = $1`, tocID).Scan(&status, &parse, &imp, &mrfDL, &mrfParse, &consume); err != nil {
 		cancel()
 		t.Fatal(err)
 	}
 	if status != jobs.StatusSucceeded || parse != jobs.StatusSucceeded || imp != jobs.StatusSucceeded ||
-		mrfDL != jobs.StatusSucceeded || mrfParse != jobs.StatusSucceeded {
+		mrfDL != jobs.StatusSucceeded || mrfParse != jobs.StatusSucceeded || consume != jobs.StatusSucceeded {
 		cancel()
-		t.Fatalf("toc %s %s %s mrf %s %s", status, parse, imp, mrfDL, mrfParse)
+		t.Fatalf("toc %s %s %s mrf %s %s consume %s", status, parse, imp, mrfDL, mrfParse, consume)
 	}
-	var sources, parses, ingests, batches, pending, blocked int
+	var sources, parses, ingests, batches, pending, blocked, attaches int
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_sources`).Scan(&sources); err != nil || sources != 1 {
 		cancel()
 		t.Fatalf("sources %d %v", sources, err)
@@ -177,15 +187,19 @@ WHERE t.id = $1`, tocID).Scan(&status, &parse, &imp, &mrfDL, &mrfParse); err != 
 		cancel()
 		t.Fatalf("parses %d %v", parses, err)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1 AND state <> 'completed' AND state <> 'discarded'`, jobs.KindConsumerIngest).Scan(&ingests); err != nil || ingests != 1 {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1 AND state = 'completed'`, jobs.KindConsumerIngest).Scan(&ingests); err != nil || ingests != 1 {
 		cancel()
 		t.Fatalf("ingests %d %v", ingests, err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindConsumerAttachPlans).Scan(&attaches); err != nil || attaches != 0 {
+		cancel()
+		t.Fatalf("attach %d %v", attaches, err)
 	}
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.plan_attachment_batches`).Scan(&batches); err != nil || batches != 0 {
 		cancel()
 		t.Fatalf("batches %d %v", batches, err)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_snapshots WHERE consume_status = 'pending'`).Scan(&pending); err != nil || pending != 1 {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_snapshots WHERE consume_status = 'pending'`).Scan(&pending); err != nil || pending != 0 {
 		cancel()
 		t.Fatalf("pending snapshots %d %v", pending, err)
 	}
@@ -193,8 +207,8 @@ WHERE t.id = $1`, tocID).Scan(&status, &parse, &imp, &mrfDL, &mrfParse); err != 
 		cancel()
 		t.Fatalf("blocked snapshots %d %v", blocked, err)
 	}
-	var sourceID int64
-	if err := pool.QueryRow(context.Background(), `SELECT id FROM mrfpipeline.mrf_sources`).Scan(&sourceID); err != nil {
+	var sourceID, snapID int64
+	if err := pool.QueryRow(context.Background(), `SELECT s.id, n.id FROM mrfpipeline.mrf_sources s, mrfpipeline.mrf_snapshots n`).Scan(&sourceID, &snapID); err != nil {
 		cancel()
 		t.Fatal(err)
 	}
@@ -202,15 +216,20 @@ WHERE t.id = $1`, tocID).Scan(&status, &parse, &imp, &mrfDL, &mrfParse); err != 
 		cancel()
 		t.Fatal("download leaf remained")
 	}
-	var parseState string
-	if err := pool.QueryRow(context.Background(), `
-SELECT state FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFParse).Scan(&parseState); err != nil {
+	if _, err := os.Lstat(filepath.Join(ws.Root, "mrf", "mrf-source-"+strconv.FormatInt(sourceID, 10), "parsed", "manifest.json")); err != nil {
 		cancel()
-		t.Fatal(err)
+		t.Fatal("parsed output missing")
 	}
-	if parseState != "completed" {
+	final := filepath.Join(warehouse, "snapshots", "collection_month=2026-08", "payer_id=uhc", "output_id=mrf-"+strconv.FormatInt(snapID, 10))
+	for _, name := range []string{"rate_facts", "rate_provider_groups", "provider_groups", "provider_group_memberships", "ingestions", "network_names", "manifest.json"} {
+		if _, err := os.Lstat(filepath.Join(final, name)); err != nil {
+			cancel()
+			t.Fatalf("snapshot %s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(final, "plans")); !os.IsNotExist(err) {
 		cancel()
-		t.Fatalf("mrf parse %s", parseState)
+		t.Fatal("snapshot plans")
 	}
 	cancel()
 	select {

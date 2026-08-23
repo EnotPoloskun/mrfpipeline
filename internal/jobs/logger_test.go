@@ -89,6 +89,35 @@ func TestProgressOmitsPercentWhenUnknown(t *testing.T) {
 	}
 }
 
+func TestProgressExplicitPercentOmitsBytes(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	p := NewProgress(NewLogger(&buf))
+	zero := 0
+	if err := p.Log(ProgressParams{JobID: 5, Kind: KindConsumerIngest, Queue: QueueConsumer, Phase: "validating_input", Percent: &zero}); err != nil {
+		t.Fatal(err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &obj); err != nil {
+		t.Fatal(err)
+	}
+	if obj["percent"] != float64(0) {
+		t.Fatalf("percent %v", obj["percent"])
+	}
+	if _, ok := obj["copied_bytes"]; ok {
+		t.Fatalf("copied_bytes present: %v", obj)
+	}
+	if _, ok := obj["total_bytes"]; ok {
+		t.Fatalf("total_bytes present: %v", obj)
+	}
+	bad := 101
+	if err := NewProgress(NewLogger(io.Discard)).Log(ProgressParams{
+		JobID: 5, Kind: KindConsumerIngest, Queue: QueueConsumer, Phase: "publishing", Percent: &bad,
+	}); !errors.Is(err, ErrJob) {
+		t.Fatalf("bad percent: %v", err)
+	}
+}
+
 func TestLoggerDropsErrorText(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer

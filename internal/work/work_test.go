@@ -2,18 +2,21 @@ package work
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/parquet-go/parquet-go"
 )
 
 func TestQueues(t *testing.T) {
 	t.Parallel()
 	q := Queues()
-	if len(q) != 6 {
+	if len(q) != 7 {
 		t.Fatalf("queues %v", q)
 	}
 	if q[jobs.QueueDiscovery].MaxWorkers != 1 {
@@ -34,8 +37,8 @@ func TestQueues(t *testing.T) {
 	if q[jobs.QueueMRFParse].MaxWorkers != 1 {
 		t.Fatalf("mrf_parse %d", q[jobs.QueueMRFParse].MaxWorkers)
 	}
-	if _, ok := q[jobs.QueueConsumer]; ok {
-		t.Fatal("must not consume consumer")
+	if q[jobs.QueueConsumer].MaxWorkers != 1 {
+		t.Fatalf("consumer %d", q[jobs.QueueConsumer].MaxWorkers)
 	}
 }
 
@@ -47,5 +50,89 @@ func TestRunRequiresServices(t *testing.T) {
 	err = Runtime{Pool: &pgxpool.Pool{}, Workspace: ws}.Run(context.Background())
 	if err == nil {
 		t.Fatal("expected services failure")
+	}
+}
+
+func TestRunRequiresCatalogAndWarehouse(t *testing.T) {
+	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := filepath.Join(t.TempDir(), "services.csv")
+	if err := os.WriteFile(svc, []byte("billing_code_type,billing_code\nCPT,99213\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err = Runtime{Pool: &pgxpool.Pool{}, Workspace: ws, ServicesPath: svc}.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected catalog failure")
+	}
+	cat := filepath.Join(t.TempDir(), "catalog")
+	if err := os.Mkdir(cat, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkCatalog(t, cat)
+	err = Runtime{Pool: &pgxpool.Pool{}, Workspace: ws, ServicesPath: svc, ProviderCatalogPath: cat}.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected warehouse failure")
+	}
+}
+
+type workCatalogProvider struct {
+	NPI        string  `parquet:"npi"`
+	State      *string `parquet:"state,optional"`
+	City       *string `parquet:"city,optional"`
+	PostalCode *string `parquet:"postal_code,optional"`
+}
+
+type workCatalogTaxonomy struct {
+	NPI          string `parquet:"npi"`
+	TaxonomyCode string `parquet:"taxonomy_code"`
+}
+
+func writeWorkCatalog(t testing.TB, root string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(root, "providers"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "provider_taxonomies"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	state, city, zip := "fl", "miami", "33101"
+	writeWorkParquet(t, filepath.Join(root, "providers", "part-00000.parquet"), []workCatalogProvider{{
+		NPI: "1111111111", State: &state, City: &city, PostalCode: &zip,
+	}})
+	writeWorkParquet(t, filepath.Join(root, "provider_taxonomies", "part-00000.parquet"), []workCatalogTaxonomy{{
+		NPI: "1111111111", TaxonomyCode: "207Q00000X",
+	}})
+	man, err := json.Marshal(map[string]any{
+		"schema_version": 1, "release_month": "2026-08",
+		"providers":           map[string]any{"path": "providers", "rows": 1},
+		"provider_taxonomies": map[string]any{"path": "provider_taxonomies", "rows": 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "manifest.json"), append(man, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeWorkParquet[T any](t testing.TB, path string, rows []T) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := parquet.NewGenericWriter[T](f)
+	if _, err := w.Write(rows); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

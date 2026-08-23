@@ -29,6 +29,12 @@ func TestFailureCodes(t *testing.T) {
 		FailureTOCImportOrderInvalid,
 		FailureTOCImportDatabaseFailed,
 		FailureTOCImportInvariant,
+		FailureConsumerIngestConfigInvalid,
+		FailureConsumerIngestInputInvalid,
+		FailureConsumerIngestOutputFailed,
+		FailureConsumerIngestOutputInvalid,
+		FailureConsumerIngestProviderChanged,
+		FailureConsumerIngestDatabaseFailed,
 		FailureDomainInvariant,
 	} {
 		err := Failure(code)
@@ -77,5 +83,23 @@ func TestFailureCodes(t *testing.T) {
 	}
 	if isImmediateFail(Failure(FailureTOCImportInvariant)) {
 		t.Fatal("toc import invariant should retry")
+	}
+	if isImmediateFail(Failure(FailureConsumerIngestConfigInvalid)) {
+		t.Fatal("consumer ingest config should retry")
+	}
+	if isImmediateFail(Failure(FailureConsumerIngestInputInvalid)) {
+		t.Fatal("consumer ingest input should retry")
+	}
+	if isImmediateFail(Failure(FailureConsumerIngestOutputFailed)) {
+		t.Fatal("consumer ingest output failed should retry")
+	}
+	if isImmediateFail(Failure(FailureConsumerIngestOutputInvalid)) {
+		t.Fatal("consumer ingest output invalid should retry")
+	}
+	if isImmediateFail(Failure(FailureConsumerIngestProviderChanged)) {
+		t.Fatal("consumer ingest provider should retry")
+	}
+	if isImmediateFail(Failure(FailureConsumerIngestDatabaseFailed)) {
+		t.Fatal("consumer ingest database should retry")
 	}
 }
