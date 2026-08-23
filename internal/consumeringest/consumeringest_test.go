@@ -178,6 +178,13 @@ func TestStartupWarehouseAndOwnedCatalog(t *testing.T) {
 	if err := CheckWarehouseCatalog(st, badID, ws.Root, svc); err == nil {
 		t.Fatal("nested catalog")
 	}
+	inside := filepath.Join(recognized, "services.csv")
+	if err := os.WriteFile(inside, []byte("a"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckWarehouseCatalog(st, readyID, ws.Root, inside); err == nil {
+		t.Fatal("services inside warehouse")
+	}
 	dirty := filepath.Join(t.TempDir(), "dirty-wh")
 	if err := os.Mkdir(dirty, 0700); err != nil {
 		t.Fatal(err)

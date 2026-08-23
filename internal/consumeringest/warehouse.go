@@ -4,8 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 )
 
@@ -78,7 +78,13 @@ func CheckWarehouseCatalog(ws WarehouseState, catalog CatalogID, artifactRoot, s
 	if err != nil {
 		return jobs.Failure("runtime")
 	}
-	if lexicalOverlap(catalog.Path, art) || lexicalOverlap(catalog.Path, svc) {
+	if err := artifact.CheckPairOverlap(catalog.Path, art); err != nil {
+		return jobs.Failure("runtime")
+	}
+	if err := artifact.CheckPairOverlap(catalog.Path, svc); err != nil {
+		return jobs.Failure("runtime")
+	}
+	if err := artifact.CheckPairOverlap(ws.Path, svc); err != nil {
 		return jobs.Failure("runtime")
 	}
 	owned := filepath.Join(ws.Path, "provider_catalog")
@@ -88,28 +94,10 @@ func CheckWarehouseCatalog(ws WarehouseState, catalog CatalogID, artifactRoot, s
 		}
 		return nil
 	}
-	if lexicalOverlap(catalog.Path, ws.Path) {
+	if err := artifact.CheckPairOverlap(catalog.Path, ws.Path); err != nil {
 		return jobs.Failure("runtime")
 	}
 	return nil
-}
-
-func lexicalOverlap(a, b string) bool {
-	if a == b {
-		return true
-	}
-	return hasPrefixPath(a, b) || hasPrefixPath(b, a)
-}
-
-func hasPrefixPath(parent, child string) bool {
-	rel, err := filepath.Rel(parent, child)
-	if err != nil || rel == "." {
-		return false
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	return true
 }
 
 func readWarehouseIdentity(path string) (catalogIdentity, error) {

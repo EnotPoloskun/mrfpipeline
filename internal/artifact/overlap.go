@@ -6,31 +6,49 @@ import (
 	"strings"
 )
 
-// CheckOverlap rejects equality or containment between the artifact root and
-// warehouse, provider catalog, or services paths. It compares Story 01 cleaned
-// paths first, then physical/anticipated physical paths. Sharing an ancestor
-// is not overlap.
+// CheckOverlap rejects equality or containment among the artifact root,
+// warehouse, provider catalog, and services paths. Warehouse vs catalog is
+// omitted here because a recognized warehouse may own `<warehouse>/provider_catalog`.
+// Comparisons use Story 01 cleaned paths, then physical/anticipated physical paths.
 func CheckOverlap(artifactRoot, warehouse, catalog, services string) error {
 	if artifactRoot == "" || warehouse == "" || catalog == "" || services == "" {
 		return artErr("overlap")
 	}
-	art := filepath.Clean(artifactRoot)
-	for _, other := range []string{warehouse, catalog, services} {
-		other = filepath.Clean(other)
-		if overlaps(art, other) {
-			return artErr("overlap")
-		}
-		artPhys, err := anticipatedPhysical(art)
-		if err != nil {
+	pairs := [][2]string{
+		{artifactRoot, warehouse},
+		{artifactRoot, catalog},
+		{artifactRoot, services},
+		{warehouse, services},
+		{catalog, services},
+	}
+	for _, p := range pairs {
+		if err := CheckPairOverlap(p[0], p[1]); err != nil {
 			return err
 		}
-		otherPhys, err := anticipatedPhysical(other)
-		if err != nil {
-			return err
-		}
-		if overlaps(artPhys, otherPhys) {
-			return artErr("overlap")
-		}
+	}
+	return nil
+}
+
+// CheckPairOverlap rejects equality or containment between two local paths.
+func CheckPairOverlap(a, b string) error {
+	if a == "" || b == "" {
+		return artErr("overlap")
+	}
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if overlaps(a, b) {
+		return artErr("overlap")
+	}
+	aPhys, err := anticipatedPhysical(a)
+	if err != nil {
+		return err
+	}
+	bPhys, err := anticipatedPhysical(b)
+	if err != nil {
+		return err
+	}
+	if overlaps(aPhys, bPhys) {
+		return artErr("overlap")
 	}
 	return nil
 }

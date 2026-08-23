@@ -149,7 +149,15 @@ func TestFilenameDerivation(t *testing.T) {
 			t.Fatalf("deriveFilename(%q) = %q %v want %q %v", tc.location, got, ok, tc.filename, tc.ok)
 		}
 	}
-	for _, location := range []string{"HTTPS://example.test/file", "http://example.test/file", "https://", "https://example.test/a%", "https://example.test/a b"} {
+	for _, location := range []string{
+		"HTTPS://example.test/file",
+		"http://example.test/file",
+		"https://",
+		"https://example.test/a%",
+		"https://example.test/a b",
+		"https://user:pass@example.test/file.json",
+		"https://user@example.test/file.json",
+	} {
 		if _, ok := deriveFilename(location); ok {
 			t.Fatalf("accepted %q", location)
 		}

@@ -15,6 +15,12 @@ var ErrArtifact = errors.New("artifact operation failed")
 // HTTP-status, copy, content-length, and body-close failures.
 var ErrDownload = errors.New("download failed")
 
+// ErrPlanBatchInput is a preserved, mismatched, or unsafe plan-batch leaf.
+var ErrPlanBatchInput = errors.New("plan batch input")
+
+// ErrPlanBatchOutput is a failed plan-batch publication.
+var ErrPlanBatchOutput = errors.New("plan batch output")
+
 const (
 	KindTOC       = "toc"
 	KindMRF       = "mrf"
@@ -33,13 +39,15 @@ const (
 	dirParsed     = "parsed"
 	fileData      = "data"
 	fileManifest  = "manifest.json"
+	filePlans     = "plans.json"
 
 	tocPrefix = "toc-"
 	mrfPrefix = "mrf-source-"
 	batPrefix = "plan-batch-"
 
-	stagingTOCPrefix = "toc-download-"
-	stagingMRFPrefix = "mrf-download-"
+	stagingTOCPrefix   = "toc-download-"
+	stagingMRFPrefix   = "mrf-download-"
+	stagingBatchPrefix = "plan-batch-"
 
 	dirMode  os.FileMode = 0700
 	fileMode os.FileMode = 0600

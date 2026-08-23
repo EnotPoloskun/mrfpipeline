@@ -4,15 +4,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/config"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
-	EnvRealAcceptance = "MRFPIPELINE_REAL_ACCEPTANCE"
-	EnvTestDatabase   = "MRFPIPELINE_TEST_DATABASE_URL"
-	EnvRealTOCLimit   = "MRFPIPELINE_REAL_TOC_LIMIT"
+	EnvRealAcceptance      = "MRFPIPELINE_REAL_ACCEPTANCE"
+	EnvTestDatabase        = "MRFPIPELINE_TEST_DATABASE_URL"
+	EnvRealTOCLimit        = "MRFPIPELINE_REAL_TOC_LIMIT"
+	EnvRealCollectionMonth = "MRFPIPELINE_REAL_COLLECTION_MONTH"
+	EnvRealTimeout         = "MRFPIPELINE_REAL_ACCEPTANCE_TIMEOUT"
+	EnvRealReport          = "MRFPIPELINE_REAL_ACCEPTANCE_REPORT"
+	DefaultAcceptanceWait  = 2 * time.Hour
 )
 
 // AcceptanceGuardError is a safe refusal before network or deletion.
@@ -42,6 +48,9 @@ func CheckAcceptanceGuards(getenv func(string) string) (int64, error) {
 	if !strings.HasPrefix(cfg.ConnConfig.Database, "mrfpipeline_test_") {
 		return 0, AcceptanceGuardError{Reason: "nondisposable database"}
 	}
+	if err := config.ValidateCollectionMonth(getenv(EnvRealCollectionMonth)); err != nil {
+		return 0, AcceptanceGuardError{Reason: "collection month"}
+	}
 	art := getenv(config.EnvArtifactRoot)
 	wh := getenv(config.EnvWarehousePath)
 	cat := getenv(config.EnvProviderCatalogPath)
@@ -51,7 +60,7 @@ func CheckAcceptanceGuards(getenv func(string) string) (int64, error) {
 			return 0, AcceptanceGuardError{Reason: "missing dedicated root"}
 		}
 	}
-	abs := make([]string, 0, 2)
+	abs := make([]string, 0, 4)
 	markers := []string{"workspace.json", "warehouse.json"}
 	for i, p := range []string{art, wh} {
 		info, err := os.Lstat(p)
@@ -67,9 +76,34 @@ func CheckAcceptanceGuards(getenv func(string) string) (int64, error) {
 		}
 		abs = append(abs, filepath.Clean(cleaned))
 	}
-	if abs[0] == abs[1] || strings.HasPrefix(abs[0]+string(os.PathSeparator), abs[1]+string(os.PathSeparator)) ||
-		strings.HasPrefix(abs[1]+string(os.PathSeparator), abs[0]+string(os.PathSeparator)) {
+	for _, p := range []string{cat, svc} {
+		cleaned, err := filepath.Abs(p)
+		if err != nil {
+			return 0, AcceptanceGuardError{Reason: "invalid root"}
+		}
+		abs = append(abs, filepath.Clean(cleaned))
+	}
+	if err := artifact.CheckOverlap(abs[0], abs[1], abs[2], abs[3]); err != nil {
 		return 0, AcceptanceGuardError{Reason: "overlapping roots"}
+	}
+	if raw := getenv(EnvRealTimeout); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return 0, AcceptanceGuardError{Reason: "timeout"}
+		}
+	}
+	if report := getenv(EnvRealReport); report != "" {
+		cleaned, err := filepath.Abs(report)
+		if err != nil {
+			return 0, AcceptanceGuardError{Reason: "report path"}
+		}
+		cleaned = filepath.Clean(cleaned)
+		if err := artifact.CheckPairOverlap(abs[0], cleaned); err != nil {
+			return 0, AcceptanceGuardError{Reason: "report path"}
+		}
+		if err := artifact.CheckPairOverlap(abs[1], cleaned); err != nil {
+			return 0, AcceptanceGuardError{Reason: "report path"}
+		}
 	}
 	limitRaw := getenv(EnvRealTOCLimit)
 	limit := int64(1)

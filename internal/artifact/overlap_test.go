@@ -26,6 +26,16 @@ func TestCheckOverlapLexical(t *testing.T) {
 	if err := CheckOverlap(art, art, cat, svc); !errors.Is(err, ErrArtifact) {
 		t.Fatalf("equal: %v", err)
 	}
+	if err := CheckOverlap(art, wh, cat, filepath.Join(wh, "services.csv")); !errors.Is(err, ErrArtifact) {
+		t.Fatalf("services inside warehouse: %v", err)
+	}
+	if err := CheckOverlap(art, wh, cat, filepath.Join(cat, "services.csv")); !errors.Is(err, ErrArtifact) {
+		t.Fatalf("services inside catalog: %v", err)
+	}
+	owned := filepath.Join(wh, "provider_catalog")
+	if err := CheckOverlap(art, wh, owned, svc); err != nil {
+		t.Fatalf("owned warehouse catalog path: %v", err)
+	}
 }
 
 func TestCheckOverlapPhysical(t *testing.T) {

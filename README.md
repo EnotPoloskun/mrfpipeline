@@ -20,9 +20,19 @@ decisions that stay consistent across those stories.
 
 ## Build
 
+The four sibling modules in `go.mod` (`mrfdiscoverer`, `mrftocparser`,
+`mrfparser`, and `mrfconsumer`) are private pseudo-versions. `go.mod` must
+not contain a `replace` directive. Grant git access and tell the toolchain
+not to use a public proxy for those paths:
+
 ```text
+export GOPRIVATE=github.com/EnotPoloskun/*,github.com/enotpoloskun/mrfconsumer
 go build -o mrfpipeline ./cmd/mrfpipeline
 ```
+
+A clean checkout needs that `GOPRIVATE` value (and credentials that can
+read those repositories) before `go build` or `go test`. An existing
+`GOMODCACHE` populated from those revisions is also sufficient.
 
 ## Commands
 
@@ -267,16 +277,48 @@ in-flight work. Do not cancel, retry, or delete jobs from the UI.
 
 UHC only. Local storage only. No automatic enrichment. No plan
 removal/correction. No recurring discovery. Sticky collection month.
-Required `--limit`. No UI in this binary.
+Required `--limit`. No UI in this binary. TOC import rejects HTTPS MRF
+URLs that contain user information; the shared downloader would refuse
+those locations.
+
+Configured artifact, warehouse, catalog, and services paths must not
+overlap, including the service selector sitting inside the warehouse.
 
 ## Tests
 
+There is no CI configuration. Tests, including PostgreSQL integration,
+DuckDB consumer paths, and `go test -race`, run on an operator machine
+that can resolve the private sibling modules.
+
 ```text
+export GOPRIVATE=github.com/EnotPoloskun/*,github.com/enotpoloskun/mrfconsumer
 go test ./...
 go vet ./...
 ```
 
-Live UHC acceptance is skipped unless every opt-in variable is set, the
-database name starts with `mrfpipeline_test_`, and both output roots are
-dedicated, non-symlink, and initializable. Ordinary `go test ./...` never
-contacts live UHC.
+Live UHC acceptance is `TestRealUHCAcceptance` in `internal/reconcile`.
+It is skipped unless every opt-in variable is set, the database name
+starts with `mrfpipeline_test_`, both output roots are dedicated,
+non-symlink, and initializable, and a collection month is supplied.
+Ordinary `go test ./...` never contacts live UHC.
+
+```text
+export MRFPIPELINE_REAL_ACCEPTANCE=1
+export MRFPIPELINE_TEST_DATABASE_URL=<disposable database>
+export MRFPIPELINE_ARTIFACT_ROOT=<dedicated empty acceptance root>
+export MRFPIPELINE_WAREHOUSE_PATH=<dedicated empty acceptance warehouse>
+export MRFPIPELINE_PROVIDER_CATALOG_PATH=<accepted manual catalog>
+export MRFPIPELINE_SERVICES_PATH=<small intended CPT selector>
+export MRFPIPELINE_REAL_COLLECTION_MONTH=<YYYY-MM>
+```
+
+Optional: `MRFPIPELINE_REAL_TOC_LIMIT` (`1`–`10`, default `1`),
+`MRFPIPELINE_REAL_ACCEPTANCE_TIMEOUT` (Go duration, default `2h`), and
+`MRFPIPELINE_REAL_ACCEPTANCE_REPORT` (JSON path outside the artifact and
+warehouse roots). Raise the test timeout to cover the wait, for example
+`go test -timeout 3h ./internal/reconcile -run TestRealUHCAcceptance`.
+
+The harness builds `./cmd/mrfpipeline`, runs `migrate`, starts one
+`work` process, runs `discover`, waits until domain stages are idle,
+stops the worker, runs `reconcile`, restarts `work`, and asserts that
+domain and warehouse counts do not increase.

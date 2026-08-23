@@ -115,6 +115,10 @@ func (w *Worker) attach(ctx context.Context, ident claimIdentity) (int64, error)
 	return report.AddedPlanCount, nil
 }
 
+func isSymlink(info os.FileInfo) bool {
+	return info.Mode()&os.ModeSymlink != 0
+}
+
 func loadFrozenPlans(ctx context.Context, pool *pgxpool.Pool, ident claimIdentity) ([]planRow, error) {
 	if pool == nil {
 		return nil, jobs.Failure(jobs.FailurePlanAttachDatabaseFailed)

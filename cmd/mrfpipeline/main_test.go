@@ -35,6 +35,9 @@ func TestREADMEDescribesVersion1(t *testing.T) {
 		"--limit 1",
 		"Authorized URL-debug",
 		"plan-ready",
+		"GOPRIVATE",
+		"MRFPIPELINE_REAL_COLLECTION_MONTH",
+		"TestRealUHCAcceptance",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("README missing %q", want)

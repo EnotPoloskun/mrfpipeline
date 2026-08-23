@@ -98,6 +98,30 @@ func TestRemovePlanBatchIdempotent(t *testing.T) {
 	}
 }
 
+func TestPublishPlanBatchReuseAndGuards(t *testing.T) {
+	t.Parallel()
+	ws := mustInit(t, filepath.Join(t.TempDir(), "ws"))
+	canonical := []byte("[{\"plan_name\":\"A\"}]\n")
+	path, err := ws.PublishPlanBatch(9, canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := ws.PublishPlanBatch(9, canonical)
+	if err != nil || again != path {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("[]\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.PublishPlanBatch(9, canonical); !errors.Is(err, ErrPlanBatchInput) {
+		t.Fatalf("mismatch %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "[]\n" {
+		t.Fatal("rewrote invalid")
+	}
+}
+
 func TestRemoveDownloadIdempotent(t *testing.T) {
 	t.Parallel()
 	ws := mustInit(t, filepath.Join(t.TempDir(), "ws"))

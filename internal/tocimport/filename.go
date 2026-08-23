@@ -16,7 +16,7 @@ func validHTTPSLocation(location string) bool {
 		}
 	}
 	u, err := url.Parse(location)
-	return err == nil && u.Scheme == "https" && u.IsAbs() && u.Hostname() != ""
+	return err == nil && u.Scheme == "https" && u.IsAbs() && u.Hostname() != "" && u.User == nil
 }
 
 func deriveFilename(location string) (string, bool) {

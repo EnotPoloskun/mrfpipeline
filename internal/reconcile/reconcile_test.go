@@ -195,12 +195,13 @@ func TestAcceptanceGuards(t *testing.T) {
 		t.Fatal("mkdir")
 	}
 	base := map[string]string{
-		EnvRealAcceptance:                "1",
-		EnvTestDatabase:                  "postgres://u@127.0.0.1:1/mrfpipeline_test_guard",
-		"MRFPIPELINE_ARTIFACT_ROOT":      art,
-		"MRFPIPELINE_WAREHOUSE_PATH":     wh,
+		EnvRealAcceptance:                   "1",
+		EnvTestDatabase:                     "postgres://u@127.0.0.1:1/mrfpipeline_test_guard",
+		EnvRealCollectionMonth:              "2026-08",
+		"MRFPIPELINE_ARTIFACT_ROOT":         art,
+		"MRFPIPELINE_WAREHOUSE_PATH":        wh,
 		"MRFPIPELINE_PROVIDER_CATALOG_PATH": filepath.Join(t.TempDir(), "cat"),
-		"MRFPIPELINE_SERVICES_PATH":      filepath.Join(t.TempDir(), "svc.csv"),
+		"MRFPIPELINE_SERVICES_PATH":         filepath.Join(t.TempDir(), "svc.csv"),
 	}
 	getenv := func(m map[string]string) func(string) string {
 		return func(k string) string { return m[k] }
@@ -226,6 +227,16 @@ func TestAcceptanceGuards(t *testing.T) {
 	overlap["MRFPIPELINE_WAREHOUSE_PATH"] = art
 	if _, err := CheckAcceptanceGuards(getenv(overlap)); err == nil {
 		t.Fatal("overlap")
+	}
+	inside := copyMap(base)
+	inside["MRFPIPELINE_SERVICES_PATH"] = filepath.Join(wh, "services.csv")
+	if _, err := CheckAcceptanceGuards(getenv(inside)); err == nil {
+		t.Fatal("services inside warehouse")
+	}
+	noMonth := copyMap(base)
+	delete(noMonth, EnvRealCollectionMonth)
+	if _, err := CheckAcceptanceGuards(getenv(noMonth)); err == nil {
+		t.Fatal("missing collection month")
 	}
 	if _, err := CheckAcceptanceGuards(func(string) string { return "" }); err == nil {
 		t.Fatal("opt-in")

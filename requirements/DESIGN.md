@@ -483,7 +483,11 @@ Every job has eight attempts using River's exponential retry policy with
 jitter. Workers have no ordinary execution timeout because large MRF work may
 take hours, but they honor cancellation. River may rescue a job considered
 stuck after the configured threshold, so domain claims and artifact completion
-rules—not an assumption of exactly-once execution—preserve correctness.
+rules—not an assumption of exactly-once execution—preserve correctness. Each
+`jobs.Run` invocation also takes an in-process lock keyed by domain table,
+status column, and ID for the whole claim/work/succeed path so a rescued
+delivery of the same River job cannot overlap destructive artifact work in
+the same worker process.
 
 ## End-to-end workflow
 
@@ -600,9 +604,11 @@ In one or more bounded database transactions, it:
    duplicating existing stage jobs, and leaves newly inserted plans as durable
    unassigned eligibility for Story 12 batching.
 
-Imported `mrf_location` values are HTTPS-only. The worker recomputes the
-parser's documented filename derivation from that location and compares it
-exactly.
+Imported `mrf_location` values are HTTPS-only and must not contain URL
+user information. The downloader also rejects credential-bearing URLs, so
+import admits only locations the shared client can fetch. The worker
+recomputes the parser's documented filename derivation from that location
+and compares it exactly.
 
 Feed identity is not inferred by Story 02. Story 08 assigns the conservative
 version 1 UHC value `mrf-source-<mrf_sources.id>`. The same exact source URL
@@ -883,16 +889,20 @@ Sibling parser output manifests remain authoritative:
 - manifest present but invalid/unsupported: artifact/tool contract failure,
   never silently delete as ordinary partial work.
 
-The artifact root must not equal, contain, or be contained by the warehouse,
-provider catalog, or services path. Extra root entries, including `.DS_Store`
-and `Thumbs.db`, are rejected. Generic cleanup accepts generated kind/ID
-addresses, never arbitrary caller paths or globs.
+Configured local paths are checked pairwise, including physical and
+anticipated physical locations. The artifact root, warehouse, provider
+catalog, and services path must not equal, contain, or be contained by one
+another, except that a recognized warehouse may own `<warehouse>/provider_catalog`.
+The service selector must not sit inside the warehouse or catalog. Extra
+root entries, including `.DS_Store` and `Thumbs.db`, are rejected. Generic
+cleanup accepts generated kind/ID addresses, never arbitrary caller paths
+or globs.
 
 ## Download model
 
 TOC and MRF stages share one streaming HTTP client:
 
-- HTTP/HTTPS only.
+- HTTP/HTTPS only. URLs with user information are rejected.
 - Public network destinations only. After DNS, if **any** resolved address is
   loopback, unspecified, link-local, multicast, or private-use, reject that
   resolution completely. Revalidate the chosen address again at dial time.
@@ -1012,8 +1022,9 @@ fixed event, job kind/queue, River job ID, attempt, safe failure class,
 duration, unlabeled counts, and throttled `progress` fields as permitted by
 Story 03.
 
-The downloader blocks private/local network destinations and unsafe redirects.
-The artifact workspace rejects symlinks and overlap with external data roots.
+The downloader blocks private/local network destinations, credential-bearing
+URLs, and unsafe redirects. The artifact workspace rejects symlinks and
+pairwise overlap among configured local roots.
 Database credentials, TLS policy, filesystem ownership, disk encryption, and
 PostgreSQL roles remain deployment responsibilities.
 

@@ -54,6 +54,8 @@ func Run(ctx context.Context, p RunParams) error {
 	if p.DomainID <= 0 {
 		return river.JobCancel(jobErr(FailureInvalidArguments))
 	}
+	unlock := lockStageFlight(p.Spec, p.DomainID)
+	defer unlock()
 	claimFn := p.Claim
 	if claimFn == nil {
 		claimFn = func(ctx context.Context) (ClaimResult, error) {

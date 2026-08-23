@@ -3,7 +3,10 @@ package jobs
 import (
 	"context"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -50,6 +53,67 @@ func TestRunLeaseLostDoesNotMutate(t *testing.T) {
 	}
 	if strings.Contains(Failure(FailureWorkerLeaseLost).Error(), "7319") {
 		t.Fatal("logged lease keys")
+	}
+}
+
+func TestRunForcedRescueSerializesWork(t *testing.T) {
+	t.Parallel()
+	var overlapping atomic.Bool
+	var inWork atomic.Int32
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	work := func(context.Context) error {
+		if inWork.Add(1) != 1 {
+			overlapping.Store(true)
+		}
+		defer inWork.Add(-1)
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		return Failure(FailureWorkerLeaseLost)
+	}
+	params := func() RunParams {
+		return RunParams{
+			Spec:       TOCDownloadStage,
+			DomainID:   42,
+			RiverJobID: 7,
+			Claim: func(context.Context) (ClaimResult, error) {
+				return ClaimResult{Action: ClaimWork}, nil
+			},
+			Work: work,
+		}
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if err := Run(context.Background(), params()); err != nil {
+			t.Errorf("first: %v", err)
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first work did not start")
+	}
+	go func() {
+		defer wg.Done()
+		if err := Run(context.Background(), params()); err != nil {
+			t.Errorf("rescued: %v", err)
+		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	if overlapping.Load() {
+		close(release)
+		wg.Wait()
+		t.Fatal("rescued delivery overlapped in-process work")
+	}
+	close(release)
+	wg.Wait()
+	if overlapping.Load() {
+		t.Fatal("rescued delivery overlapped in-process work")
 	}
 }
 
