@@ -3,9 +3,11 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -151,6 +153,9 @@ ORDER BY version`)
 		}
 		if err := execSimple(ctx, tx, file.SQL); err != nil {
 			_ = tx.Rollback(ctx)
+			if file.Version == 2 && isPopulatedFeedFreeMigration(err) {
+				return Result{}, dbErr("migration requires a new pipeline database and warehouse")
+			}
 			return Result{}, classify(ctx, "apply migration", err)
 		}
 		if _, err := tx.Exec(ctx, `
@@ -184,6 +189,12 @@ VALUES ($1, $2)`, file.Version, file.Name); err != nil {
 		RiverVersion:               riverVersion,
 		AppliedRiverMigrationCount: riverApplied,
 	}, nil
+}
+
+func isPopulatedFeedFreeMigration(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "P0001" &&
+		pgErr.Message == "feed-free migration requires a new pipeline database and warehouse"
 }
 
 func validateLedger(rows []ledgerRow, files []migrationFile) error {

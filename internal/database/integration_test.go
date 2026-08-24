@@ -71,14 +71,14 @@ func mustMigrate(t *testing.T, url string) Result {
 func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 	url, pool := withTestDB(t)
 	first := mustMigrate(t, url)
-	if first.ApplicationVersion != 1 || first.AppliedMigrationCount != 1 {
+	if first.ApplicationVersion != 2 || first.AppliedMigrationCount != 2 {
 		t.Fatalf("first %+v", first)
 	}
 	if first.RiverVersion != ExpectedRiverVersion || first.AppliedRiverMigrationCount != ExpectedRiverVersion {
 		t.Fatalf("first river %+v", first)
 	}
 	second := mustMigrate(t, url)
-	if second.ApplicationVersion != 1 || second.AppliedMigrationCount != 0 {
+	if second.ApplicationVersion != 2 || second.AppliedMigrationCount != 0 {
 		t.Fatalf("second %+v", second)
 	}
 	if second.RiverVersion != ExpectedRiverVersion || second.AppliedRiverMigrationCount != 0 {
@@ -89,7 +89,7 @@ func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal("count ledger")
 	}
-	if n != 1 {
+	if n != 2 {
 		t.Fatalf("ledger rows %d", n)
 	}
 
@@ -98,7 +98,6 @@ func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 		"discovery_runs",
 		"toc_files",
 		"discovery_run_toc_files",
-		"mrf_feeds",
 		"mrf_sources",
 		"mrf_snapshots",
 		"toc_mrf_plan_associations",
@@ -116,6 +115,49 @@ SELECT EXISTS (
 		if err != nil || !exists {
 			t.Fatalf("missing table %s: %v", table, err)
 		}
+	}
+	var feedTable bool
+	if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'mrfpipeline' AND table_name = 'mrf_feeds'
+)`).Scan(&feedTable); err != nil {
+		t.Fatal(err)
+	}
+	if feedTable {
+		t.Fatal("feed table remains")
+	}
+	var feedColumns int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*)
+FROM information_schema.columns
+WHERE table_schema = 'mrfpipeline' AND column_name IN ('feed_id', 'mrf_feed_id')`).Scan(&feedColumns); err != nil {
+		t.Fatal(err)
+	}
+	if feedColumns != 0 {
+		t.Fatalf("feed columns remain: %d", feedColumns)
+	}
+	var feedConstraints int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*)
+FROM pg_constraint c
+JOIN pg_namespace n ON n.oid = c.connamespace
+WHERE n.nspname = 'mrfpipeline'
+  AND (c.conname ILIKE '%feed%' OR pg_get_constraintdef(c.oid) ILIKE '%feed%')`).Scan(&feedConstraints); err != nil {
+		t.Fatal(err)
+	}
+	if feedConstraints != 0 {
+		t.Fatalf("feed constraints remain: %d", feedConstraints)
+	}
+	var feedIndexes int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*)
+FROM pg_indexes
+WHERE schemaname = 'mrfpipeline' AND indexname ILIKE '%feed%'`).Scan(&feedIndexes); err != nil {
+		t.Fatal(err)
+	}
+	if feedIndexes != 0 {
+		t.Fatalf("feed indexes remain: %d", feedIndexes)
 	}
 
 	indexes := []string{
@@ -163,17 +205,17 @@ func TestIntegrationConcurrentMigrators(t *testing.T) {
 			t.Fatalf("migrator %d: %v", i, err)
 		}
 	}
-	if results[0].AppliedMigrationCount+results[1].AppliedMigrationCount != 1 {
+	if results[0].AppliedMigrationCount+results[1].AppliedMigrationCount != 2 {
 		t.Fatalf("applied %+v %+v", results[0], results[1])
 	}
 	if results[0].AppliedRiverMigrationCount+results[1].AppliedRiverMigrationCount != ExpectedRiverVersion {
 		t.Fatalf("river applied %+v %+v", results[0], results[1])
 	}
 	var n int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations WHERE version = 1`).Scan(&n); err != nil {
-		t.Fatal("count version 1")
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
+		t.Fatal("count ledger")
 	}
-	if n != 1 {
+	if n != 2 {
 		t.Fatalf("ledger rows %d", n)
 	}
 }
@@ -185,8 +227,8 @@ func TestIntegrationFailingMigrationRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	files = append(files, migrationFile{
-		Version: 2,
-		Name:    "0002_fail.sql",
+		Version: 3,
+		Name:    "0003_fail.sql",
 		SQL:     "CREATE TABLE mrfpipeline.should_not_exist (id int);\nSELECT 1 / 0;",
 	})
 	_, err = applyMigrations(context.Background(), url, files)
@@ -211,8 +253,54 @@ SELECT EXISTS (
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
+	if n != 2 {
 		t.Fatalf("ledger rows %d", n)
+	}
+}
+
+func TestIntegrationPopulatedV1RejectedWithoutMutation(t *testing.T) {
+	url, pool := withTestDB(t)
+	files, err := loadEmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := applyMigrations(context.Background(), url, files[:1]); err != nil {
+		t.Fatal("apply v1", err)
+	}
+	var sourceID int64
+	if err := pool.QueryRow(context.Background(), `
+INSERT INTO mrfpipeline.mrf_sources (source_url)
+VALUES ('https://example.invalid/mrf.json')
+RETURNING id`).Scan(&sourceID); err != nil {
+		t.Fatal("insert v1 row", err)
+	}
+
+	_, err = Migrate(context.Background(), url)
+	if !errors.Is(err, ErrDatabase) {
+		t.Fatalf("got %v", err)
+	}
+	if !strings.Contains(err.Error(), "new pipeline database and warehouse") {
+		t.Fatalf("missing safe migration instruction: %v", err)
+	}
+	var got int64
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM mrfpipeline.mrf_sources`).Scan(&got); err != nil {
+		t.Fatal("read source", err)
+	}
+	if got != sourceID {
+		t.Fatalf("source changed from %d to %d", sourceID, got)
+	}
+	var collectionMonth bool
+	if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'mrfpipeline'
+      AND table_name = 'mrf_sources'
+      AND column_name = 'collection_month'
+)`).Scan(&collectionMonth); err != nil {
+		t.Fatal(err)
+	}
+	if collectionMonth {
+		t.Fatal("failed migration changed schema")
 	}
 }
 
@@ -225,8 +313,8 @@ func TestIntegrationInvalidLedgerRejected(t *testing.T) {
 		sql  string
 	}{
 		{"filename mismatch", `UPDATE mrfpipeline.schema_migrations SET name = 'wrong.sql'`},
-		{"unknown future", `INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (2, '0002_future.sql')`},
-		{"missing", `DELETE FROM mrfpipeline.schema_migrations; INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (2, '0002_future.sql')`},
+		{"unknown future", `INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (3, '0003_future.sql')`},
+		{"missing", `DELETE FROM mrfpipeline.schema_migrations; INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (3, '0003_future.sql')`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -261,17 +349,17 @@ CREATE TABLE mrfpipeline_river.river_migration (broken int)`); err != nil {
 		t.Fatalf("exposed url: %v", err)
 	}
 	var n int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations WHERE version = 1`).Scan(&n); err != nil {
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
+	if n != 2 {
 		t.Fatalf("application ledger rewritten: %d", n)
 	}
 	if _, err := pool.Exec(context.Background(), `DROP TABLE mrfpipeline_river.river_migration`); err != nil {
 		t.Fatal(err)
 	}
 	result := mustMigrate(t, url)
-	if result.ApplicationVersion != 1 || result.AppliedMigrationCount != 0 {
+	if result.ApplicationVersion != 2 || result.AppliedMigrationCount != 0 {
 		t.Fatalf("app %+v", result)
 	}
 	if result.RiverVersion != ExpectedRiverVersion || result.AppliedRiverMigrationCount != ExpectedRiverVersion {
@@ -325,23 +413,26 @@ func TestIntegrationSchemaConstraints(t *testing.T) {
 	err := pool.QueryRow(ctx, `
 INSERT INTO mrfpipeline.discovery_runs (
     payer_id, collection_month, toc_limit, status, discovered_count, existing_count, admitted_count, overflow_count
-) VALUES ('uhc', DATE '2026-08-01', 5, 'pending', 0, 0, 0, 0)
+) VALUES ('aetna', DATE '2026-08-01', 5, 'pending', 0, 0, 0, 0)
 RETURNING id`).Scan(&runID)
 	if err != nil {
 		t.Fatalf("valid discovery run: %v", err)
 	}
 
 	rejects := []string{
-		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month) VALUES ('aetna', DATE '2026-08-01')`,
-		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month) VALUES ('uhc', DATE '2026-08-15')`,
-		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, toc_limit) VALUES ('uhc', DATE '2026-08-01', 0)`,
-		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, discovered_count, existing_count) VALUES ('uhc', DATE '2026-08-01', 1, 2)`,
-		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, discovered_count, existing_count, admitted_count, overflow_count) VALUES ('uhc', DATE '2026-08-01', 2, 0, 2, 1)`,
-		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, toc_limit, admitted_count) VALUES ('uhc', DATE '2026-08-01', 1, 2)`,
-		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, river_job_id) VALUES ('uhc', DATE '2026-08-01', 0)`,
-		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, river_job_id) VALUES ('uhc', DATE '2026-08-01', -1)`,
-		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, status, completed_at) VALUES ('uhc', DATE '2026-08-01', 'pending', transaction_timestamp())`,
-		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, status, failure_code) VALUES ('uhc', DATE '2026-08-01', 'succeeded', 'x')`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month) VALUES ('', DATE '2026-08-01')`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month) VALUES ('AETNA', DATE '2026-08-01')`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month) VALUES ('aetna corp', DATE '2026-08-01')`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month) VALUES (repeat('a', 129), DATE '2026-08-01')`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month) VALUES ('aetna', DATE '2026-08-15')`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, toc_limit) VALUES ('aetna', DATE '2026-08-01', 0)`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, discovered_count, existing_count) VALUES ('aetna', DATE '2026-08-01', 1, 2)`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, discovered_count, existing_count, admitted_count, overflow_count) VALUES ('aetna', DATE '2026-08-01', 2, 0, 2, 1)`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, toc_limit, admitted_count) VALUES ('aetna', DATE '2026-08-01', 1, 2)`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, river_job_id) VALUES ('aetna', DATE '2026-08-01', 0)`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, river_job_id) VALUES ('aetna', DATE '2026-08-01', -1)`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, status, completed_at) VALUES ('aetna', DATE '2026-08-01', 'pending', transaction_timestamp())`,
+		`INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, status, failure_code) VALUES ('aetna', DATE '2026-08-01', 'succeeded', 'x')`,
 	}
 	for _, sql := range rejects {
 		if _, err := pool.Exec(ctx, sql); err == nil {
@@ -353,7 +444,7 @@ RETURNING id`).Scan(&runID)
 	err = pool.QueryRow(ctx, `
 INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id
-) VALUES ('uhc', DATE '2026-08-01', 'https://example.invalid/toc.json', $1)
+) VALUES ('aetna', DATE '2026-08-01', 'https://example.invalid/toc.json', $1)
 RETURNING id`, runID).Scan(&tocID)
 	if err != nil {
 		t.Fatalf("valid toc: %v", err)
@@ -361,32 +452,32 @@ RETURNING id`, runID).Scan(&tocID)
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id
-) VALUES ('uhc', DATE '2026-08-01', 'https://example.invalid/toc.json', $1)`, runID); err == nil {
+	) VALUES ('aetna', DATE '2026-08-01', 'https://example.invalid/toc.json', $1)`, runID); err == nil {
 		t.Fatal("duplicate toc url")
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id
-) VALUES ('uhc', DATE '2026-08-01', E'https://example.invalid/toc\n.json', $1)`, runID); err == nil {
+) VALUES ('aetna', DATE '2026-08-01', E'https://example.invalid/toc\n.json', $1)`, runID); err == nil {
 		t.Fatal("newline url")
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id, download_status, parse_status
-) VALUES ('uhc', DATE '2026-08-01', 'https://example.invalid/toc2.json', $1, 'pending', 'pending')`, runID); err == nil {
+) VALUES ('aetna', DATE '2026-08-01', 'https://example.invalid/toc2.json', $1, 'pending', 'pending')`, runID); err == nil {
 		t.Fatal("parse left blocked too early")
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id, download_status, parse_status, import_status, failure_code
-) VALUES ('uhc', DATE '2026-08-01', 'https://example.invalid/toc3.json', $1, 'failed', 'failed', 'blocked', 'download')`, runID); err == nil {
+) VALUES ('aetna', DATE '2026-08-01', 'https://example.invalid/toc3.json', $1, 'failed', 'failed', 'blocked', 'download')`, runID); err == nil {
 		t.Fatal("failed download left parse failed")
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id
-) VALUES ('aetna', DATE '2026-08-01', 'https://example.invalid/other.json', $1)`, runID); err == nil {
-		t.Fatal("toc payer")
+) VALUES ('AETNA', DATE '2026-08-01', 'https://example.invalid/other.json', $1)`, runID); err == nil {
+		t.Fatal("uppercase toc payer")
 	}
 
 	if _, err := pool.Exec(ctx, `
@@ -406,7 +497,7 @@ INSERT INTO mrfpipeline.discovery_run_toc_files (
 	err = pool.QueryRow(ctx, `
 INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id
-) VALUES ('uhc', DATE '2026-08-01', 'https://example.invalid/toc-b.json', $1)
+) VALUES ('aetna', DATE '2026-08-01', 'https://example.invalid/toc-b.json', $1)
 RETURNING id`, runID).Scan(&toc2)
 	if err != nil {
 		t.Fatal(err)
@@ -418,82 +509,93 @@ INSERT INTO mrfpipeline.discovery_run_toc_files (
 		t.Fatal("duplicate listing ordinal")
 	}
 
-	if _, err := pool.Exec(ctx, `
-INSERT INTO mrfpipeline.mrf_feeds (payer_id, feed_id) VALUES ('aetna', 'feed')`); err == nil {
-		t.Fatal("feed payer")
-	}
-	if _, err := pool.Exec(ctx, `
-INSERT INTO mrfpipeline.mrf_feeds (payer_id, feed_id) VALUES ('uhc', 'BadFeed')`); err == nil {
-		t.Fatal("uppercase feed")
-	}
-
-	var feedID int64
+	var sourceID, septemberSourceID int64
 	err = pool.QueryRow(ctx, `
-INSERT INTO mrfpipeline.mrf_feeds (payer_id, feed_id) VALUES ('uhc', 'custom.feed-1')
-RETURNING id`).Scan(&feedID)
-	if err != nil {
-		t.Fatalf("unprefixed feed: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-INSERT INTO mrfpipeline.mrf_feeds (payer_id, feed_id) VALUES ('uhc', 'mrf-source-81')`); err != nil {
-		t.Fatalf("mrf-source feed must be allowed: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-INSERT INTO mrfpipeline.mrf_feeds (payer_id, feed_id) VALUES ('uhc', 'custom.feed-1')`); err == nil {
-		t.Fatal("duplicate feed")
-	}
-
-	var sourceID int64
-	err = pool.QueryRow(ctx, `
-INSERT INTO mrfpipeline.mrf_sources (source_url) VALUES ('https://example.invalid/mrf.json')
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month)
+VALUES ('https://example.invalid/mrf.json', DATE '2026-08-01')
 RETURNING id`).Scan(&sourceID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO mrfpipeline.mrf_sources (source_url) VALUES ('https://example.invalid/mrf.json')`); err == nil {
-		t.Fatal("duplicate mrf url")
+	INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month)
+VALUES ('https://example.invalid/mrf.json', DATE '2026-08-01')`); err == nil {
+		t.Fatal("duplicate monthly mrf url")
 	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO mrfpipeline.mrf_sources (source_url) VALUES ('https://EXAMPLE.invalid/mrf.json')`); err != nil {
+	INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month)
+VALUES ('https://example.invalid/mrf.json', DATE '2026-09-01')`); err != nil {
+		t.Fatalf("same url in another month should be distinct: %v", err)
+	}
+	err = pool.QueryRow(ctx, `
+SELECT id FROM mrfpipeline.mrf_sources
+WHERE source_url = 'https://example.invalid/mrf.json' AND collection_month = DATE '2026-09-01'`).Scan(&septemberSourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month)
+VALUES ('https://EXAMPLE.invalid/mrf.json', DATE '2026-08-01')`); err != nil {
 		t.Fatalf("case-different url should be distinct: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO mrfpipeline.mrf_sources (source_url) VALUES ('https://example.invalid/mrf.json?q=1')`); err != nil {
+	INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month)
+VALUES ('https://example.invalid/mrf.json?q=1', DATE '2026-08-01')`); err != nil {
 		t.Fatalf("query-different url should be distinct: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO mrfpipeline.mrf_sources (source_url) VALUES ('https://example.invalid/mrf.json#frag')`); err != nil {
+	INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month)
+VALUES ('https://example.invalid/mrf.json#frag', DATE '2026-08-01')`); err != nil {
 		t.Fatalf("fragment-different url should be distinct: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO mrfpipeline.mrf_sources (source_url, download_status, parse_status)
-VALUES ('https://example.invalid/early.json', 'pending', 'pending')`); err == nil {
+	INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ('https://example.invalid/early.json', DATE '2026-08-15', 'pending', 'pending')`); err == nil {
+		t.Fatal("non-month source capture")
+	}
+	if _, err := pool.Exec(ctx, `
+	INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+	VALUES ('https://example.invalid/early.json', DATE '2026-08-01', 'pending', 'pending')`); err == nil {
 		t.Fatal("source parse before download")
 	}
 
 	var snap1, snap2 int64
 	err = pool.QueryRow(ctx, `
-INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, mrf_feed_id, collection_month)
-VALUES ($1, $2, DATE '2026-08-01') RETURNING id`, sourceID, feedID).Scan(&snap1)
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
+VALUES ($1, 'uhc', DATE '2026-08-01') RETURNING id`, sourceID).Scan(&snap1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = pool.QueryRow(ctx, `
-INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, mrf_feed_id, collection_month)
-VALUES ($1, $2, DATE '2026-09-01') RETURNING id`, sourceID, feedID).Scan(&snap2)
+	INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
+VALUES ($1, 'aetna', DATE '2026-08-01') RETURNING id`, sourceID).Scan(&snap2)
 	if err != nil {
 		t.Fatalf("second month snapshot: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, mrf_feed_id, collection_month)
-VALUES ($1, $2, DATE '2026-08-01')`, sourceID, feedID); err == nil {
+	INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
+VALUES ($1, 'uhc', DATE '2026-08-01')`, sourceID); err == nil {
 		t.Fatal("duplicate snapshot")
 	}
 	if _, err := pool.Exec(ctx, `
-INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, mrf_feed_id, collection_month, consume_river_job_id)
-VALUES ($1, $2, DATE '2026-10-01', 0)`, sourceID, feedID); err == nil {
+	INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
+VALUES ($1, 'uhc', DATE '2026-09-01')`, sourceID); err == nil {
+		t.Fatal("snapshot month must match source month")
+	}
+	if _, err := pool.Exec(ctx, `
+	INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_river_job_id)
+VALUES ($1, 'uhc', DATE '2026-08-01', 0)`, sourceID); err == nil {
 		t.Fatal("zero river job")
+	}
+	if _, err := pool.Exec(ctx, `
+	INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
+VALUES ($1, 'AETNA', DATE '2026-08-01')`, sourceID); err == nil {
+		t.Fatal("uppercase snapshot payer")
+	}
+	if _, err := pool.Exec(ctx, `
+	INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
+VALUES ($1, 'aetna corp', DATE '2026-08-01')`, sourceID); err == nil {
+		t.Fatal("whitespace snapshot payer")
 	}
 
 	if _, err := pool.Exec(ctx, `

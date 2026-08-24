@@ -93,11 +93,14 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 1 {
+	if len(files) != 2 {
 		t.Fatalf("got %d files", len(files))
 	}
 	if files[0].Version != 1 || files[0].Name != "0001_initial_domain.sql" {
 		t.Fatalf("got %+v", files[0])
+	}
+	if files[1].Version != 2 || files[1].Name != "0002_feed_free_domain.sql" {
+		t.Fatalf("got %+v", files[1])
 	}
 	if files[0].SQL == "" {
 		t.Fatal("empty sql")
@@ -109,7 +112,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 
 func TestValidateLedger(t *testing.T) {
 	t.Parallel()
-	files := []migrationFile{{Version: 1, Name: "0001_initial_domain.sql"}}
+	files := []migrationFile{{Version: 1, Name: "0001_initial_domain.sql"}, {Version: 2, Name: "0002_feed_free_domain.sql"}}
 	if err := validateLedger(nil, files); err != nil {
 		t.Fatal(err)
 	}
