@@ -91,19 +91,13 @@ func insertConsumed(t *testing.T, pool *pgxpool.Pool) (sourceID, snapID int64) {
 	t.Helper()
 	url := "https://files.test/planattach/" + strconv.FormatInt(sourceURLSeq.Add(1), 10)
 	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_sources (source_url, download_status, parse_status)
-VALUES ($1, 'succeeded', 'succeeded') RETURNING id`, url).Scan(&sourceID); err != nil {
-		t.Fatal(err)
-	}
-	var feedID int64
-	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_feeds (payer_id, feed_id)
-VALUES ('uhc', $1) RETURNING id`, "mrf-source-"+strconv.FormatInt(sourceID, 10)).Scan(&feedID); err != nil {
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ($1, DATE '2026-08-01', 'succeeded', 'succeeded') RETURNING id`, url).Scan(&sourceID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, mrf_feed_id, collection_month, consume_status, consume_river_job_id)
-VALUES ($1, $2, DATE '2026-08-01', 'succeeded', 1) RETURNING id`, sourceID, feedID).Scan(&snapID); err != nil {
+	INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status, consume_river_job_id)
+VALUES ($1, 'uhc', DATE '2026-08-01', 'succeeded', 1) RETURNING id`, sourceID).Scan(&snapID); err != nil {
 		t.Fatal(err)
 	}
 	return sourceID, snapID
@@ -280,7 +274,7 @@ func ingestWarehouse(t *testing.T, sourceID, snapID int64, ws *artifact.Workspac
 	}
 	if _, err := mrfconsumer.Ingest(context.Background(), mrfconsumer.Config{
 		InputPath: parsed, ProviderCatalogPath: catalog, OutputPath: warehouse,
-		PayerID: "uhc", FeedID: "mrf-source-" + strconv.FormatInt(sourceID, 10),
+		PayerID:         "uhc",
 		CollectionMonth: "2026-08", OutputID: consumeringest.FormatSnapshotOutputID(snapID),
 	}); err != nil {
 		t.Fatal(err)

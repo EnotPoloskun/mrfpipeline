@@ -198,7 +198,7 @@ func TestAttachPlansEmptyDirAndStrayPart(t *testing.T) {
 	}
 	if _, err := mrfconsumer.Ingest(context.Background(), mrfconsumer.Config{
 		InputPath: parsed, ProviderCatalogPath: cat, OutputPath: warehouse,
-		PayerID: "uhc", FeedID: "mrf-source-1", CollectionMonth: "2026-08", OutputID: "mrf-1",
+		PayerID: "uhc", CollectionMonth: "2026-08", OutputID: "mrf-1",
 	}); err != nil {
 		t.Fatal(err)
 	}

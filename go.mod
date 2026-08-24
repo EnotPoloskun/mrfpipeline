@@ -6,7 +6,7 @@ require (
 	github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260821182039-590460f1448b
 	github.com/EnotPoloskun/mrfparser v0.0.0-20260822232859-7197303b3fe5
 	github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5
-	github.com/enotpoloskun/mrfconsumer v0.0.0-20260821235408-ad5f3e441d40
+	github.com/enotpoloskun/mrfconsumer v0.0.0-20260824005030-aceb02d6ca31
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/parquet-go/parquet-go v0.30.1
 	github.com/riverqueue/river v0.39.0

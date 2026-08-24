@@ -203,7 +203,7 @@ func validParserManifest(sourceURI, selectorURI string) []byte {
 	return b
 }
 
-func writePublishedSnapshot(t *testing.T, warehouse, payer, feedID, month, outputID string) {
+func writePublishedSnapshot(t *testing.T, warehouse, payer, month, outputID string) {
 	t.Helper()
 	if err := os.MkdirAll(warehouse, 0700); err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func writePublishedSnapshot(t *testing.T, warehouse, payer, feedID, month, outpu
 		}
 	}
 	man := snapshotManifest{
-		OutputID: outputID, PayerID: payer, FeedID: feedID, CollectionMonth: month,
+		OutputID: outputID, PayerID: payer, CollectionMonth: month,
 		Catalog: ident, Datasets: counts,
 	}
 	if err := os.WriteFile(filepath.Join(final, fileManifest), mustSnapshotJSON(man), 0600); err != nil {
@@ -266,7 +266,6 @@ func mustSnapshotJSON(m snapshotManifest) []byte {
 		"output_schema_version":   warehouseVersion,
 		"output_id":               m.OutputID,
 		"payer_id":                m.PayerID,
-		"feed_id":                 m.FeedID,
 		"collection_month":        m.CollectionMonth,
 		"provider_catalog":        map[string]any{"schema_version": m.Catalog.SchemaVersion, "release_month": m.Catalog.ReleaseMonth},
 		"datasets":                datasets,

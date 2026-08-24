@@ -102,7 +102,6 @@ func (w *Worker) ingest(ctx context.Context, job *river.Job[jobs.ConsumerIngestA
 		ProviderCatalogPath: w.Catalog.Path,
 		OutputPath:          w.WarehousePath,
 		PayerID:             ident.PayerID,
-		FeedID:              ident.FeedID,
 		CollectionMonth:     ident.MonthText,
 		OutputID:            outputID,
 		OnProgress: func(p mrfconsumer.IngestProgress) {
@@ -128,15 +127,26 @@ func (w *Worker) ingest(ctx context.Context, job *river.Job[jobs.ConsumerIngestA
 		report.ProviderGroupsRowCount < 0 || report.ProviderGroupMembershipsRowCount < 0 {
 		return jobs.Failure(jobs.FailureConsumerIngestOutputInvalid)
 	}
-	return w.validatePublished(ident, outputID)
+	return w.validatePublishedReport(ident, outputID, &report)
 }
 
 func (w *Worker) validatePublished(ident claimIdentity, outputID string) error {
+	return w.validatePublishedReport(ident, outputID, nil)
+}
+
+func (w *Worker) validatePublishedReport(ident claimIdentity, outputID string, report *mrfconsumer.Report) error {
 	wh, err := InspectWarehouse(w.WarehousePath)
 	if err != nil || wh.Kind != warehouseRecognized {
 		return jobs.Failure(jobs.FailureConsumerIngestOutputInvalid)
 	}
-	if err := inspectCompletedSnapshot(w.WarehousePath, ident.PayerID, ident.FeedID, ident.MonthText, outputID, wh.Catalog); err != nil {
+	counts, err := inspectCompletedSnapshotCounts(w.WarehousePath, ident.PayerID, ident.MonthText, outputID, wh.Catalog)
+	if err != nil {
+		return jobs.Failure(jobs.FailureConsumerIngestOutputInvalid)
+	}
+	if report != nil && (report.RateFactsRowCount != counts["rate_facts"].RowCount ||
+		report.RateProviderGroupsRowCount != counts["rate_provider_groups"].RowCount ||
+		report.ProviderGroupsRowCount != counts["provider_groups"].RowCount ||
+		report.ProviderGroupMembershipsRowCount != counts["provider_group_memberships"].RowCount) {
 		return jobs.Failure(jobs.FailureConsumerIngestOutputInvalid)
 	}
 	return nil

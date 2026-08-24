@@ -15,9 +15,7 @@ import (
 type claimIdentity struct {
 	SnapshotID   int64
 	SourceID     int64
-	FeedRowID    int64
 	PayerID      string
-	FeedID       string
 	Month        time.Time
 	MonthText    string
 	ConsumeJobID int64
@@ -71,15 +69,15 @@ func claimIngest(ctx context.Context, pool *pgxpool.Pool, snapshotID, riverJobID
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var consume string
+	var consume, payer string
 	var stored *int64
-	var sourceID, feedRowID int64
+	var sourceID int64
 	var month time.Time
 	err = tx.QueryRow(ctx, `
-SELECT consume_status, consume_river_job_id, mrf_source_id, mrf_feed_id, collection_month
+SELECT consume_status, consume_river_job_id, mrf_source_id, payer_id, collection_month
 FROM mrfpipeline.mrf_snapshots
 WHERE id = $1
-FOR UPDATE`, snapshotID).Scan(&consume, &stored, &sourceID, &feedRowID, &month)
+FOR UPDATE`, snapshotID).Scan(&consume, &stored, &sourceID, &payer, &month)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureMissingRecord)
 	}
@@ -97,23 +95,13 @@ SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1 FOR UPDATE`, sour
 		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
 	}
 
-	var payer, feedID string
-	err = tx.QueryRow(ctx, `
-SELECT payer_id, feed_id FROM mrfpipeline.mrf_feeds WHERE id = $1 FOR UPDATE`, feedRowID).Scan(&payer, &feedID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureMissingRecord)
-	}
-	if err != nil {
-		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
-	}
-
 	action, err := classifyClaim(consume, parse, stored, riverJobID)
 	if err != nil {
 		return jobs.ClaimResult{}, zero, err
 	}
 	ident := claimIdentity{
-		SnapshotID: snapshotID, SourceID: sourceID, FeedRowID: feedRowID,
-		PayerID: payer, FeedID: feedID, Month: month, MonthText: formatMonth(month),
+		SnapshotID: snapshotID, SourceID: sourceID, PayerID: payer,
+		Month: month, MonthText: formatMonth(month),
 		ConsumeJobID: riverJobID,
 	}
 	if action == jobs.ClaimNoop {
@@ -142,16 +130,28 @@ func confirmIngestSuccess(ctx context.Context, tx pgx.Tx, client *river.Client[p
 	if tx == nil || ident.SnapshotID <= 0 {
 		return jobs.Failure(jobs.FailureConsumerIngestDatabaseFailed)
 	}
-	var consume string
+	var consume, payer string
 	var stored *int64
-	var sourceID, feedRowID int64
+	var sourceID int64
 	var month time.Time
 	if err := tx.QueryRow(ctx, `
-SELECT consume_status, consume_river_job_id, mrf_source_id, mrf_feed_id, collection_month
-FROM mrfpipeline.mrf_snapshots WHERE id = $1`, ident.SnapshotID).Scan(&consume, &stored, &sourceID, &feedRowID, &month); err != nil {
+SELECT consume_status, consume_river_job_id, mrf_source_id, payer_id, collection_month
+FROM mrfpipeline.mrf_snapshots WHERE id = $1 FOR UPDATE`, ident.SnapshotID).Scan(&consume, &stored, &sourceID, &payer, &month); err != nil {
 		return classifyDB(ctx, err)
 	}
 	if stored == nil || *stored != ident.ConsumeJobID {
+		return jobs.Failure(jobs.FailureDomainInvariant)
+	}
+
+	var parse string
+	var sourceMonth time.Time
+	if err := tx.QueryRow(ctx, `
+SELECT parse_status, collection_month FROM mrfpipeline.mrf_sources WHERE id = $1 FOR UPDATE`, sourceID).Scan(&parse, &sourceMonth); err != nil {
+		return classifyDB(ctx, err)
+	}
+	if sourceID != ident.SourceID || formatMonth(month) != ident.MonthText ||
+		formatMonth(sourceMonth) != ident.MonthText || payer != ident.PayerID ||
+		parse != jobs.StatusSucceeded {
 		return jobs.Failure(jobs.FailureDomainInvariant)
 	}
 	if consume == jobs.StatusSucceeded {
@@ -161,24 +161,6 @@ FROM mrfpipeline.mrf_snapshots WHERE id = $1`, ident.SnapshotID).Scan(&consume, 
 		return nil
 	}
 	if consume != jobs.StatusRunning {
-		return jobs.Failure(jobs.FailureDomainInvariant)
-	}
-
-	var parse string
-	if err := tx.QueryRow(ctx, `
-SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1 FOR UPDATE`, ident.SourceID).Scan(&parse); err != nil {
-		return classifyDB(ctx, err)
-	}
-	var payer, feedID string
-	if err := tx.QueryRow(ctx, `
-SELECT payer_id, feed_id FROM mrfpipeline.mrf_feeds WHERE id = $1 FOR UPDATE`, ident.FeedRowID).Scan(&payer, &feedID); err != nil {
-		return classifyDB(ctx, err)
-	}
-	if parse != jobs.StatusSucceeded {
-		return jobs.Failure(jobs.FailureDomainInvariant)
-	}
-	if sourceID != ident.SourceID || feedRowID != ident.FeedRowID ||
-		formatMonth(month) != ident.MonthText || payer != ident.PayerID || feedID != ident.FeedID {
 		return jobs.Failure(jobs.FailureDomainInvariant)
 	}
 	tag, err := tx.Exec(ctx, `

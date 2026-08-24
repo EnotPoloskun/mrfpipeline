@@ -78,7 +78,7 @@ func (w *Worker) attach(ctx context.Context, ident claimIdentity) (int64, error)
 		return 0, err
 	}
 
-	if err := consumeringest.InspectCompletedSnapshot(w.WarehousePath, ident.PayerID, ident.FeedID, ident.MonthText, consumeringest.FormatSnapshotOutputID(ident.SnapshotID)); err != nil {
+	if err := consumeringest.InspectCompletedSnapshot(w.WarehousePath, ident.PayerID, ident.MonthText, consumeringest.FormatSnapshotOutputID(ident.SnapshotID)); err != nil {
 		return 0, jobs.Failure(jobs.FailurePlanAttachOutputInvalid)
 	}
 
@@ -165,7 +165,7 @@ func confirmAttachSuccess(ctx context.Context, tx pgx.Tx, client *river.Client[p
 	if err != nil {
 		return err
 	}
-	if locked.PayerID != ident.PayerID || locked.FeedID != ident.FeedID || locked.MonthText != ident.MonthText {
+	if locked.PayerID != ident.PayerID || locked.MonthText != ident.MonthText {
 		return jobs.Failure(jobs.FailureDomainInvariant)
 	}
 

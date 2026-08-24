@@ -14,7 +14,7 @@ const (
 	warehouseEmpty      = "empty"
 	warehouseRecognized = "recognized"
 	fileWarehouse       = "warehouse.json"
-	warehouseVersion    = "1.5.0"
+	warehouseVersion    = "2.0.0"
 	catalogSchema       = int64(1)
 )
 
@@ -35,7 +35,7 @@ func (c catalogIdentity) equal(other catalogIdentity) bool {
 }
 
 // InspectWarehouse accepts absent, empty real dir, or a real dir whose
-// warehouse.json is exact consumer 1.5.0. It does not require catalog copy or seed.
+// warehouse.json is exact consumer 2.0.0. It does not require catalog copy or seed.
 func InspectWarehouse(path string) (WarehouseState, error) {
 	var zero WarehouseState
 	if path == "" {

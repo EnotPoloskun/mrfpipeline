@@ -15,7 +15,6 @@ type claimIdentity struct {
 	BatchID        int64
 	SnapshotID     int64
 	PayerID        string
-	FeedID         string
 	MonthText      string
 	RequestedCount int64
 	RiverJobID     int64
@@ -101,23 +100,13 @@ WHERE id = $1`, batchID, jobs.StatusRunning)
 
 func lockSnapshotThenBatch(ctx context.Context, tx pgx.Tx, snapshotID, batchID int64) (claimIdentity, error) {
 	var zero claimIdentity
-	var consume string
+	var consume, payer string
 	var month time.Time
-	var feedRowID int64
 	err := tx.QueryRow(ctx, `
-SELECT consume_status, collection_month, mrf_feed_id
+SELECT consume_status, payer_id, collection_month
 FROM mrfpipeline.mrf_snapshots
 WHERE id = $1
-FOR UPDATE`, snapshotID).Scan(&consume, &month, &feedRowID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return zero, jobs.Failure(jobs.FailureMissingRecord)
-	}
-	if err != nil {
-		return zero, classifyDB(ctx, err)
-	}
-	var payer, feedID string
-	err = tx.QueryRow(ctx, `
-SELECT payer_id, feed_id FROM mrfpipeline.mrf_feeds WHERE id = $1`, feedRowID).Scan(&payer, &feedID)
+FOR UPDATE`, snapshotID).Scan(&consume, &payer, &month)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return zero, jobs.Failure(jobs.FailureMissingRecord)
 	}
@@ -134,7 +123,7 @@ SELECT id FROM mrfpipeline.plan_attachment_batches WHERE id = $1 FOR UPDATE`, ba
 		return zero, classifyDB(ctx, err)
 	}
 	return claimIdentity{
-		BatchID: batchID, SnapshotID: snapshotID, PayerID: payer, FeedID: feedID,
+		BatchID: batchID, SnapshotID: snapshotID, PayerID: payer,
 		MonthText: formatMonth(month), Consume: consume,
 	}, nil
 }

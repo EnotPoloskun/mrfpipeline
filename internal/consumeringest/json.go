@@ -77,7 +77,7 @@ func decodeSnapshotManifest(data []byte) (snapshotManifest, error) {
 	dec.UseNumber()
 	var m snapshotManifest
 	var manVer, outVer string
-	if err := readStrictObject(dec, map[string]jsonField{
+	if err := readSnapshotObject(dec, map[string]jsonField{
 		"manifest_schema_version": func(d *json.Decoder) error {
 			s, err := readStrictString(d)
 			manVer = s
@@ -96,11 +96,6 @@ func decodeSnapshotManifest(data []byte) (snapshotManifest, error) {
 		"payer_id": func(d *json.Decoder) error {
 			s, err := readStrictString(d)
 			m.PayerID = s
-			return err
-		},
-		"feed_id": func(d *json.Decoder) error {
-			s, err := readStrictString(d)
-			m.FeedID = s
 			return err
 		},
 		"collection_month": func(d *json.Decoder) error {
@@ -127,16 +122,64 @@ func decodeSnapshotManifest(data []byte) (snapshotManifest, error) {
 	if manVer != warehouseVersion || outVer != warehouseVersion {
 		return zero, errOutputInvalid
 	}
-	if m.OutputID == "" || m.PayerID == "" || m.FeedID == "" || !validCatalogMonth(m.CollectionMonth) {
+	if m.OutputID == "" || m.PayerID == "" || !validCatalogMonth(m.CollectionMonth) {
 		return zero, errOutputInvalid
 	}
 	return m, nil
 }
 
+func readSnapshotObject(dec *json.Decoder, fields map[string]jsonField) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return errOutputInvalid
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return errOutputInvalid
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return errOutputInvalid
+		}
+		key, ok := keyTok.(string)
+		if !ok || seen[key] {
+			return errOutputInvalid
+		}
+		seen[key] = true
+		if key == "feed_id" {
+			return errOutputInvalid
+		}
+		field, ok := fields[key]
+		if ok {
+			if err := field(dec); err != nil {
+				return err
+			}
+			continue
+		}
+		var ignored json.RawMessage
+		if err := dec.Decode(&ignored); err != nil {
+			return errOutputInvalid
+		}
+	}
+	end, err := dec.Token()
+	if err != nil {
+		return errOutputInvalid
+	}
+	if delim, ok := end.(json.Delim); !ok || delim != '}' || len(seen) < len(fields) {
+		return errOutputInvalid
+	}
+	for name := range fields {
+		if !seen[name] {
+			return errOutputInvalid
+		}
+	}
+	return nil
+}
+
 type snapshotManifest struct {
 	OutputID        string
 	PayerID         string
-	FeedID          string
 	CollectionMonth string
 	Catalog         catalogIdentity
 	Datasets        map[string]datasetCount

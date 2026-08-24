@@ -7,63 +7,69 @@ import (
 	"path/filepath"
 )
 
-// InspectCompletedSnapshot requires a recognized 1.5.0 warehouse and one
+// InspectCompletedSnapshot requires a recognized 2.0.0 warehouse and one
 // completed rate snapshot for the expected output ID.
-func InspectCompletedSnapshot(warehouse, payer, feedID, month, outputID string) error {
+func InspectCompletedSnapshot(warehouse, payer, month, outputID string) error {
 	wh, err := InspectWarehouse(warehouse)
 	if err != nil || wh.Kind != warehouseRecognized {
 		return errOutputInvalid
 	}
-	return inspectCompletedSnapshot(warehouse, payer, feedID, month, outputID, wh.Catalog)
+	_, err = inspectCompletedSnapshotCounts(warehouse, payer, month, outputID, wh.Catalog)
+	return err
 }
 
-func inspectCompletedSnapshot(warehouse, payer, feedID, month, outputID string, want catalogIdentity) error {
+func inspectCompletedSnapshot(warehouse, payer, month, outputID string, want catalogIdentity) error {
+	_, err := inspectCompletedSnapshotCounts(warehouse, payer, month, outputID, want)
+	return err
+}
+
+func inspectCompletedSnapshotCounts(warehouse, payer, month, outputID string, want catalogIdentity) (map[string]datasetCount, error) {
 	final, err := expectedFinalPath(warehouse, payer, month, outputID)
 	if err != nil {
-		return errOutputInvalid
+		return nil, errOutputInvalid
 	}
 	root, err := normalizePath(warehouse)
 	if err != nil {
-		return errOutputInvalid
+		return nil, errOutputInvalid
 	}
 	info, err := os.Lstat(final)
 	if errors.Is(err, os.ErrNotExist) {
-		return errTargetAbsent
+		return nil, errTargetAbsent
 	}
 	if err != nil {
-		return errOutputInvalid
+		return nil, errOutputInvalid
 	}
 	if isSymlink(info) || !info.IsDir() {
-		return errOutputInvalid
+		return nil, errOutputInvalid
 	}
 	if err := requireRealAncestors(root, final); err != nil {
-		return err
+		return nil, err
 	}
 	whIdent, err := readWarehouseIdentity(filepath.Join(root, fileWarehouse))
 	if err != nil {
-		return errOutputInvalid
+		return nil, errOutputInvalid
 	}
 	if !whIdent.equal(want) {
-		return errOutputInvalid
+		return nil, errOutputInvalid
 	}
 	raw, err := readRegularFile(filepath.Join(final, fileManifest))
 	if err != nil {
-		return errOutputInvalid
+		return nil, errOutputInvalid
 	}
 	m, err := decodeSnapshotManifest(raw)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if m.OutputID != outputID || m.PayerID != payer || m.FeedID != feedID || m.CollectionMonth != month {
-		return errOutputInvalid
+	if m.OutputID != outputID || m.PayerID != payer || m.CollectionMonth != month {
+		return nil, errOutputInvalid
 	}
 	if !m.Catalog.equal(whIdent) {
-		return errOutputInvalid
+		return nil, errOutputInvalid
 	}
 	if err := validateSnapshotLayout(final, outputID, m); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	return m.Datasets, nil
 }
 
 var errTargetAbsent = errors.New("consumer snapshot target absent")

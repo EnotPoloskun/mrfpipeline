@@ -2,7 +2,7 @@ github.com/DATA-DOG/go-sqlmock v1.5.2 h1:OcvFkGmslmlZibjAjaHm3L//6LiuBgolP7Oputl
 github.com/DATA-DOG/go-sqlmock v1.5.2/go.mod h1:88MAG/4G7SMwSE3CeA0ZKzrT5CiOU3OJ+JlNzwDqpNU=
 github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260821182039-590460f1448b h1:8CkRY0o80dBV5TFfyow9bTctpfhictcHGYSvihktENo=
 github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260821182039-590460f1448b/go.mod h1:64lqzWrE+wZNNUM3+Oe+C4az9vNe1B+eqDrNiSGtvIg=
-github.com/EnotPoloskun/mrfparser v0.0.0-20260822232859-7197303b3fe5 h1:2JvhOjSUg/4+myfwaDpyxB4vN44+YDNqAFUYZtx168I=
+github.com/EnotPoloskun/mrfparser v0.0.0-20260822232859-7197303b3fe5 h1:ItnpRA4LrA9oii0O2B0oiW+x+FEldSfSPqH6+AEOv5I=
 github.com/EnotPoloskun/mrfparser v0.0.0-20260822232859-7197303b3fe5/go.mod h1:fMoLUb7b6l5KK97n477v9/vbzrwbb2iln4isCGTVlnc=
 github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5 h1:Tk709hsE6tw82hpjTXvhVKdm/DFIli31tKnw5BDSF7k=
 github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5/go.mod h1:+IEc/ezTxFmRPrRHWQyuKz2cphckurYlaOXOQmoBYXg=
@@ -51,8 +51,8 @@ github.com/aws/smithy-go v1.27.3/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqx
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/enotpoloskun/mrfconsumer v0.0.0-20260821235408-ad5f3e441d40 h1:ji3gskmabCWwZ1Jcod6ct7P6pnH5ZkGIgPf//5gwW88=
-github.com/enotpoloskun/mrfconsumer v0.0.0-20260821235408-ad5f3e441d40/go.mod h1:s43Vj+y0f+JWbAA3LfXOiNUGBJ3S6Ngk8MJwJP/XxZk=
+github.com/enotpoloskun/mrfconsumer v0.0.0-20260824005030-aceb02d6ca31 h1:VuPV/oKercdH8lwLpENQTj2Y6+XjCoWFMAa3jrxKYoE=
+github.com/enotpoloskun/mrfconsumer v0.0.0-20260824005030-aceb02d6ca31/go.mod h1:s43Vj+y0f+JWbAA3LfXOiNUGBJ3S6Ngk8MJwJP/XxZk=
 github.com/google/go-cmp v0.5.5 h1:Khx7svrCpmxxtHBq5j2mp/xVjsi8hQMfNLvJFAlrGgU=
 github.com/google/go-cmp v0.5.5/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

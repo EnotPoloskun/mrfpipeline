@@ -21,18 +21,40 @@ import (
 
 func TestConfigOnlyPublicFields(t *testing.T) {
 	t.Parallel()
-	typ := reflect.TypeOf(mrfconsumer.Config{})
-	allowed := map[string]bool{
-		"InputPath": true, "ProviderCatalogPath": true, "OutputPath": true,
-		"PayerID": true, "FeedID": true, "CollectionMonth": true, "OutputID": true, "OnProgress": true,
+	assertExactFields(t, reflect.TypeOf(mrfconsumer.Config{}), map[string]reflect.Type{
+		"InputPath":           reflect.TypeOf(""),
+		"ProviderCatalogPath": reflect.TypeOf(""),
+		"OutputPath":          reflect.TypeOf(""),
+		"PayerID":             reflect.TypeOf(""),
+		"CollectionMonth":     reflect.TypeOf(""),
+		"OutputID":            reflect.TypeOf(""),
+		"OnProgress":          reflect.TypeOf((func(mrfconsumer.IngestProgress))(nil)),
+	})
+	assertExactFields(t, reflect.TypeOf(mrfconsumer.Report{}), map[string]reflect.Type{
+		"OutputID":                         reflect.TypeOf(""),
+		"FinalPath":                        reflect.TypeOf(""),
+		"RateFactsRowCount":                reflect.TypeOf(int64(0)),
+		"RateProviderGroupsRowCount":       reflect.TypeOf(int64(0)),
+		"ProviderGroupsRowCount":           reflect.TypeOf(int64(0)),
+		"ProviderGroupMembershipsRowCount": reflect.TypeOf(int64(0)),
+	})
+	if _, ok := reflect.TypeOf(mrfconsumer.Report{}).FieldByName("FeedID"); ok {
+		t.Fatal("report has legacy feed field")
 	}
-	for i := 0; i < typ.NumField(); i++ {
-		name := typ.Field(i).Name
-		if !allowed[name] {
-			t.Fatalf("unexpected field %s", name)
+}
+
+func assertExactFields(t *testing.T, typ reflect.Type, want map[string]reflect.Type) {
+	t.Helper()
+	if typ.NumField() != len(want) {
+		t.Fatalf("field count %d, want %d", typ.NumField(), len(want))
+	}
+	for name, wantType := range want {
+		field, ok := typ.FieldByName(name)
+		if !ok {
+			t.Fatalf("missing field %s", name)
 		}
-		if name == "Plans" || name == "BatchID" || name == "PlanAttachmentBatchID" {
-			t.Fatal(name)
+		if field.Type != wantType {
+			t.Fatalf("field %s has type %s, want %s", name, field.Type, wantType)
 		}
 	}
 }
@@ -223,16 +245,16 @@ func TestRecognizerPartsAndRejects(t *testing.T) {
 		t.Fatal("wider ordinal")
 	}
 	warehouse := filepath.Join(t.TempDir(), "wh")
-	writePublishedSnapshot(t, warehouse, "uhc", "mrf-source-1", "2026-08", "mrf-9")
+	writePublishedSnapshot(t, warehouse, "uhc", "2026-08", "mrf-9")
 	ident := catalogIdentity{SchemaVersion: 1, ReleaseMonth: testCatalogMonth}
-	if err := inspectCompletedSnapshot(warehouse, "uhc", "mrf-source-1", "2026-08", "mrf-9", ident); err != nil {
+	if err := inspectCompletedSnapshot(warehouse, "uhc", "2026-08", "mrf-9", ident); err != nil {
 		t.Fatal(err)
 	}
 	final, _ := expectedFinalPath(warehouse, "uhc", "2026-08", "mrf-9")
 	if err := os.WriteFile(filepath.Join(final, "rate_facts", "mrf-9-part-000000.parquet"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := inspectCompletedSnapshot(warehouse, "uhc", "mrf-source-1", "2026-08", "mrf-9", ident); err == nil {
+	if err := inspectCompletedSnapshot(warehouse, "uhc", "2026-08", "mrf-9", ident); err == nil {
 		t.Fatal("extra padding")
 	}
 	if err := os.Remove(filepath.Join(final, "rate_facts", "mrf-9-part-000000.parquet")); err != nil {
@@ -241,7 +263,7 @@ func TestRecognizerPartsAndRejects(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(final, ".DS_Store"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := inspectCompletedSnapshot(warehouse, "uhc", "mrf-source-1", "2026-08", "mrf-9", ident); err == nil {
+	if err := inspectCompletedSnapshot(warehouse, "uhc", "2026-08", "mrf-9", ident); err == nil {
 		t.Fatal("extra root")
 	}
 	if err := os.Remove(filepath.Join(final, ".DS_Store")); err != nil {
@@ -250,14 +272,14 @@ func TestRecognizerPartsAndRejects(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(final, "plans"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := inspectCompletedSnapshot(warehouse, "uhc", "mrf-source-1", "2026-08", "mrf-9", ident); err == nil {
+	if err := inspectCompletedSnapshot(warehouse, "uhc", "2026-08", "mrf-9", ident); err == nil {
 		t.Fatal("plans")
 	}
 	if err := os.Remove(filepath.Join(final, "plans")); err != nil {
 		t.Fatal(err)
 	}
-	if err := inspectCompletedSnapshot(warehouse, "uhc", "other-feed", "2026-08", "mrf-9", ident); err == nil {
-		t.Fatal("feed mismatch")
+	if err := inspectCompletedSnapshot(warehouse, "other-payer", "2026-08", "mrf-9", ident); err == nil {
+		t.Fatal("payer mismatch")
 	}
 }
 
@@ -268,7 +290,7 @@ func TestReuseSkipsIngestAndProgress(t *testing.T) {
 	warehouse := filepath.Join(t.TempDir(), "wh")
 	id := int64(4)
 	writeValidParsed(t, ws, id, svc)
-	writePublishedSnapshot(t, warehouse, "uhc", "mrf-source-4", "2026-08", "mrf-4")
+	writePublishedSnapshot(t, warehouse, "uhc", "2026-08", "mrf-4")
 	var buf bytes.Buffer
 	called := false
 	w := &Worker{
@@ -280,7 +302,7 @@ func TestReuseSkipsIngestAndProgress(t *testing.T) {
 		},
 	}
 	err := w.ingest(context.Background(), ingestJob(8, 4), claimIdentity{
-		SnapshotID: 4, SourceID: 4, FeedRowID: 1, PayerID: "uhc", FeedID: "mrf-source-4",
+		SnapshotID: 4, SourceID: 4, PayerID: "uhc",
 		Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 8,
 	})
 	if err != nil {
@@ -317,13 +339,13 @@ func TestProgressWiredAndRedacted(t *testing.T) {
 			}
 			cfg.OnProgress(mrfconsumer.IngestProgress{Phase: "validating_input", Percent: 0})
 			cfg.OnProgress(mrfconsumer.IngestProgress{Phase: "publishing", Percent: 40})
-			writePublishedSnapshot(t, warehouse, cfg.PayerID, cfg.FeedID, cfg.CollectionMonth, cfg.OutputID)
+			writePublishedSnapshot(t, warehouse, cfg.PayerID, cfg.CollectionMonth, cfg.OutputID)
 			final, _ := expectedFinalPath(warehouse, cfg.PayerID, cfg.CollectionMonth, cfg.OutputID)
 			return mrfconsumer.Report{OutputID: cfg.OutputID, FinalPath: final}, nil
 		},
 	}
 	err := w.ingest(context.Background(), ingestJob(3, 6), claimIdentity{
-		SnapshotID: 6, SourceID: 6, FeedRowID: 1, PayerID: "uhc", FeedID: "mrf-source-6",
+		SnapshotID: 6, SourceID: 6, PayerID: "uhc",
 		Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 3,
 	})
 	if err != nil {
@@ -359,7 +381,7 @@ func TestProviderChangedOnlyFromMetadata(t *testing.T) {
 		},
 	}
 	err := w.ingest(context.Background(), ingestJob(1, 2), claimIdentity{
-		SnapshotID: 2, SourceID: 2, FeedRowID: 1, PayerID: "uhc", FeedID: "mrf-source-2",
+		SnapshotID: 2, SourceID: 2, PayerID: "uhc",
 		Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 1,
 	})
 	if !jobs.IsFailure(err, jobs.FailureConsumerIngestProviderChanged) {
@@ -375,7 +397,7 @@ func TestInvalidTargetPreserved(t *testing.T) {
 	svc := mustServices(t)
 	cat := mustCatalog(t)
 	warehouse := filepath.Join(t.TempDir(), "wh")
-	writePublishedSnapshot(t, warehouse, "uhc", "mrf-source-3", "2026-08", "mrf-3")
+	writePublishedSnapshot(t, warehouse, "uhc", "2026-08", "mrf-3")
 	final, _ := expectedFinalPath(warehouse, "uhc", "2026-08", "mrf-3")
 	if err := os.WriteFile(filepath.Join(final, ".DS_Store"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
@@ -388,7 +410,7 @@ func TestInvalidTargetPreserved(t *testing.T) {
 			return mrfconsumer.Report{}, nil
 		}}
 	err := w.ingest(context.Background(), ingestJob(1, 3), claimIdentity{
-		SnapshotID: 3, SourceID: 3, FeedRowID: 1, PayerID: "uhc", FeedID: "mrf-source-3",
+		SnapshotID: 3, SourceID: 3, PayerID: "uhc",
 		Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 1,
 	})
 	if !jobs.IsFailure(err, jobs.FailureConsumerIngestOutputInvalid) {
@@ -404,7 +426,7 @@ func TestInvalidTargetPreserved(t *testing.T) {
 
 func TestStrictJSONRejectsNestedDuplicates(t *testing.T) {
 	t.Parallel()
-	warehouse := []byte(`{"warehouse_schema_version":"1.5.0","provider_catalog":{"schema_version":1,"schema_version":1,"release_month":"2026-08"}}`)
+	warehouse := []byte(`{"warehouse_schema_version":"2.0.0","provider_catalog":{"schema_version":1,"schema_version":1,"release_month":"2026-08"}}`)
 	if _, err := decodeWarehouseJSON(warehouse); err == nil {
 		t.Fatal("duplicate nested schema_version")
 	}
@@ -412,10 +434,27 @@ func TestStrictJSONRejectsNestedDuplicates(t *testing.T) {
 		t.Fatal("duplicate nested row_count")
 	}
 	for _, raw := range []string{"-0", "+1", "01", "1e2"} {
-		body := []byte(`{"warehouse_schema_version":"1.5.0","provider_catalog":{"schema_version":` + raw + `,"release_month":"2026-08"}}`)
+		body := []byte(`{"warehouse_schema_version":"2.0.0","provider_catalog":{"schema_version":` + raw + `,"release_month":"2026-08"}}`)
 		if _, err := decodeWarehouseJSON(body); err == nil {
 			t.Fatalf("accepted non-canonical %s", raw)
 		}
+	}
+}
+
+func TestSnapshotJSONAllowsUnknownRootAndRejectsLegacyFeed(t *testing.T) {
+	t.Parallel()
+	valid := snapshotJSONWithDataset(`{"row_count":0,"part_count":1}`)
+	unknown := bytes.Replace(valid, []byte(`{"manifest_schema_version"`), []byte(`{"future_metadata":{"producer":"test"},"manifest_schema_version"`), 1)
+	if _, err := decodeSnapshotManifest(unknown); err != nil {
+		t.Fatalf("unknown root metadata rejected: %v", err)
+	}
+	legacy := bytes.Replace(valid, []byte(`"payer_id":"uhc",`), []byte(`"payer_id":"uhc","feed_id":null,`), 1)
+	if _, err := decodeSnapshotManifest(legacy); err == nil {
+		t.Fatal("accepted legacy feed member")
+	}
+	duplicate := bytes.Replace(valid, []byte(`"output_id":"mrf-1"`), []byte(`"output_id":"mrf-1","output_id":"mrf-1"`), 1)
+	if _, err := decodeSnapshotManifest(duplicate); err == nil {
+		t.Fatal("accepted duplicate root member")
 	}
 }
 
@@ -430,14 +469,28 @@ func TestExistingTargetRejectedWithoutIngest(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
+		{"legacy warehouse version", 37, func(t *testing.T, warehouse, _ string) {
+			if err := os.WriteFile(filepath.Join(warehouse, fileWarehouse), []byte(`{"warehouse_schema_version":"1.5.0","provider_catalog":{"schema_version":1,"release_month":"2026-08"}}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{"wrong snapshot version", 32, func(t *testing.T, _, final string) {
-			raw := bytes.ReplaceAll(mustRead(t, filepath.Join(final, fileManifest)), []byte(`"1.5.0"`), []byte(`"1.1.0"`))
+			raw := bytes.ReplaceAll(mustRead(t, filepath.Join(final, fileManifest)), []byte(`"2.0.0"`), []byte(`"1.1.0"`))
 			if err := os.WriteFile(filepath.Join(final, fileManifest), raw, 0600); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"feed identity mismatch", 33, func(t *testing.T, _, final string) {
-			rewriteSnapshotFeed(t, final, "mrf-source-999")
+		{"legacy snapshot version", 38, func(t *testing.T, _, final string) {
+			raw := bytes.ReplaceAll(mustRead(t, filepath.Join(final, fileManifest)), []byte(`"2.0.0"`), []byte(`"1.5.0"`))
+			if err := os.WriteFile(filepath.Join(final, fileManifest), raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"legacy feed member", 33, func(t *testing.T, _, final string) {
+			raw := bytes.Replace(mustRead(t, filepath.Join(final, fileManifest)), []byte(`"payer_id":"uhc",`), []byte(`"payer_id":"uhc","feed_id":"legacy",`), 1)
+			if err := os.WriteFile(filepath.Join(final, fileManifest), raw, 0600); err != nil {
+				t.Fatal(err)
+			}
 		}},
 		{"month identity mismatch", 34, func(t *testing.T, _, final string) {
 			raw := bytes.ReplaceAll(mustRead(t, filepath.Join(final, fileManifest)), []byte(`"collection_month":"2026-08"`), []byte(`"collection_month":"2026-09"`))
@@ -472,9 +525,8 @@ func TestExistingTargetRejectedWithoutIngest(t *testing.T) {
 			cat := mustCatalog(t)
 			warehouse := filepath.Join(t.TempDir(), "wh")
 			writeValidParsed(t, ws, tc.id, svc)
-			feedID := fmt.Sprintf("mrf-source-%d", tc.id)
 			outputID := formatSnapshotOutputID(tc.id)
-			writePublishedSnapshot(t, warehouse, "uhc", feedID, "2026-08", outputID)
+			writePublishedSnapshot(t, warehouse, "uhc", "2026-08", outputID)
 			final, err := expectedFinalPath(warehouse, "uhc", "2026-08", outputID)
 			if err != nil {
 				t.Fatal(err)
@@ -487,7 +539,7 @@ func TestExistingTargetRejectedWithoutIngest(t *testing.T) {
 					return mrfconsumer.Report{}, errors.New("should not ingest")
 				}}
 			err = w.ingest(context.Background(), ingestJob(1, tc.id), claimIdentity{
-				SnapshotID: tc.id, SourceID: tc.id, FeedRowID: 1, PayerID: "uhc", FeedID: feedID,
+				SnapshotID: tc.id, SourceID: tc.id, PayerID: "uhc",
 				Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 1,
 			})
 			if !jobs.IsFailure(err, jobs.FailureConsumerIngestOutputInvalid) {
@@ -527,7 +579,7 @@ func TestIngestRepairsMissingCatalogCopy(t *testing.T) {
 	}
 	w := &Worker{Workspace: ws, WarehousePath: warehouse, ServicesPath: svc, Catalog: cat}
 	err = w.ingest(context.Background(), ingestJob(1, id), claimIdentity{
-		SnapshotID: id, SourceID: id, FeedRowID: 1, PayerID: "uhc", FeedID: "mrf-source-41",
+		SnapshotID: id, SourceID: id, PayerID: "uhc",
 		Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 1,
 	})
 	if err != nil {
@@ -539,7 +591,7 @@ func TestIngestRepairsMissingCatalogCopy(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(warehouse, "plan_associations", "_schema", "part-00000.parquet")); err != nil {
 		t.Fatal("seed not restored")
 	}
-	if err := inspectCompletedSnapshot(warehouse, "uhc", "mrf-source-41", "2026-08", "mrf-41", catalogIdentity{SchemaVersion: 1, ReleaseMonth: testCatalogMonth}); err != nil {
+	if err := inspectCompletedSnapshot(warehouse, "uhc", "2026-08", "mrf-41", catalogIdentity{SchemaVersion: 1, ReleaseMonth: testCatalogMonth}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -573,7 +625,7 @@ func TestIngestRepairsMissingSeed(t *testing.T) {
 	}
 	w := &Worker{Workspace: ws, WarehousePath: warehouse, ServicesPath: svc, Catalog: cat}
 	err = w.ingest(context.Background(), ingestJob(1, id), claimIdentity{
-		SnapshotID: id, SourceID: id, FeedRowID: 1, PayerID: "uhc", FeedID: "mrf-source-42",
+		SnapshotID: id, SourceID: id, PayerID: "uhc",
 		Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 1,
 	})
 	if err != nil {
@@ -582,7 +634,7 @@ func TestIngestRepairsMissingSeed(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(warehouse, "plan_associations", "_schema", "part-00000.parquet")); err != nil {
 		t.Fatal("seed not restored")
 	}
-	if err := inspectCompletedSnapshot(warehouse, "uhc", "mrf-source-42", "2026-08", "mrf-42", catalogIdentity{SchemaVersion: 1, ReleaseMonth: testCatalogMonth}); err != nil {
+	if err := inspectCompletedSnapshot(warehouse, "uhc", "2026-08", "mrf-42", catalogIdentity{SchemaVersion: 1, ReleaseMonth: testCatalogMonth}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -604,12 +656,12 @@ func TestCancelThenRetrySucceeds(t *testing.T) {
 			if calls == 1 {
 				return mrfconsumer.Report{}, context.Canceled
 			}
-			writePublishedSnapshot(t, warehouse, cfg.PayerID, cfg.FeedID, cfg.CollectionMonth, cfg.OutputID)
+			writePublishedSnapshot(t, warehouse, cfg.PayerID, cfg.CollectionMonth, cfg.OutputID)
 			final, _ := expectedFinalPath(warehouse, cfg.PayerID, cfg.CollectionMonth, cfg.OutputID)
 			return mrfconsumer.Report{OutputID: cfg.OutputID, FinalPath: final}, nil
 		}}
 	ident := claimIdentity{
-		SnapshotID: id, SourceID: id, FeedRowID: 1, PayerID: "uhc", FeedID: "mrf-source-43",
+		SnapshotID: id, SourceID: id, PayerID: "uhc",
 		Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 1,
 	}
 	err := w.ingest(context.Background(), ingestJob(1, id), ident)
@@ -631,6 +683,31 @@ func TestCancelThenRetrySucceeds(t *testing.T) {
 	}
 }
 
+func TestIngestRejectsReportCountMismatch(t *testing.T) {
+	ws := mustWorkspace(t)
+	svc := mustServices(t)
+	cat := mustCatalog(t)
+	warehouse := filepath.Join(t.TempDir(), "wh")
+	const id int64 = 44
+	writeValidParsed(t, ws, id, svc)
+	w := &Worker{Workspace: ws, WarehousePath: warehouse, ServicesPath: svc, Catalog: cat,
+		Ingest: func(ctx context.Context, cfg mrfconsumer.Config) (mrfconsumer.Report, error) {
+			writePublishedSnapshot(t, warehouse, cfg.PayerID, cfg.CollectionMonth, cfg.OutputID)
+			final, err := expectedFinalPath(warehouse, cfg.PayerID, cfg.CollectionMonth, cfg.OutputID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return mrfconsumer.Report{OutputID: cfg.OutputID, FinalPath: final, RateFactsRowCount: 1}, nil
+		}}
+	err := w.ingest(context.Background(), ingestJob(1, id), claimIdentity{
+		SnapshotID: id, SourceID: id, PayerID: "uhc",
+		Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 1,
+	})
+	if !jobs.IsFailure(err, jobs.FailureConsumerIngestOutputInvalid) {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestWorkerRegistration(t *testing.T) {
 	t.Parallel()
 	if (jobs.ConsumerIngestArgs{}).Kind() != jobs.KindConsumerIngest {
@@ -644,7 +721,7 @@ func TestWorkerRegistration(t *testing.T) {
 }
 
 func snapshotJSONWithDataset(rateFacts string) []byte {
-	return []byte(`{"manifest_schema_version":"1.5.0","output_schema_version":"1.5.0","output_id":"mrf-1","payer_id":"uhc","feed_id":"mrf-source-1","collection_month":"2026-08","provider_catalog":{"schema_version":1,"release_month":"2026-08"},"datasets":{"rate_facts":` + rateFacts + `,"rate_provider_groups":{"row_count":0,"part_count":1},"provider_groups":{"row_count":0,"part_count":1},"provider_group_memberships":{"row_count":0,"part_count":1},"ingestions":{"row_count":1,"part_count":1},"network_names":{"row_count":0,"part_count":1}}}`)
+	return []byte(`{"manifest_schema_version":"2.0.0","output_schema_version":"2.0.0","output_id":"mrf-1","payer_id":"uhc","collection_month":"2026-08","provider_catalog":{"schema_version":1,"release_month":"2026-08"},"datasets":{"rate_facts":` + rateFacts + `,"rate_provider_groups":{"row_count":0,"part_count":1},"provider_groups":{"row_count":0,"part_count":1},"provider_group_memberships":{"row_count":0,"part_count":1},"ingestions":{"row_count":1,"part_count":1},"network_names":{"row_count":0,"part_count":1}}}`)
 }
 
 func mustRead(t *testing.T, path string) []byte {
@@ -654,14 +731,6 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return data
-}
-
-func rewriteSnapshotFeed(t *testing.T, final, feedID string) {
-	t.Helper()
-	raw := bytes.ReplaceAll(mustRead(t, filepath.Join(final, fileManifest)), []byte(`"feed_id":"mrf-source-33"`), []byte(`"feed_id":"`+feedID+`"`))
-	if err := os.WriteFile(filepath.Join(final, fileManifest), raw, 0600); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func ingestJob(jobID, snapshotID int64) *river.Job[jobs.ConsumerIngestArgs] {

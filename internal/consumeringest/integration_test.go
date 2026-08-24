@@ -86,23 +86,21 @@ func insertClient(t *testing.T, pool *pgxpool.Pool) *river.Client[pgx.Tx] {
 func insertIngestJob(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.Tx], month string) (sourceID, snapID, jobID int64) {
 	t.Helper()
 	url := "https://files.test/mrf/" + strconv.FormatInt(sourceURLSeq.Add(1), 10)
+	return insertIngestJobForURL(t, pool, client, month, url)
+}
+
+func insertIngestJobForURL(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.Tx], month, url string) (sourceID, snapID, jobID int64) {
+	t.Helper()
 	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_sources (source_url, download_status, parse_status)
-VALUES ($1, 'succeeded', 'succeeded')
-RETURNING id`, url).Scan(&sourceID); err != nil {
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ($1, $2::date, 'succeeded', 'succeeded')
+RETURNING id`, url, month).Scan(&sourceID); err != nil {
 		t.Fatal(err)
 	}
-	var feedID int64
 	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_feeds (payer_id, feed_id)
-VALUES ('uhc', $1)
-RETURNING id`, "mrf-source-"+strconv.FormatInt(sourceID, 10)).Scan(&feedID); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, mrf_feed_id, collection_month, consume_status)
-VALUES ($1, $2, $3::date, 'pending')
-RETURNING id`, sourceID, feedID, month).Scan(&snapID); err != nil {
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
+VALUES ($1, 'uhc', $2::date, 'pending')
+RETURNING id`, sourceID, month).Scan(&snapID); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := pool.Begin(context.Background())
@@ -209,7 +207,7 @@ func TestIntegrationFirstIngestPublishesSnapshot(t *testing.T) {
 	if err != nil || wh.Kind != warehouseRecognized {
 		t.Fatalf("%+v %v", wh, err)
 	}
-	if err := inspectCompletedSnapshot(warehouse, "uhc", "mrf-source-"+strconv.FormatInt(sourceID, 10), "2026-08", outputID, wh.Catalog); err != nil {
+	if err := inspectCompletedSnapshot(warehouse, "uhc", "2026-08", outputID, wh.Catalog); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(final, "plans")); !os.IsNotExist(err) {
@@ -246,7 +244,7 @@ func TestIntegrationRecognizeSkipsSecondIngest(t *testing.T) {
 	w := &Worker{Workspace: ws, WarehousePath: warehouse, ServicesPath: svc, Catalog: cat,
 		Ingest: func(ctx context.Context, cfg mrfconsumer.Config) (mrfconsumer.Report, error) {
 			calls.Add(1)
-			writePublishedSnapshot(t, warehouse, cfg.PayerID, cfg.FeedID, cfg.CollectionMonth, cfg.OutputID)
+			writePublishedSnapshot(t, warehouse, cfg.PayerID, cfg.CollectionMonth, cfg.OutputID)
 			final, _ := expectedFinalPath(warehouse, cfg.PayerID, cfg.CollectionMonth, cfg.OutputID)
 			return mrfconsumer.Report{OutputID: cfg.OutputID, FinalPath: final}, nil
 		}}
@@ -287,10 +285,13 @@ func TestIntegrationTwoSnapshotsSerial(t *testing.T) {
 	cat := mustCatalog(t)
 	warehouse := filepath.Join(t.TempDir(), "wh")
 	client := insertClient(t, pool)
-	s1, snap1, _ := insertIngestJob(t, pool, client, "2026-08-01")
-	s2, snap2, _ := insertIngestJob(t, pool, client, "2026-09-01")
+	sharedURL := "https://files.test/mrf/shared"
+	s1, snap1, _ := insertIngestJobForURL(t, pool, client, "2026-08-01", sharedURL)
+	s2, snap2, _ := insertIngestJobForURL(t, pool, client, "2026-09-01", sharedURL)
+	s3, snap3, _ := insertIngestJobForURL(t, pool, client, "2026-08-01", "https://files.test/mrf/other")
 	writeValidParsed(t, ws, s1, svc)
 	writeValidParsed(t, ws, s2, svc)
+	writeValidParsed(t, ws, s3, svc)
 	var inflight atomic.Int64
 	var overlap atomic.Int64
 	startIngestRuntime(t, pool, &Worker{
@@ -301,15 +302,47 @@ func TestIntegrationTwoSnapshotsSerial(t *testing.T) {
 				overlap.Add(1)
 			}
 			defer inflight.Add(-1)
-			writePublishedSnapshot(t, warehouse, cfg.PayerID, cfg.FeedID, cfg.CollectionMonth, cfg.OutputID)
+			writePublishedSnapshot(t, warehouse, cfg.PayerID, cfg.CollectionMonth, cfg.OutputID)
 			final, _ := expectedFinalPath(warehouse, cfg.PayerID, cfg.CollectionMonth, cfg.OutputID)
 			return mrfconsumer.Report{OutputID: cfg.OutputID, FinalPath: final}, nil
 		},
 	}, 8)
 	waitConsume(t, pool, snap1, jobs.StatusSucceeded)
 	waitConsume(t, pool, snap2, jobs.StatusSucceeded)
+	waitConsume(t, pool, snap3, jobs.StatusSucceeded)
 	if overlap.Load() != 0 {
 		t.Fatal("overlapping ingest")
+	}
+	var sourceCount int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_sources WHERE source_url = $1`, sharedURL).Scan(&sourceCount); err != nil {
+		t.Fatal(err)
+	}
+	if sourceCount != 2 {
+		t.Fatalf("shared URL source count %d", sourceCount)
+	}
+	var augustSnapshotCount int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_snapshots WHERE payer_id = 'uhc' AND collection_month = '2026-08-01'`).Scan(&augustSnapshotCount); err != nil {
+		t.Fatal(err)
+	}
+	if augustSnapshotCount != 2 {
+		t.Fatalf("august snapshot count %d", augustSnapshotCount)
+	}
+	output1 := formatSnapshotOutputID(snap1)
+	output3 := formatSnapshotOutputID(snap3)
+	if output1 == output3 {
+		t.Fatal("same-month snapshots reused output ID")
+	}
+	for _, tc := range []struct {
+		month, outputID string
+		snapshotID      int64
+	}{
+		{"2026-08", output1, snap1},
+		{"2026-09", formatSnapshotOutputID(snap2), snap2},
+		{"2026-08", output3, snap3},
+	} {
+		if err := InspectCompletedSnapshot(warehouse, "uhc", tc.month, tc.outputID); err != nil {
+			t.Fatalf("snapshot %d: %v", tc.snapshotID, err)
+		}
 	}
 }
 
@@ -367,7 +400,7 @@ func TestIntegrationCancelLeavesNoTarget(t *testing.T) {
 			return mrfconsumer.Report{}, context.Canceled
 		}}
 	err := w.ingest(context.Background(), ingestJob(1, 11), claimIdentity{
-		SnapshotID: 11, SourceID: 11, FeedRowID: 1, PayerID: "uhc", FeedID: "mrf-source-11",
+		SnapshotID: 11, SourceID: 11, PayerID: "uhc",
 		Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 1,
 	})
 	if !errors.Is(err, context.Canceled) {
@@ -419,7 +452,7 @@ func TestIntegrationCorruptOwnedCatalogFailsClosed(t *testing.T) {
 	warehouse := filepath.Join(t.TempDir(), "wh")
 	cfg := mrfconsumer.Config{
 		InputPath: parsed, ProviderCatalogPath: cat.Path, OutputPath: warehouse,
-		PayerID: "uhc", FeedID: "mrf-source-1", CollectionMonth: "2026-08", OutputID: "mrf-1",
+		PayerID: "uhc", CollectionMonth: "2026-08", OutputID: "mrf-1",
 	}
 	if _, err := mrfconsumer.Ingest(context.Background(), cfg); err != nil {
 		t.Fatal(err)
