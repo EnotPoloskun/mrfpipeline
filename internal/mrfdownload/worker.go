@@ -22,14 +22,18 @@ type Worker struct {
 
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.MRFDownloadArgs]) error {
 	var sourceURL string
+	client := river.ClientFromContext[pgx.Tx](ctx)
 	return jobs.Run(ctx, jobs.RunParams{
 		Pool:        w.Pool,
-		Client:      river.ClientFromContext[pgx.Tx](ctx),
+		Client:      client,
 		Spec:        jobs.MRFDownloadStage,
 		DomainID:    job.Args.MRFSourceID,
 		RiverJobID:  job.ID,
 		Attempt:     job.Attempt,
 		MaxAttempts: job.MaxAttempts,
+		Kind:        jobs.KindMRFDownload,
+		Queue:       jobs.QueueMRFDownload,
+		Logger:      w.Logger,
 		Claim: func(ctx context.Context) (jobs.ClaimResult, error) {
 			res, url, err := claimDownload(ctx, w.Pool, job.Args.MRFSourceID, job.ID)
 			sourceURL = url

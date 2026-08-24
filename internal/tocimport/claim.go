@@ -68,6 +68,13 @@ WHERE id = $1`, tocFileID).Scan(&imp, &stored, &download, &parse, &payer, &month
 	if err != nil {
 		return jobs.ClaimResult{}, zero, classifyClaimDB(ctx, err)
 	}
+	action, err := classifyClaim(imp, download, parse, stored, riverJobID)
+	if err != nil {
+		return jobs.ClaimResult{}, zero, err
+	}
+	if action == jobs.ClaimNoop {
+		return jobs.ClaimResult{Action: jobs.ClaimNoop}, zero, nil
+	}
 	if err := release.RequireBuildingForTOC(ctx, tx, tocFileID); err != nil {
 		return jobs.ClaimResult{}, zero, err
 	}
@@ -82,7 +89,7 @@ FOR UPDATE`, tocFileID).Scan(&imp, &stored, &download, &parse, &payer, &month)
 	if err != nil {
 		return jobs.ClaimResult{}, zero, classifyClaimDB(ctx, err)
 	}
-	action, err := classifyClaim(imp, download, parse, stored, riverJobID)
+	action, err = classifyClaim(imp, download, parse, stored, riverJobID)
 	if err != nil {
 		return jobs.ClaimResult{}, zero, err
 	}

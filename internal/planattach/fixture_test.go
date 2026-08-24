@@ -293,6 +293,7 @@ func startAttachRuntime(t *testing.T, pool *pgxpool.Pool, w *Worker, maxAttempts
 	cfg := jobs.ClientConfig(workers, map[string]river.QueueConfig{jobs.QueueConsumer: {MaxWorkers: 1}}, nil, jobs.NewLogger(io.Discard))
 	cfg.MaxAttempts = maxAttempts
 	cfg.RetryPolicy = immediateRetry{}
+	cfg.FetchCooldown = 50 * time.Millisecond
 	cfg.FetchPollInterval = 50 * time.Millisecond
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {

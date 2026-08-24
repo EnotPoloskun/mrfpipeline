@@ -117,6 +117,12 @@ VALUES ($1, DATE '2026-08-01', 'pending', 'blocked')
 RETURNING id`, sourceURL).Scan(&sourceID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.mrf_snapshots
+    (mrf_source_id, payer_id, collection_month, consume_status)
+VALUES ($1, 'uhc', DATE '2026-08-01', 'blocked')`, sourceID); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -150,8 +156,16 @@ RETURNING id`, sourceID).Scan(&snapID)
 		if err := pool.QueryRow(context.Background(), `
 	INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
 	VALUES ($1, 'aetna', DATE '2026-08-01', 'blocked')
+	ON CONFLICT ON CONSTRAINT mrf_snapshots_source_payer_month_key DO NOTHING
 	RETURNING id`, sourceID).Scan(&snapID); err != nil {
-			t.Fatal(err)
+			if !errors.Is(err, pgx.ErrNoRows) {
+				t.Fatal(err)
+			}
+			if err := pool.QueryRow(context.Background(), `
+		SELECT id FROM mrfpipeline.mrf_snapshots
+		WHERE mrf_source_id = $1 AND payer_id = 'aetna' AND collection_month = DATE '2026-08-01'`, sourceID).Scan(&snapID); err != nil {
+				t.Fatal(err)
+			}
 		}
 		return snapID
 	}
@@ -194,8 +208,10 @@ func startDownloadRuntime(t *testing.T, pool *pgxpool.Pool, dl *artifact.Downloa
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &Worker{Pool: pool, Downloader: dl, Logger: jobs.NewLogger(io.Discard)})
 	cfg := jobs.ClientConfig(workers, map[string]river.QueueConfig{jobs.QueueMRFDownload: {MaxWorkers: 2}}, nil, jobs.NewLogger(io.Discard))
+	cfg.SkipUnknownJobCheck = true
 	cfg.MaxAttempts = maxAttempts
 	cfg.RetryPolicy = immediateRetry{}
+	cfg.FetchCooldown = 50 * time.Millisecond
 	cfg.FetchPollInterval = 50 * time.Millisecond
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {
@@ -583,13 +599,6 @@ func TestIntegrationClaimCombinations(t *testing.T) {
 	sourceID, jobID := insertSourceJob(t, pool, client, storedURL(""))
 	if _, _, err := claimDownload(context.Background(), pool, sourceID+99, jobID); !jobs.IsFailure(err, jobs.FailureMissingRecord) {
 		t.Fatalf("missing: %v", err)
-	}
-	if _, err := pool.Exec(context.Background(), `
-UPDATE mrfpipeline.mrf_sources SET parse_status = 'pending' WHERE id = $1`, sourceID); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := claimDownload(context.Background(), pool, sourceID, jobID); !jobs.IsFailure(err, jobs.FailureDomainInvariant) {
-		t.Fatalf("parse pending: %v", err)
 	}
 	if _, err := pool.Exec(context.Background(), `
 UPDATE mrfpipeline.mrf_sources SET parse_status = 'blocked', download_status = 'failed', failure_code = $2 WHERE id = $1`, sourceID, jobs.FailureMRFDownload); err != nil {

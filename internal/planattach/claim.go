@@ -35,13 +35,27 @@ func claimAttach(ctx context.Context, pool *pgxpool.Pool, batchID, riverJobID in
 	}
 
 	var snapshotID int64
+	var initialStatus string
+	var initialStored *int64
 	err := pool.QueryRow(ctx, `
-SELECT mrf_snapshot_id FROM mrfpipeline.plan_attachment_batches WHERE id = $1`, batchID).Scan(&snapshotID)
+SELECT mrf_snapshot_id, status, river_job_id
+FROM mrfpipeline.plan_attachment_batches
+WHERE id = $1`, batchID).Scan(&snapshotID, &initialStatus, &initialStored)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureMissingRecord)
 	}
 	if err != nil {
 		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
+	}
+	switch initialStatus {
+	case jobs.StatusSucceeded, jobs.StatusFailed:
+		return jobs.ClaimResult{Action: jobs.ClaimNoop}, zero, nil
+	case jobs.StatusPending, jobs.StatusRunning:
+		if initialStored == nil || *initialStored != riverJobID {
+			return jobs.ClaimResult{Action: jobs.ClaimNoop}, zero, nil
+		}
+	default:
+		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureDomainInvariant)
 	}
 
 	tx, err := pool.Begin(ctx)
@@ -65,11 +79,6 @@ FROM mrfpipeline.plan_attachment_batches
 WHERE id = $1`, batchID).Scan(&status, &stored, &requested); err != nil {
 		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
 	}
-	ident.RequestedCount = requested
-	if err := requireFrozenItems(ctx, tx, ident); err != nil {
-		return jobs.ClaimResult{}, zero, err
-	}
-
 	switch status {
 	case jobs.StatusSucceeded, jobs.StatusFailed:
 		return jobs.ClaimResult{Action: jobs.ClaimNoop}, ident, nil
@@ -79,6 +88,10 @@ WHERE id = $1`, batchID).Scan(&status, &stored, &requested); err != nil {
 		}
 	default:
 		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	ident.RequestedCount = requested
+	if err := requireFrozenItems(ctx, tx, ident); err != nil {
+		return jobs.ClaimResult{}, zero, err
 	}
 	if ident.Consume != jobs.StatusSucceeded {
 		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureDomainInvariant)

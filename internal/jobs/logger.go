@@ -14,6 +14,7 @@ var allowedLogKeys = map[string]bool{
 	"job_id":       true,
 	"attempt":      true,
 	"failure":      true,
+	"outcome":      true,
 	"duration_ms":  true,
 	"count":        true,
 	"domain_id":    true,

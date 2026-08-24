@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -13,9 +14,10 @@ import (
 // Worker executes discovery.run: list, admit, and enqueue toc.download jobs.
 type Worker struct {
 	river.WorkerDefaults[jobs.DiscoveryRunArgs]
-	Pool     *pgxpool.Pool
-	Discover DiscoverFunc
-	Logger   *slog.Logger
+	Pool         *pgxpool.Pool
+	Discover     DiscoverFunc
+	Logger       *slog.Logger
+	InsertClient *river.Client[pgx.Tx]
 }
 
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.DiscoveryRunArgs]) error {
@@ -27,7 +29,13 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.DiscoveryRunArgs]
 		RiverJobID:  job.ID,
 		Attempt:     job.Attempt,
 		MaxAttempts: job.MaxAttempts,
-		Work:        func(ctx context.Context) error { return w.execute(ctx, job) },
+		Kind:        jobs.KindDiscoveryRun,
+		Queue:       jobs.QueueDiscovery,
+		Logger:      w.Logger,
+		ClaimGate: func(ctx context.Context, tx pgx.Tx) error {
+			return release.RequireBuildingForStage(ctx, tx, jobs.KindDiscoveryRun, job.Args.DiscoveryRunID)
+		},
+		Work: func(ctx context.Context) error { return w.execute(ctx, job) },
 	})
 }
 
@@ -41,7 +49,10 @@ func (w *Worker) execute(ctx context.Context, job *river.Job[jobs.DiscoveryRunAr
 	if err != nil {
 		return mapDiscoverError(err)
 	}
-	client := river.ClientFromContext[pgx.Tx](ctx)
+	client := w.InsertClient
+	if client == nil {
+		client = river.ClientFromContext[pgx.Tx](ctx)
+	}
 	if err := admit(ctx, w.Pool, client, job.Args.DiscoveryRunID, job.ID, files); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()

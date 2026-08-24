@@ -43,7 +43,7 @@ INSERT INTO mrfpipeline.monthly_releases
 VALUES ('uhc', DATE '2026-07-01', 'inactive', transaction_timestamp(), transaction_timestamp())`); err != nil {
 		t.Fatal(err)
 	}
-	inactiveSourceID, err := insertConsumerSource(ctx, pool, "2026-07-01")
+	inactiveSourceID, err := insertConsumerSource(ctx, pool, "2026-07")
 	if err != nil {
 		t.Fatal(err)
 	}

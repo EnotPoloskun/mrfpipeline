@@ -251,12 +251,90 @@ WHERE id = $1`, jobID); err != nil {
 	}
 	if _, err := pool.Exec(ctx, `
 UPDATE mrfpipeline_river.river_job
-SET args = jsonb_build_object('discovery_run_id', $2), state = 'completed', finalized_at = transaction_timestamp()
+SET args = jsonb_build_object('discovery_run_id', $2::bigint), state = 'completed', finalized_at = transaction_timestamp()
 WHERE id = $1`, jobID, runID); err != nil {
 		t.Fatal(err)
 	}
 	terminal, err := Readiness(ctx, pool, "uhc", month)
 	if err != nil || !hasBlocker(terminal, "job_inconsistent") {
 		t.Fatalf("terminal job readiness %+v, %v", terminal, err)
+	}
+}
+
+func TestIntegrationAllProductionGatesRespectSharedSealedReleases(t *testing.T) {
+	pool := releaseTestDB(t)
+	ctx := context.Background()
+	uhcSnapshot := seedReadyRelease(t, pool, "uhc", "2026-08", "shared-uhc")
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('aetna', DATE '2026-08-01')`); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID, runID, tocID, batchID int64
+	if err := pool.QueryRow(ctx, `SELECT mrf_source_id FROM mrfpipeline.mrf_snapshots WHERE id = $1`, uhcSnapshot).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
+VALUES ($1, 'aetna', DATE '2026-08-01', 'succeeded') RETURNING id`, sourceID).Scan(new(int64)); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT id FROM mrfpipeline.discovery_runs WHERE payer_id = 'uhc'`).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT id FROM mrfpipeline.toc_files WHERE payer_id = 'uhc'`).Scan(&tocID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT id FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT id FROM mrfpipeline.plan_attachment_batches WHERE mrf_snapshot_id = $1`, uhcSnapshot).Scan(&batchID); err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]int64{
+		jobs.KindDiscoveryRun: runID, jobs.KindTOCDownload: tocID, jobs.KindTOCParse: tocID,
+		jobs.KindTOCImport: tocID, jobs.KindMRFDownload: sourceID, jobs.KindMRFParse: sourceID,
+		jobs.KindConsumerIngest: uhcSnapshot, jobs.KindConsumerAttachPlans: batchID,
+	}
+	gate := func(kind string) error {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		return RequireBuildingForStage(ctx, tx, kind, ids[kind])
+	}
+	for _, kind := range jobs.ProductionKinds() {
+		if err := gate(kind); err != nil {
+			t.Fatalf("building gate %s: %v", kind, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.monthly_releases
+SET status = 'active', sealed_at = transaction_timestamp(), last_activated_at = transaction_timestamp()
+WHERE payer_id = 'aetna' AND collection_month = DATE '2026-08-01'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate(jobs.KindMRFDownload); !jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+		t.Fatalf("shared source gate: %v", err)
+	}
+	for _, status := range []string{"active", "inactive"} {
+		if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.monthly_releases
+SET status = $1, sealed_at = transaction_timestamp(), last_activated_at = transaction_timestamp()
+WHERE payer_id = 'aetna'`, status); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.monthly_releases
+SET status = $1, sealed_at = transaction_timestamp(), last_activated_at = transaction_timestamp()
+WHERE payer_id = 'uhc'`, status); err != nil {
+			t.Fatal(err)
+		}
+		for _, kind := range jobs.ProductionKinds() {
+			if err := gate(kind); !jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+				t.Fatalf("%s gate for %s release: %v", kind, status, err)
+			}
+		}
 	}
 }

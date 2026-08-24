@@ -1227,7 +1227,7 @@ Stories 01–13 are the full version 1 implementation sequence:
 | 12 | Plan batch projection and additive consumer attachment worker. |
 | 13 | Reconciliation, operational acceptance, 1→2→5 TOC live progression, authorized URL-debug queries, retention guidance, and final documentation. |
 
-Stories 14–19 are the approved rebuild-only next sequence:
+Stories 14–20 are the approved rebuild-only next sequence:
 
 | Story | Deliverable |
 |---:|---|
@@ -1237,6 +1237,7 @@ Stories 14–19 are the approved rebuild-only next sequence:
 | 17 | Integrate exact feed-free consumer `2.0.0` ingestion, attachment, and recovery recognition. |
 | 18 | Add building/active/inactive monthly releases, readiness, atomic per-payer activation, and rollback. |
 | 19 | Make reconciliation/acceptance/documentation release-aware and hand off the complete active-output query contract. |
+| 20 | Gate every worker claim on release mutability, validate frozen publication inventory, expose redacted lifecycle/stalled-work diagnostics, and verify active publication durability. |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC
@@ -1273,3 +1274,13 @@ The version 1 pipeline is complete when all of the following are proven:
     tool output, or response bodies. Authorized URL inspection uses the
     documented debug query, not worker logs.
 12. No workflow identity or deduplication rule depends on a content hash.
+
+Story 20 also requires that release mutability is enforced in the claim
+transaction before external work, with release rows locked before the domain
+stage. Sealed deliveries are cancelled without domain mutation and are
+reported by reconciliation. Activation and rollback validate the exact
+readable base and plan-part inventory, while active-publication damage is
+reported without repair or fallback. Worker lifecycle records use fixed safe
+codes and phases/outcomes only; stalled-work SQL is diagnostic and does not
+cancel or retry jobs. Lease loss is reported once by the runtime, and normal
+operator cancellation remains an interruption rather than a failed stage.

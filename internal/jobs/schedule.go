@@ -68,9 +68,22 @@ func Schedule(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], spec
 }
 
 func lockStage(ctx context.Context, tx pgx.Tx, spec StageSpec, domainID int64) (stageRow, error) {
+	return queryStage(ctx, tx, spec, domainID, true)
+}
+
+func readStage(ctx context.Context, tx pgx.Tx, spec StageSpec, domainID int64) (stageRow, error) {
+	return queryStage(ctx, tx, spec, domainID, false)
+}
+
+func queryStage(ctx context.Context, tx pgx.Tx, spec StageSpec, domainID int64, forUpdate bool) (stageRow, error) {
+	lock := ""
+	if forUpdate {
+		lock = " FOR UPDATE"
+	}
 	q := fmt.Sprintf(
-		`SELECT %s, %s, %s FROM %s WHERE %s = $1 FOR UPDATE`,
+		`SELECT %s, %s, %s FROM %s WHERE %s = $1%s`,
 		spec.IDColumn, spec.StatusColumn, spec.JobIDColumn, spec.Table, spec.IDColumn,
+		lock,
 	)
 	var row stageRow
 	err := tx.QueryRow(ctx, q, domainID).Scan(&row.id, &row.status, &row.jobID)

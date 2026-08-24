@@ -105,6 +105,15 @@ func TestIntegrationWorkOrderlyShutdown(t *testing.T) {
 	oldTmp := os.Getenv("TMPDIR")
 	t.Cleanup(func() { _ = os.Setenv("TMPDIR", oldTmp) })
 	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "catalog"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "catalog", "manifest.json"), []byte(`{"schema_version":1,"release_month":"2026-08"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "services.csv"), []byte("service_id\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	getenv := envMap(map[string]string{
 		config.EnvDatabaseURL:         os.Getenv("MRFPIPELINE_TEST_DATABASE_URL"),
 		config.EnvArtifactRoot:        filepath.Join(base, "artifacts"),
@@ -114,15 +123,21 @@ func TestIntegrationWorkOrderlyShutdown(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
+	var stdout, stderr bytes.Buffer
 	go func() {
-		var stdout, stderr bytes.Buffer
 		done <- Run(ctx, []string{"work"}, getenv, &stdout, &stderr)
 	}()
 	deadline := time.Now().Add(10 * time.Second)
 	started := false
 	for time.Now().Before(deadline) {
-		var n int
-		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_client`).Scan(&n); err == nil && n > 0 {
+		var ready bool
+		if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_locks
+    WHERE locktype = 'advisory' AND classid = $1 AND objid = $2 AND granted
+) AND EXISTS (
+    SELECT 1 FROM mrfpipeline_river.river_queue
+)`, database.WorkerLeaseClass, database.WorkerLeaseObject).Scan(&ready); err == nil && ready {
 			started = true
 			break
 		}

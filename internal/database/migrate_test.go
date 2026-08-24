@@ -64,11 +64,11 @@ func TestCanceledContextIsNotDatabase(t *testing.T) {
 
 func TestResultJSON(t *testing.T) {
 	t.Parallel()
-	got, err := FormatResult(Result{ApplicationVersion: 1, AppliedMigrationCount: 1, RiverVersion: 6, AppliedRiverMigrationCount: 6})
+	got, err := FormatResult(Result{ApplicationVersion: 4, AppliedMigrationCount: 4, RiverVersion: 6, AppliedRiverMigrationCount: 6})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "{\"application_version\":1,\"applied_migration_count\":1,\"river_version\":6,\"applied_river_migration_count\":6}\n" {
+	if got != "{\"application_version\":4,\"applied_migration_count\":4,\"river_version\":6,\"applied_river_migration_count\":6}\n" {
 		t.Fatalf("got %q", got)
 	}
 	var obj map[string]any
@@ -78,11 +78,11 @@ func TestResultJSON(t *testing.T) {
 	if len(obj) != 4 {
 		t.Fatalf("fields %v", obj)
 	}
-	zero, err := FormatResult(Result{ApplicationVersion: 1, AppliedMigrationCount: 0, RiverVersion: 6, AppliedRiverMigrationCount: 0})
+	zero, err := FormatResult(Result{ApplicationVersion: 4, AppliedMigrationCount: 0, RiverVersion: 6, AppliedRiverMigrationCount: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if zero != "{\"application_version\":1,\"applied_migration_count\":0,\"river_version\":6,\"applied_river_migration_count\":0}\n" {
+	if zero != "{\"application_version\":4,\"applied_migration_count\":0,\"river_version\":6,\"applied_river_migration_count\":0}\n" {
 		t.Fatalf("got %q", zero)
 	}
 }

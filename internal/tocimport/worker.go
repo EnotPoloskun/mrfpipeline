@@ -25,24 +25,28 @@ type Worker struct {
 
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.TOCImportArgs]) error {
 	var info claimInfo
+	client := river.ClientFromContext[pgx.Tx](ctx)
 	return jobs.Run(ctx, jobs.RunParams{
 		Pool:        w.Pool,
-		Client:      river.ClientFromContext[pgx.Tx](ctx),
+		Client:      client,
 		Spec:        jobs.TOCImportStage,
 		DomainID:    job.Args.TOCFileID,
 		RiverJobID:  job.ID,
 		Attempt:     job.Attempt,
 		MaxAttempts: job.MaxAttempts,
+		Kind:        jobs.KindTOCImport,
+		Queue:       jobs.QueueTOCImport,
+		Logger:      w.Logger,
 		Claim: func(ctx context.Context) (jobs.ClaimResult, error) {
 			res, claimed, err := claimImport(ctx, w.Pool, job.Args.TOCFileID, job.ID)
 			info = claimed
 			return res, err
 		},
 		Work: func(ctx context.Context) error {
-			return w.importTOC(ctx, river.ClientFromContext[pgx.Tx](ctx), job.Args.TOCFileID, info)
+			return w.importTOC(ctx, client, job.Args.TOCFileID, info)
 		},
 		Confirm: func(ctx context.Context, tx pgx.Tx) error {
-			return confirmImportSuccess(ctx, tx, river.ClientFromContext[pgx.Tx](ctx), job.Args.TOCFileID)
+			return confirmImportSuccess(ctx, tx, client, job.Args.TOCFileID)
 		},
 		PreLock: func(ctx context.Context, tx pgx.Tx) error {
 			return release.RequireBuildingForTOC(ctx, tx, job.Args.TOCFileID)

@@ -72,6 +72,78 @@ func TestFormatMonthAndOutputID(t *testing.T) {
 	}
 }
 
+func TestInspectPlanAssociationsInventory(t *testing.T) {
+	t.Parallel()
+	warehouse := t.TempDir()
+	dir := filepath.Join(warehouse, "plan_associations", "output_id=mrf-7")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	part := filepath.Join(dir, "plan-batch-11-part-00000.parquet")
+	if err := os.WriteFile(part, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := InspectPlanAssociations(warehouse, "mrf-7", []int64{11}); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		mutate func() error
+		want   bool
+	}{
+		{name: "missing", mutate: func() error { return os.Remove(part) }, want: true},
+		{name: "unexpected", mutate: func() error {
+			if err := os.WriteFile(part, []byte("fixture"), 0600); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(dir, "plan-batch-99-part-00000.parquet"), []byte("fixture"), 0600)
+		}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "unexpected" {
+				_ = os.Remove(filepath.Join(dir, "plan-batch-99-part-00000.parquet"))
+				if _, err := os.Stat(part); os.IsNotExist(err) {
+					if err := os.WriteFile(part, []byte("fixture"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := tc.mutate(); err != nil {
+				t.Fatal(err)
+			}
+			if err := InspectPlanAssociations(warehouse, "mrf-7", []int64{11}); (err == nil) != !tc.want {
+				t.Fatalf("err=%v want invalid=%v", err, tc.want)
+			}
+		})
+	}
+	if err := os.RemoveAll(warehouse); err != nil {
+		t.Fatal(err)
+	}
+	if err := InspectPlanAssociations(warehouse, "mrf-7", nil); err != nil {
+		t.Fatalf("empty expected absent output: %v", err)
+	}
+}
+
+func TestWarehouseUnreadableErrorsStayDistinctFromInvalid(t *testing.T) {
+	t.Parallel()
+	_, err := InspectWarehouse(filepath.Join(t.TempDir(), "warehouse\x00"))
+	if !IsPublicationUnreadable(err) {
+		t.Fatalf("unreadable warehouse error %v", err)
+	}
+	invalid := filepath.Join(t.TempDir(), "warehouse")
+	if err := os.Mkdir(invalid, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(invalid, "unexpected"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = InspectWarehouse(invalid)
+	if err == nil || IsPublicationUnreadable(err) {
+		t.Fatalf("invalid warehouse classification %v", err)
+	}
+}
+
 func TestClassifyClaim(t *testing.T) {
 	t.Parallel()
 	job := int64(211)

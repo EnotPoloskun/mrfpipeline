@@ -2,7 +2,9 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/jackc/pgx/v5"
@@ -39,8 +41,12 @@ type RunParams struct {
 	Work        func(context.Context) error
 	Successor   *Successor
 	Claim       func(context.Context) (ClaimResult, error)
+	ClaimGate   func(context.Context, pgx.Tx) error
 	Confirm     func(context.Context, pgx.Tx) error
 	PreLock     func(context.Context, pgx.Tx) error
+	Kind        string
+	Queue       string
+	Logger      *slog.Logger
 }
 
 // Run executes claim, external work, success/successor, retry bookkeeping,
@@ -59,11 +65,16 @@ func Run(ctx context.Context, p RunParams) error {
 	claimFn := p.Claim
 	if claimFn == nil {
 		claimFn = func(ctx context.Context) (ClaimResult, error) {
-			return Claim(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID)
+			return ClaimWithGate(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID, p.ClaimGate)
 		}
 	}
 	claim, err := claimFn(ctx)
 	if err != nil {
+		if isFailure(err, FailureSealedReleaseInconsistent) {
+			p.logLifecycle(ctx, slog.LevelWarn, "sealed_delivery_suppressed", "claim", err, "")
+		} else {
+			p.logLifecycle(ctx, slog.LevelInfo, "job_lifecycle_failure", "claim", err, "")
+		}
 		if isFailure(err, FailureMissingRecord) || isFailure(err, FailureDomainInvariant) || isFailure(err, FailureInvalidArguments) || isFailure(err, FailureSealedReleaseInconsistent) {
 			return river.JobCancel(err)
 		}
@@ -74,7 +85,11 @@ func Run(ctx context.Context, p RunParams) error {
 	}
 	workErr := p.Work(ctx)
 	if workErr == nil {
-		return Succeed(ctx, p.Pool, p.Client, p.Spec, p.DomainID, p.RiverJobID, p.Successor, p.Confirm, p.PreLock)
+		if err := Succeed(ctx, p.Pool, p.Client, p.Spec, p.DomainID, p.RiverJobID, p.Successor, p.Confirm, p.PreLock); err != nil {
+			p.logLifecycle(ctx, slog.LevelInfo, "job_lifecycle_failure", "success", err, "")
+			return err
+		}
+		return nil
 	}
 	if isFailure(workErr, FailureWorkerLeaseLost) || ctx.Err() != nil {
 		return nil
@@ -82,8 +97,10 @@ func Run(ctx context.Context, p RunParams) error {
 	if isImmediateFail(workErr) {
 		code := terminalFailureCode(workErr)
 		if ferr := MarkFailed(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID, code); ferr != nil {
+			p.logBookkeeping(ctx, "terminal_bookkeeping")
 			return ferr
 		}
+		p.logLifecycle(ctx, slog.LevelInfo, "job_attempt_failed", "", workErr, "terminal")
 		return river.JobCancel(jobErr(code))
 	}
 	max := p.MaxAttempts
@@ -93,20 +110,79 @@ func Run(ctx context.Context, p RunParams) error {
 	if p.Attempt >= max {
 		code := terminalFailureCode(workErr)
 		if ferr := MarkFailed(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID, code); ferr != nil {
+			p.logBookkeeping(ctx, "terminal_bookkeeping")
 			return ferr
 		}
+		p.logLifecycle(ctx, slog.LevelInfo, "job_attempt_failed", "", workErr, "terminal")
 		return river.JobCancel(jobErr(code))
 	}
 	if ferr := MarkRetryable(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID); ferr != nil {
+		p.logBookkeeping(ctx, "retry_bookkeeping")
 		return fmt.Errorf("%w: %w", workErr, ferr)
 	}
+	p.logLifecycle(ctx, slog.LevelInfo, "job_attempt_failed", "", workErr, "retrying")
 	return workErr
+}
+
+func (p RunParams) logLifecycle(ctx context.Context, level slog.Level, event, phase string, err error, outcome string) {
+	if p.Logger == nil {
+		return
+	}
+	attrs := []any{
+		slog.String("kind", p.Kind),
+		slog.String("queue", p.Queue),
+		slog.Int64("job_id", p.RiverJobID),
+		slog.Int64("domain_id", p.DomainID),
+		slog.Int("attempt", p.Attempt),
+		slog.String("failure", lifecycleFailureCode(err)),
+	}
+	if phase != "" {
+		attrs = append(attrs, slog.String("phase", phase))
+	}
+	if outcome != "" {
+		attrs = append(attrs, slog.String("outcome", outcome))
+	}
+	p.Logger.Log(ctx, level, event, attrs...)
+}
+
+func (p RunParams) logBookkeeping(ctx context.Context, phase string) {
+	if p.Logger == nil {
+		return
+	}
+	p.Logger.LogAttrs(ctx, slog.LevelError, "job_lifecycle_failure",
+		slog.String("kind", p.Kind),
+		slog.String("queue", p.Queue),
+		slog.Int64("job_id", p.RiverJobID),
+		slog.Int64("domain_id", p.DomainID),
+		slog.Int("attempt", p.Attempt),
+		slog.String("failure", FailureJobBookkeeping),
+		slog.String("phase", phase),
+	)
+}
+
+func lifecycleFailureCode(err error) string {
+	if err == nil {
+		return FailureJobLifecycle
+	}
+	var f *failCodeError
+	if errors.As(err, &f) && allowedFailureCode(f.code) {
+		return f.code
+	}
+	return FailureJobLifecycle
 }
 
 // Claim locks the domain row and transitions pending/running for this
 // River job ID to running. Succeeded, failed, a missing job ID, and a
 // mismatched job ID are no-ops. Blocked is an invariant failure.
 func Claim(ctx context.Context, pool *pgxpool.Pool, spec StageSpec, domainID, riverJobID int64) (ClaimResult, error) {
+	return ClaimWithGate(ctx, pool, spec, domainID, riverJobID, nil)
+}
+
+// ClaimWithGate performs the generic stage claim after an optional caller
+// supplied release gate. The unlocked read avoids taking a release lock for a
+// stale delivery; the stage is re-read under lock after the gate before it is
+// changed.
+func ClaimWithGate(ctx context.Context, pool *pgxpool.Pool, spec StageSpec, domainID, riverJobID int64, gate func(context.Context, pgx.Tx) error) (ClaimResult, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -125,7 +201,7 @@ func Claim(ctx context.Context, pool *pgxpool.Pool, spec StageSpec, domainID, ri
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	row, err := lockStage(ctx, tx, spec, domainID)
+	row, err := readStage(ctx, tx, spec, domainID)
 	if err != nil {
 		return ClaimResult{}, err
 	}
@@ -133,6 +209,27 @@ func Claim(ctx context.Context, pool *pgxpool.Pool, spec StageSpec, domainID, ri
 	case StatusSucceeded:
 		return ClaimResult{Action: ClaimNoop}, nil
 	case StatusFailed:
+		return ClaimResult{Action: ClaimNoop}, nil
+	case StatusBlocked:
+		return ClaimResult{}, jobErr(FailureDomainInvariant)
+	case StatusPending, StatusRunning:
+		if row.jobID == nil || *row.jobID != riverJobID {
+			return ClaimResult{Action: ClaimNoop}, nil
+		}
+	default:
+		return ClaimResult{}, jobErr(FailureDomainInvariant)
+	}
+	if gate != nil {
+		if err := gate(ctx, tx); err != nil {
+			return ClaimResult{}, err
+		}
+	}
+	row, err = lockStage(ctx, tx, spec, domainID)
+	if err != nil {
+		return ClaimResult{}, err
+	}
+	switch row.status {
+	case StatusSucceeded, StatusFailed:
 		return ClaimResult{Action: ClaimNoop}, nil
 	case StatusBlocked:
 		return ClaimResult{}, jobErr(FailureDomainInvariant)

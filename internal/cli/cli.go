@@ -414,6 +414,9 @@ func runMonthActivate(ctx context.Context, getenv func(string) string, payer, mo
 	}
 	warehouseState, err := consumeringest.InspectWarehouse(warehouse)
 	if err != nil {
+		if consumeringest.IsPublicationUnreadable(err) {
+			return "", jobs.Failure(jobs.FailureArtifactReconciliationFailed)
+		}
 		return "", err
 	}
 	if err := artifact.CheckOverlap(art, warehouse, catalogPath, servicesPath); err != nil {
@@ -439,12 +442,7 @@ func runMonthActivate(ctx context.Context, getenv func(string) string, payer, mo
 	}
 	defer func() { _ = lease.Release(context.Background()) }()
 	result, err := release.Activate(ctx, pool, payer, monthDate, func(targets []release.Target) error {
-		for _, target := range targets {
-			if err := consumeringest.InspectCompletedSnapshot(warehouse, target.PayerID, target.CollectionMonth, target.OutputID); err != nil {
-				return jobs.Failure(jobs.FailureReleaseNotReady)
-			}
-		}
-		return nil
+		return reconcile.ValidateActivationTargets(ctx, pool, warehouse, payer, monthDate, targets)
 	})
 	if err != nil {
 		return "", err

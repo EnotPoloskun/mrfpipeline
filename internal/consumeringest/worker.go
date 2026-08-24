@@ -41,6 +41,9 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ConsumerIngestArg
 		RiverJobID:  job.ID,
 		Attempt:     job.Attempt,
 		MaxAttempts: job.MaxAttempts,
+		Kind:        jobs.KindConsumerIngest,
+		Queue:       jobs.QueueConsumer,
+		Logger:      w.Logger,
 		Claim: func(ctx context.Context) (jobs.ClaimResult, error) {
 			res, claimed, err := claimIngest(ctx, w.Pool, job.Args.MRFSnapshotID, job.ID)
 			ident = claimed

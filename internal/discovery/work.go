@@ -32,8 +32,12 @@ func RunWorkers(ctx context.Context, pool *pgxpool.Pool, discover DiscoverFunc, 
 	if logger == nil {
 		logger = jobs.NewLogger(nil)
 	}
+	insertClient, err := jobs.NewInsertClient(ctx, pool, logger)
+	if err != nil {
+		return err
+	}
 	workers := river.NewWorkers()
-	river.AddWorker(workers, &Worker{Pool: pool, Discover: discover, Logger: logger})
+	river.AddWorker(workers, &Worker{Pool: pool, Discover: discover, Logger: logger, InsertClient: insertClient})
 	handler := jobs.NewDomainErrorHandler(pool, []jobs.KindBinding{{
 		Kind:     jobs.KindDiscoveryRun,
 		Spec:     jobs.DiscoveryRunStage,

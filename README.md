@@ -10,9 +10,10 @@ decisions that stay consistent across those stories.
 ## Feed-free monthly-release contract
 
 Stories [14](requirements/14-feed-free-domain-schema.md) through
-[19](requirements/19-release-aware-reconciliation-acceptance-and-documentation.md)
-define the implemented rebuild-only contract. Stories 14–19 are breaking
-changes: an old populated database or warehouse must be rebuilt.
+[20](requirements/20-production-hardening-and-test-readiness.md)
+define the current rebuild-only contract. Stories 14–19 are implemented;
+Story 20 hardening is pending its bounded live acceptance. Stories 14–20
+do not upgrade an old populated database or warehouse in place.
 
 The target removes `mrf_feeds` and `feed_id`, identifies an MRF source capture
 by exact URL + collection month, identifies a consumer snapshot by source +
@@ -250,8 +251,32 @@ items, and artifacts. A failed stage in an active/inactive release returns
 `sealed_release_retry_forbidden` and does not mutate it. The normal worker
 recognizes completed publication.
 
+Every external work failure emits one structured, redacted application log
+with a fixed failure code, kind, River identity, attempt, and `retrying` or
+`terminal` outcome. Claim and bookkeeping failures use fixed lifecycle phases;
+raw errors, URLs, paths, SQL, and response text are never logged. A runtime
+`worker_lease_lost` record means the process stopped after its lease health
+check failed.
+
+For stalled work, execute the exported `reconcile.SQLStaleStages` query on an
+authorized PostgreSQL connection with `$1` bound to a positive interval such
+as `interval '30 minutes'`. It returns only `stage`, `domain_id`, `status`,
+`river_job_id`, `attempt`, and `age_seconds`; investigate when progress stops
+and running age keeps increasing. The pipeline does not automatically cancel,
+retry, or delete stalled jobs.
+
 Manifest-present invalid parser output is never auto-deleted. Stop the
 worker, inspect that exact generated directory, then `retry`.
+
+### Recovery decision table
+
+| Observed state | Operator action |
+|---|---|
+| Terminal failed stage | Confirm the release is building, then run `retry --stage <kind> --id <id>`. A sealed release returns `sealed_release_retry_forbidden`. |
+| Stale pending/running stage | Run `reconcile.SQLStaleStages` with a positive interval and inspect the exact River identity; reconcile may repair building work, but never cancels or retries it automatically. |
+| Invalid or incomplete generated output | Stop workers, preserve the directory for inspection, and retry only after the stage input/output is corrected. Successful publication loss is restored from the matching database/warehouse backup, not repaired in a sealed release. |
+| Missing building input | Run `reconcile`, then retry the failed prerequisite or rerun the bounded building workflow; do not create domain rows by hand. |
+| Missing or invalid sealed publication | Do not mutate or deactivate the release. Restore PostgreSQL and warehouse state together, or build and activate a new release after investigation. |
 
 ## Retention
 
@@ -269,6 +294,27 @@ pipeline never cleans the consumer warehouse or `<warehouse>/.staging`.
 Back up PostgreSQL, shared parsed MRFs, the append-only warehouse, and the
 pinned provider-catalog identity. Restoring only warehouse files is
 insufficient because active release mapping lives in PostgreSQL.
+
+### Recovery procedures
+
+- **Cutover:** run `month status --payer <payer> --collection-month <month>`,
+  then `month activate` only when `database_ready` is true. Activation validates
+  base and plan-part publications before changing the active relation.
+- **Rollback/reactivation:** run `month activate` for the sealed historical
+  month. A damaged publication is rejected and the current active pointer is
+  left unchanged.
+- **Backup and restore:** back up PostgreSQL together with shared parsed MRFs,
+  the warehouse, and the pinned catalog. Restore all of them, run `month
+  status` and `reconcile`, then refresh the query service from the verified
+  active-output relation.
+- **Rebuild-only old state:** stop workers, create a fresh database and
+  warehouse, run `migrate`, prepare catalog/services, and rerun discovery and
+  processing. Stories 01–13 databases and consumer 1.5.0 warehouses are not
+  upgraded in place.
+- **Query-service handoff:** load the complete active relation from `month
+  status`, validate each exact consumer publication, and atomically refresh
+  the service snapshot. Requests use that captured relation until the next
+  explicit refresh and never infer membership from warehouse directories.
 
 ## Status queries
 

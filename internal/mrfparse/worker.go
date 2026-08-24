@@ -36,6 +36,9 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.MRFParseArgs]) er
 		RiverJobID:  job.ID,
 		Attempt:     job.Attempt,
 		MaxAttempts: job.MaxAttempts,
+		Kind:        jobs.KindMRFParse,
+		Queue:       jobs.QueueMRFParse,
+		Logger:      w.Logger,
 		Claim: func(ctx context.Context) (jobs.ClaimResult, error) {
 			return claimParse(ctx, w.Pool, job.Args.MRFSourceID, job.ID)
 		},

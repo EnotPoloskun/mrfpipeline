@@ -403,7 +403,7 @@ func TestIntegrationInvalidLedgerRejected(t *testing.T) {
 		sql  string
 	}{
 		{"filename mismatch", `UPDATE mrfpipeline.schema_migrations SET name = 'wrong.sql'`},
-		{"unknown future", `INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (4, '0004_future.sql')`},
+		{"unknown future", `INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (5, '0005_future.sql')`},
 		{"missing", `DELETE FROM mrfpipeline.schema_migrations; INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (4, '0004_future.sql')`},
 	}
 	for _, tc := range cases {

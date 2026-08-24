@@ -124,7 +124,13 @@ func waitRun(t *testing.T, pool *pgxpool.Pool, id int64, want string) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for run %d status %s", id, want)
+	var status, failure, state, errorsJSON string
+	var jobID *int64
+	_ = pool.QueryRow(context.Background(), `SELECT status, COALESCE(failure_code, ''), river_job_id FROM mrfpipeline.discovery_runs WHERE id = $1`, id).Scan(&status, &failure, &jobID)
+	if jobID != nil {
+		_ = pool.QueryRow(context.Background(), `SELECT state, errors::text FROM mrfpipeline_river.river_job WHERE id = $1`, *jobID).Scan(&state, &errorsJSON)
+	}
+	t.Fatalf("timed out waiting for run %d status %s (status=%s failure=%s job=%v state=%s errors=%s)", id, want, status, failure, jobID, state, errorsJSON)
 }
 
 func TestIntegrationEnqueueAtomicAndDistinct(t *testing.T) {
@@ -198,6 +204,7 @@ WHERE payer_id = 'uhc' AND collection_month = DATE '2026-08-01'`); err != nil {
 func TestIntegrationEnqueueRollback(t *testing.T) {
 	_, pool := testDB(t)
 	_, err := pool.Exec(context.Background(), `
+DROP FUNCTION IF EXISTS mrfpipeline_test_reject_river() CASCADE;
 CREATE FUNCTION mrfpipeline_test_reject_river() RETURNS trigger AS $$
 BEGIN
   RAISE EXCEPTION 'injected insert failure';
@@ -524,7 +531,7 @@ func TestIntegrationShutdownCancelsListing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("shutdown: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(jobs.GracefulStop + 5*time.Second):
 		t.Fatal("shutdown timeout")
 	}
 	var n int
@@ -547,8 +554,10 @@ func TestIntegrationRetryAfterPrecommitFailure(t *testing.T) {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &Worker{Pool: pool, Discover: discover, Logger: jobs.NewLogger(io.Discard)})
 	cfg := jobs.ClientConfig(workers, Queues(), nil, jobs.NewLogger(io.Discard))
+	cfg.SkipUnknownJobCheck = true
 	cfg.MaxAttempts = 8
 	cfg.RetryPolicy = immediateRetry{}
+	cfg.FetchCooldown = 50 * time.Millisecond
 	cfg.FetchPollInterval = 50 * time.Millisecond
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {
@@ -590,7 +599,7 @@ func assertTOC(t *testing.T, pool *pgxpool.Pool, month, url string, want bool) {
 	var n int
 	if err := pool.QueryRow(context.Background(), `
 SELECT count(*) FROM mrfpipeline.toc_files
-WHERE collection_month = $1 AND source_url = $2`, month, url).Scan(&n); err != nil {
+WHERE collection_month = $1::date AND source_url = $2`, month+"-01", url).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if want && n != 1 {

@@ -145,8 +145,10 @@ func startParseRuntime(t *testing.T, pool *pgxpool.Pool, ws *artifact.Workspace,
 		Pool: pool, Workspace: ws, Parse: parse, Services: svc, Logger: jobs.NewLogger(io.Discard),
 	})
 	cfg := jobs.ClientConfig(workers, map[string]river.QueueConfig{jobs.QueueMRFParse: {MaxWorkers: 1}}, nil, jobs.NewLogger(io.Discard))
+	cfg.SkipUnknownJobCheck = true
 	cfg.MaxAttempts = maxAttempts
 	cfg.RetryPolicy = immediateRetry{}
+	cfg.FetchCooldown = 50 * time.Millisecond
 	cfg.FetchPollInterval = 50 * time.Millisecond
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {
@@ -287,25 +289,24 @@ func TestIntegrationEighthFailureLeavesSnapshots(t *testing.T) {
 	}
 }
 
-func TestIntegrationNoSnapshotSucceeds(t *testing.T) {
+func TestIntegrationNoSnapshotDoesNotClaim(t *testing.T) {
 	pool := testDB(t)
-	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
-	if err != nil {
+	client := insertClient(t, pool)
+	sourceID, jobID := insertParseJob(t, pool, client)
+	result, err := claimParse(context.Background(), pool, sourceID, jobID)
+	if !jobs.IsFailure(err, jobs.FailureMissingRecord) {
+		t.Fatalf("claim result=%+v error=%v", result, err)
+	}
+	if result.Action != "" {
+		t.Fatalf("claim action %q", result.Action)
+	}
+	var status string
+	if err := pool.QueryRow(context.Background(), `
+SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
-	svc := mustServices(t)
-	client := insertClient(t, pool)
-	sourceID, _ := insertParseJob(t, pool, client)
-	writeDownload(t, ws, sourceID, []byte("x"))
-	startParseRuntime(t, pool, ws, func(ctx context.Context, cfg mrfparser.Config) error {
-		input, _, _ := generatedPaths(ws, sourceID)
-		writeValidParsed(t, cfg.Output, expectedSourceURI(input), svc.Path)
-		return nil
-	}, svc, 8)
-	waitParse(t, pool, sourceID, jobs.StatusSucceeded)
-	var n int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindConsumerIngest).Scan(&n); err != nil || n != 0 {
-		t.Fatalf("ingests %d", n)
+	if status != jobs.StatusPending {
+		t.Fatalf("parse status %q", status)
 	}
 }
 

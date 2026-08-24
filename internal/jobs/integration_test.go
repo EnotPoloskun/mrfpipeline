@@ -1,7 +1,9 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -149,6 +151,80 @@ func insertSuccessor(t *testing.T, pool *pgxpool.Pool) int64 {
 		t.Fatal(err)
 	}
 	return id
+}
+
+func TestIntegrationRunFailureLifecycleLogs(t *testing.T) {
+	url, pool := testDB(t)
+	migrateAndFixtures(t, url, pool)
+
+	newStage := func(t *testing.T, riverJobID int64) int64 {
+		t.Helper()
+		id := insertStage(t, pool, StatusRunning)
+		if _, err := pool.Exec(context.Background(), `
+UPDATE mrfpipeline_test.stages SET river_job_id = $2 WHERE id = $1`, id, riverJobID); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	readRecord := func(t *testing.T, buf *bytes.Buffer) map[string]any {
+		t.Helper()
+		var record map[string]any
+		if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
+			t.Fatal(err)
+		}
+		return record
+	}
+	run := func(t *testing.T, pool *pgxpool.Pool, stageID, riverJobID int64, attempt, max int, workErr error, buf *bytes.Buffer) error {
+		t.Helper()
+		return Run(context.Background(), RunParams{
+			Pool: pool, Spec: testStageSpec(), DomainID: stageID, RiverJobID: riverJobID,
+			Attempt: attempt, MaxAttempts: max, Kind: KindTOCParse, Queue: QueueTOCParse,
+			Logger: NewLogger(buf),
+			Claim: func(context.Context) (ClaimResult, error) {
+				return ClaimResult{Action: ClaimWork}, nil
+			},
+			Work: func(context.Context) error { return workErr },
+		})
+	}
+
+	t.Run("retrying", func(t *testing.T) {
+		const riverJobID = 701
+		stageID := newStage(t, riverJobID)
+		var buf bytes.Buffer
+		err := run(t, pool, stageID, riverJobID, 1, 2, Failure(FailureTOCParseOutputInvalid), &buf)
+		if !IsFailure(err, FailureTOCParseOutputInvalid) {
+			t.Fatalf("run error %v", err)
+		}
+		record := readRecord(t, &buf)
+		if record["msg"] != "job_attempt_failed" || record["outcome"] != "retrying" || record["failure"] != FailureTOCParseOutputInvalid {
+			t.Fatalf("record %v", record)
+		}
+	})
+
+	t.Run("terminal", func(t *testing.T) {
+		const riverJobID = 702
+		stageID := newStage(t, riverJobID)
+		var buf bytes.Buffer
+		if err := run(t, pool, stageID, riverJobID, 2, 2, Failure(FailureTOCParseOutputInvalid), &buf); err == nil {
+			t.Fatal("terminal run unexpectedly succeeded")
+		}
+		record := readRecord(t, &buf)
+		if record["msg"] != "job_attempt_failed" || record["outcome"] != "terminal" || record["failure"] != FailureTOCParseOutputInvalid {
+			t.Fatalf("record %v", record)
+		}
+	})
+
+	t.Run("bookkeeping", func(t *testing.T) {
+		var buf bytes.Buffer
+		err := run(t, nil, 703, 703, 1, 2, Failure(FailureTOCParseOutputInvalid), &buf)
+		if err == nil {
+			t.Fatal("bookkeeping failure unexpectedly succeeded")
+		}
+		record := readRecord(t, &buf)
+		if record["msg"] != "job_lifecycle_failure" || record["phase"] != "retry_bookkeeping" || record["failure"] != FailureJobBookkeeping {
+			t.Fatalf("record %v", record)
+		}
+	})
 }
 
 func testLogger() *slog.Logger { return NewLogger(io.Discard) }
@@ -365,6 +441,7 @@ func startTestRuntime(t *testing.T, pool *pgxpool.Pool, workers *river.Workers, 
 	cfg := ClientConfig(workers, map[string]river.QueueConfig{"test": {MaxWorkers: 1}}, handler, testLogger())
 	cfg.MaxAttempts = maxAttempts
 	cfg.RetryPolicy = immediateRetry{}
+	cfg.FetchCooldown = 50 * time.Millisecond
 	cfg.FetchPollInterval = 50 * time.Millisecond
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {

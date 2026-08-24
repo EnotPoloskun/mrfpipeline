@@ -7,6 +7,7 @@ import (
 
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/planbatch"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -76,8 +77,7 @@ func claimIngest(ctx context.Context, pool *pgxpool.Pool, snapshotID, riverJobID
 	err = tx.QueryRow(ctx, `
 SELECT consume_status, consume_river_job_id, mrf_source_id, payer_id, collection_month
 FROM mrfpipeline.mrf_snapshots
-WHERE id = $1
-FOR UPDATE`, snapshotID).Scan(&consume, &stored, &sourceID, &payer, &month)
+WHERE id = $1`, snapshotID).Scan(&consume, &stored, &sourceID, &payer, &month)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureMissingRecord)
 	}
@@ -87,7 +87,7 @@ FOR UPDATE`, snapshotID).Scan(&consume, &stored, &sourceID, &payer, &month)
 
 	var parse string
 	err = tx.QueryRow(ctx, `
-SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1 FOR UPDATE`, sourceID).Scan(&parse)
+	SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&parse)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureMissingRecord)
 	}
@@ -106,6 +106,48 @@ SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1 FOR UPDATE`, sour
 	}
 	if action == jobs.ClaimNoop {
 		return jobs.ClaimResult{Action: jobs.ClaimNoop}, ident, nil
+	}
+	if err := release.RequireBuildingForSnapshot(ctx, tx, snapshotID); err != nil {
+		return jobs.ClaimResult{}, zero, err
+	}
+	var lockedSourceID int64
+	var lockedPayer string
+	var lockedMonth time.Time
+	err = tx.QueryRow(ctx, `
+SELECT consume_status, consume_river_job_id, mrf_source_id, payer_id, collection_month
+FROM mrfpipeline.mrf_snapshots
+WHERE id = $1
+FOR UPDATE`, snapshotID).Scan(&consume, &stored, &lockedSourceID, &lockedPayer, &lockedMonth)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
+	}
+	if lockedSourceID != sourceID || lockedPayer != payer || !lockedMonth.Equal(month) {
+		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	err = tx.QueryRow(ctx, `
+SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1 FOR UPDATE`, lockedSourceID).Scan(&parse)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return jobs.ClaimResult{}, zero, classifyDB(ctx, err)
+	}
+	action, err = classifyClaim(consume, parse, stored, riverJobID)
+	if err != nil {
+		return jobs.ClaimResult{}, zero, err
+	}
+	if action == jobs.ClaimNoop {
+		return jobs.ClaimResult{Action: jobs.ClaimNoop}, zero, nil
+	}
+	sourceID = lockedSourceID
+	payer = lockedPayer
+	month = lockedMonth
+	ident = claimIdentity{
+		SnapshotID: snapshotID, SourceID: sourceID, PayerID: payer,
+		Month: month, MonthText: formatMonth(month), ConsumeJobID: riverJobID,
 	}
 	tag, err := tx.Exec(ctx, `
 UPDATE mrfpipeline.mrf_snapshots

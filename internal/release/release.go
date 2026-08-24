@@ -258,34 +258,53 @@ FOR UPDATE`, runID).Scan(&lockedPayer, &lockedMonth)
 	return nil
 }
 
-func requireBuildingForSource(ctx context.Context, tx pgx.Tx, sourceID int64) error {
+type sourceReleaseKey struct {
+	payer string
+	month time.Time
+}
+
+func sourceReleaseKeys(ctx context.Context, tx pgx.Tx, sourceID int64) ([]sourceReleaseKey, error) {
 	rows, err := tx.Query(ctx, `
 SELECT DISTINCT n.payer_id, n.collection_month
 FROM mrfpipeline.mrf_sources s
 JOIN mrfpipeline.mrf_snapshots n ON n.mrf_source_id = s.id
 WHERE s.id = $1
-ORDER BY n.collection_month, n.payer_id`, sourceID)
+ORDER BY n.payer_id, n.collection_month`, sourceID)
 	if err != nil {
-		return dbFailure(ctx)
+		return nil, dbFailure(ctx)
 	}
-	type releaseKey struct {
-		payer string
-		month time.Time
-	}
-	var keys []releaseKey
+	defer rows.Close()
+	var keys []sourceReleaseKey
 	for rows.Next() {
-		var key releaseKey
+		var key sourceReleaseKey
 		if err := rows.Scan(&key.payer, &key.month); err != nil {
-			rows.Close()
-			return dbFailure(ctx)
+			return nil, dbFailure(ctx)
 		}
 		keys = append(keys, key)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
-		return dbFailure(ctx)
+		return nil, dbFailure(ctx)
 	}
-	rows.Close()
+	return keys, nil
+}
+
+func sameSourceReleaseKeys(left, right []sourceReleaseKey) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func requireBuildingForSource(ctx context.Context, tx pgx.Tx, sourceID int64) error {
+	keys, err := sourceReleaseKeys(ctx, tx, sourceID)
+	if err != nil {
+		return err
+	}
 	if len(keys) == 0 {
 		return jobs.Failure(jobs.FailureMissingRecord)
 	}
@@ -301,6 +320,29 @@ FOR UPDATE`, sourceID).Scan(new(int64)); errors.Is(err, pgx.ErrNoRows) {
 		return jobs.Failure(jobs.FailureMissingRecord)
 	} else if err != nil {
 		return dbFailure(ctx)
+	}
+	current, err := sourceReleaseKeys(ctx, tx, sourceID)
+	if err != nil {
+		return err
+	}
+	if !sameSourceReleaseKeys(keys, current) {
+		for _, key := range current {
+			var status string
+			if err := tx.QueryRow(ctx, `
+SELECT status
+FROM mrfpipeline.monthly_releases
+WHERE payer_id = $1 AND collection_month = $2`, key.payer, key.month).Scan(&status); err != nil {
+				return dbFailure(ctx)
+			}
+			if status != Building {
+				return jobs.Failure(jobs.FailureSealedReleaseInconsistent)
+			}
+		}
+		// A new building dependent release appeared after the release locks
+		// were acquired. Do not lock it after the source: that would invert
+		// the supported release-before-source order. Let the delivery retry
+		// from a fresh transaction instead.
+		return fmt.Errorf("%w: source release set changed", jobs.ErrJob)
 	}
 	return nil
 }
@@ -458,11 +500,7 @@ SELECT EXISTS (
           WHERE j.id = r.job_id
             AND j.kind = r.kind
             AND j.state IN ('available', 'pending', 'scheduled', 'retryable', 'running')
-            AND jsonb_typeof(j.args) = 'object'
-            AND jsonb_object_length(j.args) = 1
-            AND j.args ? r.arg_key
-            AND jsonb_typeof(j.args -> r.arg_key) = 'number'
-            AND j.args ->> r.arg_key = r.domain_id::text
+            AND j.args = jsonb_build_object(r.arg_key, to_jsonb(r.domain_id))
       ))
 )`, payer, month).Scan(&inconsistent); err != nil {
 		return StatusReport{}, dbFailure(ctx)
@@ -528,6 +566,77 @@ ORDER BY id`, payer, month)
 		return nil, dbFailure(ctx)
 	}
 	return out, nil
+}
+
+// ListPlanBatchIDs returns the durable succeeded attachment batches whose
+// positive publications are expected for one snapshot.
+func ListPlanBatchIDs(ctx context.Context, pool *pgxpool.Pool, snapshotID int64) ([]int64, error) {
+	if pool == nil || snapshotID <= 0 {
+		return nil, jobs.Failure(jobs.FailureInvalidArguments)
+	}
+	rows, err := pool.Query(ctx, `
+SELECT id
+FROM mrfpipeline.plan_attachment_batches
+WHERE mrf_snapshot_id = $1 AND status = 'succeeded' AND added_plan_count > 0
+ORDER BY id`, snapshotID)
+	if err != nil {
+		return nil, dbFailure(ctx)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, dbFailure(ctx)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbFailure(ctx)
+	}
+	return ids, nil
+}
+
+// HasPlanRowsAfterSeal reports unsupported plan-set changes after the first
+// release seal. The caller passes only a non-nil sealed timestamp.
+func HasPlanRowsAfterSeal(ctx context.Context, pool *pgxpool.Pool, snapshotID int64, sealedAt time.Time) (bool, error) {
+	if pool == nil || snapshotID <= 0 {
+		return false, jobs.Failure(jobs.FailureInvalidArguments)
+	}
+	var changed bool
+	if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM mrfpipeline.mrf_plans
+    WHERE mrf_snapshot_id = $1 AND created_at > $2
+    UNION ALL
+    SELECT 1
+    FROM mrfpipeline.plan_attachment_batches
+    WHERE mrf_snapshot_id = $1 AND created_at > $2
+    UNION ALL
+    SELECT 1
+    FROM mrfpipeline.plan_attachment_batch_items i
+    JOIN mrfpipeline.plan_attachment_batches b ON b.id = i.plan_attachment_batch_id
+    WHERE b.mrf_snapshot_id = $1 AND i.created_at > $2
+)`, snapshotID, sealedAt).Scan(&changed); err != nil {
+		return false, dbFailure(ctx)
+	}
+	return changed, nil
+}
+
+func ReleaseSealedAt(ctx context.Context, pool *pgxpool.Pool, payer string, month time.Time) (*time.Time, error) {
+	if pool == nil {
+		return nil, jobs.Failure(jobs.FailureInvalidArguments)
+	}
+	var sealedAt *time.Time
+	if err := pool.QueryRow(ctx, `
+SELECT sealed_at
+FROM mrfpipeline.monthly_releases
+WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&sealedAt); errors.Is(err, pgx.ErrNoRows) {
+		return nil, jobs.Failure(jobs.FailureReleaseNotFound)
+	} else if err != nil {
+		return nil, dbFailure(ctx)
+	}
+	return sealedAt, nil
 }
 
 func Activate(ctx context.Context, pool *pgxpool.Pool, payer string, month time.Time, preflight func([]Target) error) (ActivationResult, error) {

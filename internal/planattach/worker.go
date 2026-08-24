@@ -39,6 +39,9 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ConsumerAttachPla
 		RiverJobID:  job.ID,
 		Attempt:     job.Attempt,
 		MaxAttempts: job.MaxAttempts,
+		Kind:        jobs.KindConsumerAttachPlans,
+		Queue:       jobs.QueueConsumer,
+		Logger:      w.Logger,
 		Claim: func(ctx context.Context) (jobs.ClaimResult, error) {
 			res, claimed, err := claimAttach(ctx, w.Pool, job.Args.PlanAttachmentBatchID, job.ID)
 			ident = claimed

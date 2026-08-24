@@ -144,7 +144,8 @@ func (r Runtime) Run(ctx context.Context) error {
 		if err := jobs.Shutdown(context.Background(), client); err != nil {
 			return err
 		}
-		if lost.Load() {
+		if lost.Swap(false) {
+			logWorkerLeaseLost(logger)
 			return jobs.Failure(jobs.FailureWorkerLeaseLost)
 		}
 		if ctx.Err() != nil {
@@ -154,4 +155,14 @@ func (r Runtime) Run(ctx context.Context) error {
 	case <-client.Stopped():
 		return jobs.Failure("runtime")
 	}
+}
+
+func logWorkerLeaseLost(logger *slog.Logger) {
+	if logger == nil {
+		return
+	}
+	logger.LogAttrs(context.Background(), slog.LevelError, "worker_lease_lost",
+		slog.String("kind", "runtime"),
+		slog.String("failure", jobs.FailureWorkerLeaseLost),
+	)
 }

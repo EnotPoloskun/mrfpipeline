@@ -60,7 +60,7 @@ func TestIntegrationMigrateCommand(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr %q", stderr)
 	}
-	if stdout != "{\"application_version\":1,\"applied_migration_count\":1,\"river_version\":6,\"applied_river_migration_count\":6}\n" {
+	if stdout != "{\"application_version\":4,\"applied_migration_count\":4,\"river_version\":6,\"applied_river_migration_count\":6}\n" {
 		t.Fatalf("stdout %q", stdout)
 	}
 	var obj map[string]any
@@ -75,7 +75,7 @@ func TestIntegrationMigrateCommand(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("repeat exit %d stderr=%q", code, stderr)
 	}
-	if stdout != "{\"application_version\":1,\"applied_migration_count\":0,\"river_version\":6,\"applied_river_migration_count\":0}\n" {
+	if stdout != "{\"application_version\":4,\"applied_migration_count\":0,\"river_version\":6,\"applied_river_migration_count\":0}\n" {
 		t.Fatalf("repeat stdout %q", stdout)
 	}
 

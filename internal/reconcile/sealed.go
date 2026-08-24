@@ -8,16 +8,20 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/consumeringest"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// auditSealedPlanSets checks only durable timestamps and warehouse directory
-// membership. It deliberately does not inspect Parquet rows or publication
-// contents.
+// auditSealedPlanSets checks durable timestamps, shallow plan-part inventory,
+// and active base publication metadata/layout. It does not inspect Parquet
+// row/data contents.
 func auditSealedPlanSets(ctx context.Context, pool *pgxpool.Pool, warehouse string, report *Report) error {
-	if pool == nil || report == nil || warehouse == "" {
+	if pool == nil || report == nil {
 		return nil
+	}
+	if warehouse == "" {
+		return artFail()
 	}
 	rows, err := pool.Query(ctx, `
 SELECT 'mrf_plans', p.id
@@ -114,10 +118,23 @@ ORDER BY b.mrf_snapshot_id, b.id`)
 
 	for _, snapshot := range sealed {
 		outputDir := filepath.Join(warehouse, "plan_associations", "output_id=mrf-"+strconv.FormatInt(snapshot, 10))
+		batchIDs := make([]int64, 0, len(expected[snapshot]))
+		for _, batchID := range expected[snapshot] {
+			batchIDs = append(batchIDs, batchID)
+		}
+		inventoryErr := consumeringest.InspectPlanAssociations(warehouse, "mrf-"+strconv.FormatInt(snapshot, 10), batchIDs)
+		if inventoryErr != nil && consumeringest.IsPublicationUnreadable(inventoryErr) {
+			return artFail()
+		}
+		scanAffected := false
 		entries, err := os.ReadDir(outputDir)
 		if errors.Is(err, os.ErrNotExist) {
 			for _, batchID := range expected[snapshot] {
+				scanAffected = true
 				report.recordSealedDomain(report.logger, "plan_attachment_batches", jobs.KindConsumerAttachPlans, batchID)
+			}
+			if inventoryErr != nil && !scanAffected {
+				report.recordSealedSnapshot(report.logger, jobs.KindConsumerAttachPlans, snapshot)
 			}
 			continue
 		}
@@ -132,19 +149,57 @@ ORDER BY b.mrf_snapshot_id, b.id`)
 				return artFail()
 			}
 			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				scanAffected = true
 				report.recordSealedSnapshot(report.logger, jobs.KindConsumerAttachPlans, snapshot)
 				continue
 			}
 			if _, ok := expected[snapshot][entry.Name()]; ok {
 				continue
 			}
+			scanAffected = true
 			report.recordSealedSnapshot(report.logger, jobs.KindConsumerAttachPlans, snapshot)
 		}
 		for name, batchID := range expected[snapshot] {
 			if _, ok := seen[name]; !ok {
+				scanAffected = true
 				report.recordSealedDomain(report.logger, "plan_attachment_batches", jobs.KindConsumerAttachPlans, batchID)
 			}
 		}
+		if inventoryErr != nil && !scanAffected {
+			report.recordSealedSnapshot(report.logger, jobs.KindConsumerAttachPlans, snapshot)
+		}
 	}
+
+	activeRows, err := pool.Query(ctx, `
+SELECT s.id, s.payer_id, to_char(s.collection_month, 'YYYY-MM')
+FROM mrfpipeline.mrf_snapshots s
+JOIN mrfpipeline.monthly_releases r
+  ON r.payer_id = s.payer_id AND r.collection_month = s.collection_month
+WHERE r.status = 'active'
+ORDER BY s.id`)
+	if err != nil {
+		return jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+	}
+	for activeRows.Next() {
+		var snapshotID int64
+		var payer, month string
+		if err := activeRows.Scan(&snapshotID, &payer, &month); err != nil {
+			activeRows.Close()
+			return jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+		}
+		outputID := "mrf-" + strconv.FormatInt(snapshotID, 10)
+		if err := consumeringest.InspectCompletedSnapshot(warehouse, payer, month, outputID); err != nil {
+			if consumeringest.IsPublicationUnreadable(err) {
+				activeRows.Close()
+				return artFail()
+			}
+			report.recordSealedSnapshot(report.logger, jobs.KindConsumerIngest, snapshotID)
+		}
+	}
+	if err := activeRows.Err(); err != nil {
+		activeRows.Close()
+		return jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+	}
+	activeRows.Close()
 	return nil
 }

@@ -175,8 +175,10 @@ func startDownloadRuntime(t *testing.T, pool *pgxpool.Pool, dl *artifact.Downloa
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &Worker{Pool: pool, Downloader: dl, Logger: jobs.NewLogger(io.Discard)})
 	cfg := jobs.ClientConfig(workers, map[string]river.QueueConfig{jobs.QueueTOCDownload: {MaxWorkers: 4}}, nil, jobs.NewLogger(io.Discard))
+	cfg.SkipUnknownJobCheck = true
 	cfg.MaxAttempts = maxAttempts
 	cfg.RetryPolicy = immediateRetry{}
+	cfg.FetchCooldown = 50 * time.Millisecond
 	cfg.FetchPollInterval = 50 * time.Millisecond
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {
@@ -421,13 +423,6 @@ func TestIntegrationClaimCombinations(t *testing.T) {
 	tocID, jobID := insertTOCJob(t, pool, client, storedURL("/data"))
 	if _, _, err := claimDownload(context.Background(), pool, tocID+99, jobID); !jobs.IsFailure(err, jobs.FailureMissingRecord) {
 		t.Fatalf("missing: %v", err)
-	}
-	if _, err := pool.Exec(context.Background(), `
-UPDATE mrfpipeline.toc_files SET parse_status = 'pending' WHERE id = $1`, tocID); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := claimDownload(context.Background(), pool, tocID, jobID); !jobs.IsFailure(err, jobs.FailureDomainInvariant) {
-		t.Fatalf("parse pending: %v", err)
 	}
 	if _, err := pool.Exec(context.Background(), `
 UPDATE mrfpipeline.toc_files SET parse_status = 'blocked', download_status = 'failed', failure_code = $2 WHERE id = $1`, tocID, jobs.FailureTOCDownload); err != nil {

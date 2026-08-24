@@ -7,6 +7,7 @@ import (
 
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -51,6 +52,26 @@ func claimDownload(ctx context.Context, pool *pgxpool.Pool, tocFileID, riverJobI
 	err = tx.QueryRow(ctx, `
 SELECT download_status, download_river_job_id, parse_status, source_url
 FROM mrfpipeline.toc_files
+WHERE id = $1`, tocFileID).Scan(&download, &stored, &parse, &sourceURL)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.ClaimResult{}, "", jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return jobs.ClaimResult{}, "", classifyClaimDB(ctx, err)
+	}
+	action, err := classifyClaim(download, parse, stored, riverJobID)
+	if err != nil {
+		return jobs.ClaimResult{}, "", err
+	}
+	if action == jobs.ClaimNoop {
+		return jobs.ClaimResult{Action: jobs.ClaimNoop}, "", nil
+	}
+	if err := release.RequireBuildingForTOC(ctx, tx, tocFileID); err != nil {
+		return jobs.ClaimResult{}, "", err
+	}
+	err = tx.QueryRow(ctx, `
+SELECT download_status, download_river_job_id, parse_status, source_url
+FROM mrfpipeline.toc_files
 WHERE id = $1
 FOR UPDATE`, tocFileID).Scan(&download, &stored, &parse, &sourceURL)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -59,7 +80,7 @@ FOR UPDATE`, tocFileID).Scan(&download, &stored, &parse, &sourceURL)
 	if err != nil {
 		return jobs.ClaimResult{}, "", classifyClaimDB(ctx, err)
 	}
-	action, err := classifyClaim(download, parse, stored, riverJobID)
+	action, err = classifyClaim(download, parse, stored, riverJobID)
 	if err != nil {
 		return jobs.ClaimResult{}, "", err
 	}

@@ -62,6 +62,12 @@ const (
 	FailureReleaseNotReady               = "release_not_ready"
 	FailureSealedReleaseInconsistent     = "sealed_release_inconsistent"
 	FailureSealedReleaseRetryForbidden   = "sealed_release_retry_forbidden"
+	// FailureJobBookkeeping is emitted only in logs when retry or terminal
+	// bookkeeping cannot be persisted. It is not a domain failure code.
+	FailureJobBookkeeping = "job_bookkeeping_failed"
+	// FailureJobLifecycle is emitted only in logs when claim/success lifecycle
+	// bookkeeping fails without a more specific fixed failure classification.
+	FailureJobLifecycle = "job_lifecycle_failed"
 
 	MaxAttempts    = 8
 	RescueAfter    = 24 * time.Hour

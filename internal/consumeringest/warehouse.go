@@ -49,18 +49,24 @@ func InspectWarehouse(path string) (WarehouseState, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return WarehouseState{Path: clean, Kind: warehouseAbsent}, nil
 	}
-	if err != nil || isSymlink(info) || !info.IsDir() {
+	if err != nil {
+		return zero, errOutputUnreadable
+	}
+	if isSymlink(info) || !info.IsDir() {
 		return zero, jobs.Failure("runtime")
 	}
 	entries, err := os.ReadDir(clean)
 	if err != nil {
-		return zero, jobs.Failure("runtime")
+		return zero, errOutputUnreadable
 	}
 	if len(entries) == 0 {
 		return WarehouseState{Path: clean, Kind: warehouseEmpty}, nil
 	}
 	ident, err := readWarehouseIdentity(filepath.Join(clean, fileWarehouse))
 	if err != nil {
+		if errors.Is(err, errOutputUnreadable) {
+			return zero, errOutputUnreadable
+		}
 		return zero, jobs.Failure("runtime")
 	}
 	return WarehouseState{Path: clean, Kind: warehouseRecognized, Catalog: ident}, nil
@@ -103,15 +109,25 @@ func CheckWarehouseCatalog(ws WarehouseState, catalog CatalogID, artifactRoot, s
 func readWarehouseIdentity(path string) (catalogIdentity, error) {
 	data, err := readRegularFile(path)
 	if err != nil {
-		return catalogIdentity{}, errOutputInvalid
+		return catalogIdentity{}, err
 	}
 	return decodeWarehouseJSON(data)
 }
 
 func readRegularFile(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
-	if err != nil || isSymlink(info) || !info.Mode().IsRegular() {
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errOutputInvalid
+		}
+		return nil, errOutputUnreadable
+	}
+	if isSymlink(info) || !info.Mode().IsRegular() {
 		return nil, errOutputInvalid
 	}
-	return os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errOutputUnreadable
+	}
+	return data, nil
 }

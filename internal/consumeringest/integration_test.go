@@ -135,8 +135,10 @@ func startIngestRuntime(t *testing.T, pool *pgxpool.Pool, w *Worker, maxAttempts
 	workers := river.NewWorkers()
 	river.AddWorker(workers, w)
 	cfg := jobs.ClientConfig(workers, map[string]river.QueueConfig{jobs.QueueConsumer: {MaxWorkers: 1}}, nil, jobs.NewLogger(io.Discard))
+	cfg.SkipUnknownJobCheck = true
 	cfg.MaxAttempts = maxAttempts
 	cfg.RetryPolicy = immediateRetry{}
+	cfg.FetchCooldown = 50 * time.Millisecond
 	cfg.FetchPollInterval = 50 * time.Millisecond
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {
@@ -160,7 +162,14 @@ func waitConsume(t *testing.T, pool *pgxpool.Pool, snapID int64, want string) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for snapshot %d consume %s", snapID, want)
+	var status, failure string
+	var jobID *int64
+	var state, errorsJSON string
+	_ = pool.QueryRow(context.Background(), `SELECT consume_status, COALESCE(failure_code, ''), consume_river_job_id FROM mrfpipeline.mrf_snapshots WHERE id = $1`, snapID).Scan(&status, &failure, &jobID)
+	if jobID != nil {
+		_ = pool.QueryRow(context.Background(), `SELECT state, errors::text FROM mrfpipeline_river.river_job WHERE id = $1`, *jobID).Scan(&state, &errorsJSON)
+	}
+	t.Fatalf("timed out waiting for snapshot %d consume %s (status=%s failure=%s job=%v state=%s errors=%s)", snapID, want, status, failure, jobID, state, errorsJSON)
 }
 
 func writeRealParsed(t *testing.T, ws *artifact.Workspace, sourceID int64, services string) {

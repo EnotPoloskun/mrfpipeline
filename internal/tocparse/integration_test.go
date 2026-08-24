@@ -141,8 +141,10 @@ func startParseRuntime(t *testing.T, pool *pgxpool.Pool, ws *artifact.Workspace,
 		Pool: pool, Workspace: ws, Parse: parse, Logger: jobs.NewLogger(io.Discard),
 	})
 	cfg := jobs.ClientConfig(workers, map[string]river.QueueConfig{jobs.QueueTOCParse: {MaxWorkers: 2}}, nil, jobs.NewLogger(io.Discard))
+	cfg.SkipUnknownJobCheck = true
 	cfg.MaxAttempts = maxAttempts
 	cfg.RetryPolicy = immediateRetry{}
+	cfg.FetchCooldown = 50 * time.Millisecond
 	cfg.FetchPollInterval = 50 * time.Millisecond
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {
@@ -414,8 +416,10 @@ func TestIntegrationCleanupRetryDoesNotReparse(t *testing.T) {
 		},
 	})
 	cfg := jobs.ClientConfig(workers, map[string]river.QueueConfig{jobs.QueueTOCParse: {MaxWorkers: 2}}, nil, jobs.NewLogger(io.Discard))
+	cfg.SkipUnknownJobCheck = true
 	cfg.MaxAttempts = 8
 	cfg.RetryPolicy = immediateRetry{}
+	cfg.FetchCooldown = 50 * time.Millisecond
 	cfg.FetchPollInterval = 50 * time.Millisecond
 	rt, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {

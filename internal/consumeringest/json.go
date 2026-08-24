@@ -9,7 +9,10 @@ import (
 	"unicode/utf8"
 )
 
-var errOutputInvalid = errors.New("consumer ingest output invalid")
+var (
+	errOutputInvalid    = errors.New("consumer ingest output invalid")
+	errOutputUnreadable = errors.New("consumer ingest output unreadable")
+)
 
 type jsonField func(*json.Decoder) error
 

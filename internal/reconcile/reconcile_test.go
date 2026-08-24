@@ -106,6 +106,26 @@ func TestProductionBindingsCoverKinds(t *testing.T) {
 	}
 }
 
+func TestSQLStaleStagesCoversCurrentIdentityAndAllKinds(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{
+		"discovery.run", "toc.download", "toc.parse", "toc.import",
+		"mrf.download", "mrf.parse", "consumer.ingest", "consumer.attach_plans",
+	} {
+		if !strings.Contains(SQLStaleStages, "'"+kind+"'") {
+			t.Fatalf("missing %s", kind)
+		}
+	}
+	for _, fragment := range []string{
+		"$1::interval", "j.args = jsonb_build_object(o.arg_key, to_jsonb(o.domain_id))",
+		"j.attempt", "age_seconds", "status IN ('pending', 'running')",
+	} {
+		if !strings.Contains(SQLStaleStages, fragment) {
+			t.Fatalf("missing stale query fragment %q", fragment)
+		}
+	}
+}
+
 func TestCleanupEligibility(t *testing.T) {
 	t.Parallel()
 	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))

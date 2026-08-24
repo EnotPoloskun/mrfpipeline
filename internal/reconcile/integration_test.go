@@ -2,6 +2,8 @@ package reconcile
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -151,6 +153,20 @@ func TestIntegrationSuccessorAndCurrentJobs(t *testing.T) {
 	pool := testDB(t)
 	ws := workspace(t)
 	toc := insertTOC(t, pool, jobs.StatusSucceeded, jobs.StatusBlocked, jobs.StatusBlocked)
+	downloadData, err := ws.DownloadDataPath(artifact.KindTOC, toc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("toc-download")
+	if err := os.MkdirAll(filepath.Dir(downloadData), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(downloadData, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(downloadData), "manifest.json"), []byte(fmt.Sprintf(`{"schema_version":"1.0.0","byte_count":%d}`, len(body))), 0600); err != nil {
+		t.Fatal(err)
+	}
 	rep := runPass(t, pool, ws)
 	if rep.UnblockedStageCount < 1 || rep.RepairedJobCount < 1 {
 		t.Fatalf("report %+v", rep)
@@ -187,6 +203,76 @@ UPDATE mrfpipeline.toc_files SET download_river_job_id = NULL WHERE id = $1`, to
 	if err := pool.QueryRow(context.Background(), `
 SELECT download_river_job_id FROM mrfpipeline.toc_files WHERE id = $1`, toc).Scan(&jobID); err != nil || jobID == nil {
 		t.Fatal("missing replacement")
+	}
+}
+
+func TestIntegrationSQLStaleStagesExecutesAgainstRiver(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	toc := insertTOC(t, pool, jobs.StatusPending, jobs.StatusBlocked, jobs.StatusBlocked)
+	client, err := jobs.NewInsertClient(ctx, pool, jobs.NewLogger(io.Discard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, err := jobs.InsertTx(ctx, client, tx, &jobs.TOCDownloadArgs{TOCFileID: toc})
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.toc_files
+SET download_river_job_id = $2, updated_at = transaction_timestamp() - interval '1 hour'
+WHERE id = $1`, toc, jobID); err != nil {
+		t.Fatal(err)
+	}
+	read := func() (int, *int32, error) {
+		rows, err := pool.Query(ctx, SQLStaleStages, "30 minutes")
+		if err != nil {
+			return 0, nil, err
+		}
+		defer rows.Close()
+		count := 0
+		var gotAttempt *int32
+		for rows.Next() {
+			var stage, status string
+			var domainID, gotJobID, ageSeconds int64
+			var attempt *int32
+			if err := rows.Scan(&stage, &domainID, &status, &gotJobID, &attempt, &ageSeconds); err != nil {
+				return 0, nil, err
+			}
+			if stage == jobs.KindTOCDownload && domainID == toc {
+				count++
+				gotAttempt = attempt
+				if status != jobs.StatusPending || gotJobID != jobID || ageSeconds < 1800 {
+					return 0, nil, fmt.Errorf("unexpected stale row %s %d %s %d %d", stage, domainID, status, gotJobID, ageSeconds)
+				}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return 0, nil, err
+		}
+		return count, gotAttempt, nil
+	}
+	count, attempt, err := read()
+	if err != nil || count != 1 || attempt == nil {
+		t.Fatalf("valid current job stale result count=%d attempt=%v err=%v", count, attempt, err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline_river.river_job
+SET args = jsonb_build_object('toc_file_id', $2::bigint, 'extra', 1)
+WHERE id = $1`, jobID, toc); err != nil {
+		t.Fatal(err)
+	}
+	count, attempt, err = read()
+	if err != nil || count != 1 || attempt != nil {
+		t.Fatalf("extra args were accepted count=%d attempt=%v err=%v", count, attempt, err)
 	}
 }
 
@@ -358,7 +444,7 @@ WHERE id = $1`, sourceID); err != nil {
 	}
 	buildingTOC := insertTOCFor(t, pool, "cigna", "2026-08", jobs.StatusPending, jobs.StatusBlocked, jobs.StatusBlocked)
 	report := runPass(t, pool, workspace(t))
-	if report.SealedReleaseInconsistencyCount != 1 || report.RepairedJobCount != 1 {
+	if report.SealedReleaseInconsistencyCount != 2 || report.RepairedJobCount != 1 {
 		t.Fatalf("shared source report: %+v", report)
 	}
 	var buildingJob *int64
@@ -466,6 +552,7 @@ WHERE payer_id = 'uhc' AND collection_month = $1`, month); err != nil {
 		t.Fatal(err)
 	}
 	warehouse := t.TempDir()
+	writeRecognizedSnapshot(t, warehouse, "uhc", "2026-08", "mrf-"+strconv.FormatInt(snapshotID, 10))
 	partDir := filepath.Join(warehouse, "plan_associations", "output_id=mrf-"+strconv.FormatInt(snapshotID, 10))
 	if err := os.MkdirAll(partDir, 0700); err != nil {
 		t.Fatal(err)
@@ -548,6 +635,115 @@ VALUES ($1, $2)`, batchID, planID); err != nil {
 	}
 	if report.SealedReleaseInconsistencyCount != 4 {
 		t.Fatalf("drift count = %d", report.SealedReleaseInconsistencyCount)
+	}
+}
+
+func TestIntegrationSealedPlanSetSymlinkedInventoryReported(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	month := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', $1)`, month); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID, snapshotID, planID, batchID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ('https://files.test/sealed-symlink', $1, 'succeeded', 'succeeded')
+RETURNING id`, month).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
+VALUES ($1, 'uhc', $2, 'succeeded') RETURNING id`, sourceID, month).Scan(&snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_plans
+    (mrf_snapshot_id, plan_name, issuer_name, plan_id_type, plan_id, plan_market_type)
+VALUES ($1, 'symlink-plan', 'issuer', 'hios', 'symlink-plan', 'group')
+RETURNING id`, snapshotID).Scan(&planID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.plan_attachment_batches
+    (mrf_snapshot_id, status, requested_plan_count, added_plan_count, completed_at)
+VALUES ($1, 'succeeded', 1, 1, transaction_timestamp())
+RETURNING id`, snapshotID).Scan(&batchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.plan_attachment_batch_items (plan_attachment_batch_id, mrf_plan_id)
+VALUES ($1, $2)`, batchID, planID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.monthly_releases
+SET status = 'active', sealed_at = transaction_timestamp(), last_activated_at = transaction_timestamp()
+WHERE payer_id = 'uhc' AND collection_month = $1`, month); err != nil {
+		t.Fatal(err)
+	}
+	warehouse := t.TempDir()
+	outputID := "mrf-" + strconv.FormatInt(snapshotID, 10)
+	writeRecognizedSnapshot(t, warehouse, "uhc", "2026-08", outputID)
+	external := filepath.Join(t.TempDir(), "plan-parts")
+	if err := os.MkdirAll(external, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(external, "plan-batch-"+strconv.FormatInt(batchID, 10)+"-part-00000.parquet"), []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	parts := filepath.Join(warehouse, "plan_associations", "output_id="+outputID)
+	if err := os.MkdirAll(filepath.Dir(parts), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, parts); err != nil {
+		t.Fatal(err)
+	}
+	var report Report
+	report.logger = jobs.NewLogger(io.Discard)
+	if err := auditSealedPlanSets(ctx, pool, warehouse, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.SealedReleaseInconsistencyCount != 1 {
+		t.Fatalf("symlinked inventory count = %d", report.SealedReleaseInconsistencyCount)
+	}
+}
+
+func writeRecognizedSnapshot(t testing.TB, warehouse, payer, month, outputID string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(warehouse, "warehouse.json"), []byte(`{"warehouse_schema_version":"2.0.0","provider_catalog":{"schema_version":1,"release_month":"2026-08"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	final := filepath.Join(warehouse, "snapshots", "collection_month="+month, "payer_id="+payer, "output_id="+outputID)
+	datasets := []string{"rate_facts", "rate_provider_groups", "provider_groups", "provider_group_memberships", "ingestions", "network_names"}
+	counts := map[string]map[string]int64{}
+	for _, name := range datasets {
+		if err := os.MkdirAll(filepath.Join(final, name), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(final, name, outputID+"-part-00000.parquet"), []byte("fixture"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		rowCount := int64(0)
+		if name == "ingestions" {
+			rowCount = 1
+		}
+		counts[name] = map[string]int64{"row_count": rowCount, "part_count": 1}
+	}
+	manifest := map[string]any{
+		"manifest_schema_version": "2.0.0", "output_schema_version": "2.0.0",
+		"output_id": outputID, "payer_id": payer, "collection_month": month,
+		"provider_catalog": map[string]any{"schema_version": 1, "release_month": "2026-08"},
+		"datasets":         counts,
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(final, "manifest.json"), raw, 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 

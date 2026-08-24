@@ -85,7 +85,10 @@ func validateRiverCurrent(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	existing, err := migrator.ExistingVersions(ctx)
 	if err != nil {
-		return classify(ctx, "validate schema", err)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return dbErr("run mrfpipeline migrate")
 	}
 	if err := validateRiverLedger(migrator, existing); err != nil {
 		return dbErr("run mrfpipeline migrate")
@@ -95,7 +98,10 @@ func validateRiverCurrent(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 	res, err := migrator.Validate(ctx, nil)
 	if err != nil {
-		return classify(ctx, "validate schema", err)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return dbErr("run mrfpipeline migrate")
 	}
 	if res == nil || !res.OK {
 		return dbErr("run mrfpipeline migrate")

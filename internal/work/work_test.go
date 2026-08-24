@@ -1,6 +1,7 @@
 package work
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -39,6 +40,24 @@ func TestQueues(t *testing.T) {
 	}
 	if q[jobs.QueueConsumer].MaxWorkers != 1 {
 		t.Fatalf("consumer %d", q[jobs.QueueConsumer].MaxWorkers)
+	}
+}
+
+func TestWorkerLeaseLossLogIsRuntimeOnly(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logWorkerLeaseLost(jobs.NewLogger(&buf))
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["msg"] != "worker_lease_lost" || record["kind"] != "runtime" || record["failure"] != jobs.FailureWorkerLeaseLost {
+		t.Fatalf("record %v", record)
+	}
+	for _, field := range []string{"queue", "job_id", "domain_id", "attempt", "outcome"} {
+		if _, ok := record[field]; ok {
+			t.Fatalf("runtime field %s present: %v", field, record)
+		}
 	}
 }
 

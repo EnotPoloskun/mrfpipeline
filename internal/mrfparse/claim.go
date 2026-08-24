@@ -7,6 +7,7 @@ import (
 
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -49,6 +50,26 @@ func claimParse(ctx context.Context, pool *pgxpool.Pool, sourceID, riverJobID in
 	err = tx.QueryRow(ctx, `
 SELECT parse_status, parse_river_job_id, download_status
 FROM mrfpipeline.mrf_sources
+WHERE id = $1`, sourceID).Scan(&parse, &stored, &download)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.ClaimResult{}, jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return jobs.ClaimResult{}, classifyClaimDB(ctx, err)
+	}
+	action, err := classifyClaim(parse, download, stored, riverJobID)
+	if err != nil {
+		return jobs.ClaimResult{}, err
+	}
+	if action == jobs.ClaimNoop {
+		return jobs.ClaimResult{Action: jobs.ClaimNoop}, nil
+	}
+	if err := release.RequireBuildingForStage(ctx, tx, jobs.KindMRFParse, sourceID); err != nil {
+		return jobs.ClaimResult{}, err
+	}
+	err = tx.QueryRow(ctx, `
+SELECT parse_status, parse_river_job_id, download_status
+FROM mrfpipeline.mrf_sources
 WHERE id = $1
 FOR UPDATE`, sourceID).Scan(&parse, &stored, &download)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -57,7 +78,7 @@ FOR UPDATE`, sourceID).Scan(&parse, &stored, &download)
 	if err != nil {
 		return jobs.ClaimResult{}, classifyClaimDB(ctx, err)
 	}
-	action, err := classifyClaim(parse, download, stored, riverJobID)
+	action, err = classifyClaim(parse, download, stored, riverJobID)
 	if err != nil {
 		return jobs.ClaimResult{}, err
 	}

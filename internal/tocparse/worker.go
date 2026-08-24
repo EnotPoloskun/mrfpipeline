@@ -26,14 +26,18 @@ type Worker struct {
 
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.TOCParseArgs]) error {
 	var payer, month string
+	client := river.ClientFromContext[pgx.Tx](ctx)
 	return jobs.Run(ctx, jobs.RunParams{
 		Pool:        w.Pool,
-		Client:      river.ClientFromContext[pgx.Tx](ctx),
+		Client:      client,
 		Spec:        jobs.TOCParseStage,
 		DomainID:    job.Args.TOCFileID,
 		RiverJobID:  job.ID,
 		Attempt:     job.Attempt,
 		MaxAttempts: job.MaxAttempts,
+		Kind:        jobs.KindTOCParse,
+		Queue:       jobs.QueueTOCParse,
+		Logger:      w.Logger,
 		Claim: func(ctx context.Context) (jobs.ClaimResult, error) {
 			res, p, m, err := claimParse(ctx, w.Pool, job.Args.TOCFileID, job.ID)
 			payer, month = p, m

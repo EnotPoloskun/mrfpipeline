@@ -2,9 +2,11 @@ package jobs
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -129,5 +131,37 @@ func TestLoggerDropsErrorText(t *testing.T) {
 	}
 	if !strings.Contains(line, FailureAttemptsExhausted) {
 		t.Fatalf("missing classification: %s", line)
+	}
+}
+
+func TestFailureLoggerKeepsLifecycleFields(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	NewLogger(&buf).LogAttrs(context.Background(), slog.LevelInfo, "job_attempt_failed",
+		slog.String("kind", KindTOCParse),
+		slog.String("queue", QueueTOCParse),
+		slog.Int64("job_id", 12),
+		slog.Int64("domain_id", 34),
+		slog.Int("attempt", 2),
+		slog.String("failure", FailureTOCParseOutputInvalid),
+		slog.String("outcome", "retrying"),
+		slog.String("phase", "retry_bookkeeping"),
+		slog.String("url", "https://secret.invalid/file"),
+	)
+	var obj map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &obj); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{
+		"kind": KindTOCParse, "queue": QueueTOCParse, "job_id": float64(12),
+		"domain_id": float64(34), "attempt": float64(2),
+		"failure": FailureTOCParseOutputInvalid, "outcome": "retrying", "phase": "retry_bookkeeping",
+	} {
+		if obj[key] != want {
+			t.Fatalf("%s=%v want %v", key, obj[key], want)
+		}
+	}
+	if strings.Contains(buf.String(), "secret.invalid") {
+		t.Fatalf("url leaked: %s", buf.String())
 	}
 }

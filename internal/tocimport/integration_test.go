@@ -144,8 +144,10 @@ func startImportRuntime(t *testing.T, pool *pgxpool.Pool, ws *artifact.Workspace
 	workers := river.NewWorkers()
 	river.AddWorker(workers, w)
 	cfg := jobs.ClientConfig(workers, map[string]river.QueueConfig{jobs.QueueTOCImport: {MaxWorkers: 2}}, nil, jobs.NewLogger(io.Discard))
+	cfg.SkipUnknownJobCheck = true
 	cfg.MaxAttempts = maxAttempts
 	cfg.RetryPolicy = immediateRetry{}
+	cfg.FetchCooldown = 50 * time.Millisecond
 	cfg.FetchPollInterval = 50 * time.Millisecond
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {
@@ -169,7 +171,23 @@ func waitImport(t *testing.T, pool *pgxpool.Pool, tocID int64, want string) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for toc %d import %s", tocID, want)
+	var download, parse, status, failure string
+	var jobID *int64
+	if err := pool.QueryRow(context.Background(), `
+SELECT download_status, parse_status, import_status,
+       COALESCE(failure_code, ''), import_river_job_id
+FROM mrfpipeline.toc_files WHERE id = $1`, tocID).
+		Scan(&download, &parse, &status, &failure, &jobID); err != nil {
+		t.Fatalf("timed out waiting for toc %d import %s (row query: %v)", tocID, want, err)
+	}
+	var state, errorsJSON string
+	if jobID != nil {
+		_ = pool.QueryRow(context.Background(), `
+SELECT state, COALESCE(errors::text, '')
+FROM mrfpipeline_river.river_job WHERE id = $1`, *jobID).Scan(&state, &errorsJSON)
+	}
+	t.Fatalf("timed out waiting for toc %d import %s (download=%s parse=%s import=%s failure=%s job=%v state=%s errors=%s)",
+		tocID, want, download, parse, status, failure, jobID, state, errorsJSON)
 }
 
 func writeParsedRows(t *testing.T, ws *artifact.Workspace, tocID int64, month string, assocs []assocRow) {
@@ -523,8 +541,8 @@ VALUES ('https://example.test/parsed.json', DATE '2026-08-01', 'succeeded', 'suc
 	}
 	tocID, _ := insertImportJob(t, pool, client, time.Time{})
 	writeParsedRows(t, ws, tocID, "2026-08", []assocRow{
-		validAssoc("https://example.test/a.json", "plan", "issuer", nil, "hios", "1", "group"),
 		validAssoc("https://example.test/A.json", "plan", "issuer", nil, "hios", "2", "group"),
+		validAssoc("https://example.test/a.json", "plan", "issuer", nil, "hios", "1", "group"),
 		validAssoc("https://example.test/a.json?x=1", "plan", "issuer", nil, "hios", "3", "group"),
 		validAssoc("https://example.test/parsed.json", "plan", "issuer", nil, "hios", "4", "group"),
 	})

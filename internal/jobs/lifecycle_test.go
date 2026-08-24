@@ -1,7 +1,10 @@
 package jobs
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -138,5 +141,53 @@ func TestRunCanceledWorkDoesNotMutate(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("want nil to River, got %v", err)
+	}
+}
+
+func TestRunSealedDeliverySuppressesAllProductionKinds(t *testing.T) {
+	t.Parallel()
+	for _, kind := range ProductionKinds() {
+		t.Run(kind, func(t *testing.T) {
+			var buf bytes.Buffer
+			called := false
+			err := Run(context.Background(), RunParams{
+				Spec:       DiscoveryRunStage,
+				Kind:       kind,
+				Queue:      QueueDiscovery,
+				Logger:     NewLogger(&buf),
+				DomainID:   7,
+				RiverJobID: 9,
+				Claim: func(context.Context) (ClaimResult, error) {
+					return ClaimResult{}, Failure(FailureSealedReleaseInconsistent)
+				},
+				Work: func(context.Context) error {
+					called = true
+					return nil
+				},
+			})
+			if err == nil || called || !strings.Contains(err.Error(), FailureSealedReleaseInconsistent) {
+				t.Fatalf("err=%v called=%v", err, called)
+			}
+			var record map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record["msg"] != "sealed_delivery_suppressed" || record["failure"] != FailureSealedReleaseInconsistent {
+				t.Fatalf("record %v", record)
+			}
+			if fmt.Sprint(record["domain_id"]) != "7" {
+				t.Fatalf("domain id %v", record["domain_id"])
+			}
+		})
+	}
+}
+
+func TestLifecycleFailureCodeKeepsInfrastructureDistinct(t *testing.T) {
+	t.Parallel()
+	if got := lifecycleFailureCode(Failure(FailureTOCParseOutputInvalid)); got != FailureTOCParseOutputInvalid {
+		t.Fatalf("coded failure %q", got)
+	}
+	if got := lifecycleFailureCode(fmt.Errorf("database unavailable")); got != FailureJobLifecycle {
+		t.Fatalf("infrastructure failure %q", got)
 	}
 }
