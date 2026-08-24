@@ -106,9 +106,9 @@ SELECT id FROM mrfpipeline.mrf_snapshots WHERE id = $1 FOR UPDATE`, snapshotID).
 		_, err = lockStage(ctx, tx, b.Spec, domainID)
 		return err
 	case jobs.KindConsumerIngest:
-		var sourceID, feedID int64
+		var sourceID int64
 		err := tx.QueryRow(ctx, `
-SELECT mrf_source_id, mrf_feed_id FROM mrfpipeline.mrf_snapshots WHERE id = $1 FOR UPDATE`, domainID).Scan(&sourceID, &feedID)
+SELECT mrf_source_id FROM mrfpipeline.mrf_snapshots WHERE id = $1 FOR UPDATE`, domainID).Scan(&sourceID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return jobs.Failure(jobs.FailureMissingRecord)
 		}
@@ -117,10 +117,6 @@ SELECT mrf_source_id, mrf_feed_id FROM mrfpipeline.mrf_snapshots WHERE id = $1 F
 		}
 		if err := tx.QueryRow(ctx, `
 SELECT id FROM mrfpipeline.mrf_sources WHERE id = $1 FOR UPDATE`, sourceID).Scan(&sourceID); err != nil {
-			return dbFail(ctx.Err())
-		}
-		if err := tx.QueryRow(ctx, `
-SELECT id FROM mrfpipeline.mrf_feeds WHERE id = $1 FOR UPDATE`, feedID).Scan(&feedID); err != nil {
 			return dbFail(ctx.Err())
 		}
 		return nil

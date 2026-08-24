@@ -50,9 +50,6 @@ func (w *Worker) importTOC(ctx context.Context, client *river.Client[pgx.Tx], to
 	if w == nil || w.Workspace == nil {
 		return jobs.Failure(jobs.FailureTOCImportInvariant)
 	}
-	if info.payer != "uhc" {
-		return jobs.Failure(jobs.FailureTOCImportInvariant)
-	}
 	if w.hold != nil {
 		w.hold()
 	}

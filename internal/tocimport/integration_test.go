@@ -85,6 +85,10 @@ func insertClient(t *testing.T, pool *pgxpool.Pool) *river.Client[pgx.Tx] {
 var tocURLSeq atomic.Int64
 
 func insertImportJob(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.Tx], month time.Time) (tocID, jobID int64) {
+	return insertImportJobForPayer(t, pool, client, "uhc", month)
+}
+
+func insertImportJobForPayer(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.Tx], payer string, month time.Time) (tocID, jobID int64) {
 	t.Helper()
 	if month.IsZero() {
 		month = time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
@@ -92,8 +96,8 @@ func insertImportJob(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.
 	var runID int64
 	if err := pool.QueryRow(context.Background(), `
 INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, toc_limit, status, completed_at)
-VALUES ('uhc', $1, 1, 'succeeded', transaction_timestamp())
-RETURNING id`, month).Scan(&runID); err != nil {
+VALUES ($1, $2, 1, 'succeeded', transaction_timestamp())
+RETURNING id`, payer, month).Scan(&runID); err != nil {
 		t.Fatal(err)
 	}
 	sourceURL := "http://files.test/data/" + strconv.FormatInt(tocURLSeq.Add(1), 10)
@@ -101,8 +105,8 @@ RETURNING id`, month).Scan(&runID); err != nil {
 INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id,
     download_status, parse_status, import_status
-) VALUES ('uhc', $1, $2, $3, 'succeeded', 'succeeded', 'pending')
-RETURNING id`, month, sourceURL, runID).Scan(&tocID); err != nil {
+) VALUES ($1, $2, $3, $4, 'succeeded', 'succeeded', 'pending')
+RETURNING id`, payer, month, sourceURL, runID).Scan(&tocID); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := pool.Begin(context.Background())
@@ -164,6 +168,10 @@ func waitImport(t *testing.T, pool *pgxpool.Pool, tocID int64, want string) {
 }
 
 func writeParsedRows(t *testing.T, ws *artifact.Workspace, tocID int64, month string, assocs []assocRow) {
+	writeParsedRowsForPayer(t, ws, tocID, "uhc", month, assocs)
+}
+
+func writeParsedRowsForPayer(t *testing.T, ws *artifact.Workspace, tocID int64, payer, month string, assocs []assocRow) {
 	t.Helper()
 	source, output, err := generatedPaths(ws, tocID)
 	if err != nil {
@@ -175,9 +183,10 @@ func writeParsedRows(t *testing.T, ws *artifact.Workspace, tocID int64, month st
 	}
 	for i := range assocs {
 		assocs[i].TOCOutputID = id
+		assocs[i].PayerID = payer
 		assocs[i].CollectionMonth = month
 	}
-	writeCompleted(t, output, id, "uhc", month, source, sampleTOCRow(id, "uhc", month, source), assocs)
+	writeCompleted(t, output, id, payer, month, source, sampleTOCRow(id, payer, month, source), assocs)
 }
 
 func writeParsedTOC(t *testing.T, ws *artifact.Workspace, tocID int64, month, body string) {
@@ -224,9 +233,6 @@ func TestIntegrationValidImport(t *testing.T) {
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_sources`) != 1 {
 		t.Fatal("sources")
 	}
-	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_feeds`) != 1 {
-		t.Fatal("feeds")
-	}
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_snapshots`) != 1 {
 		t.Fatal("snapshots")
 	}
@@ -239,16 +245,17 @@ func TestIntegrationValidImport(t *testing.T) {
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline.plan_attachment_batches`) != 0 {
 		t.Fatal("attachment")
 	}
-	var feed string
 	var sourceID int64
+	var payer string
+	var month time.Time
 	if err := pool.QueryRow(context.Background(), `
-SELECT s.id, f.feed_id FROM mrfpipeline.mrf_sources s
+SELECT s.id, n.payer_id, n.collection_month FROM mrfpipeline.mrf_sources s
 JOIN mrfpipeline.mrf_snapshots n ON n.mrf_source_id = s.id
-JOIN mrfpipeline.mrf_feeds f ON f.id = n.mrf_feed_id`).Scan(&sourceID, &feed); err != nil {
+WHERE s.source_url = 'https://example.test/a.json'`).Scan(&sourceID, &payer, &month); err != nil {
 		t.Fatal(err)
 	}
-	if feed != formatFeedID(sourceID) {
-		t.Fatalf("feed %s", feed)
+	if sourceID <= 0 || payer != "uhc" || !month.Equal(time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("snapshot identity source=%d payer=%s month=%s", sourceID, payer, month.Format("2006-01-02"))
 	}
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload) != 1 {
 		t.Fatal("download job")
@@ -258,6 +265,36 @@ JOIN mrfpipeline.mrf_feeds f ON f.id = n.mrf_feed_id`).Scan(&sourceID, &feed); e
 	}
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindConsumerIngest) != 0 {
 		t.Fatal("ingest")
+	}
+}
+
+func TestIntegrationSameMonthlySourceDifferentPayers(t *testing.T) {
+	pool := testDB(t)
+	client := insertClient(t, pool)
+	ws := mustWorkspace(t)
+	const location = "https://example.test/shared-payer.json"
+	uhcID, _ := insertImportJobForPayer(t, pool, client, "uhc", time.Time{})
+	writeParsedRowsForPayer(t, ws, uhcID, "uhc", "2026-08", []assocRow{
+		validAssoc(location, "uhc-plan", "issuer", nil, "hios", "uhc-id", "group"),
+	})
+	aetnaID, _ := insertImportJobForPayer(t, pool, client, "aetna", time.Time{})
+	writeParsedRowsForPayer(t, ws, aetnaID, "aetna", "2026-08", []assocRow{
+		validAssoc(location, "aetna-plan", "issuer", nil, "hios", "aetna-id", "group"),
+	})
+	startImportRuntime(t, pool, ws, 8, nil)
+	waitImport(t, pool, uhcID, jobs.StatusSucceeded)
+	waitImport(t, pool, aetnaID, jobs.StatusSucceeded)
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_sources`) != 1 {
+		t.Fatal("sources")
+	}
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_snapshots`) != 2 {
+		t.Fatal("snapshots")
+	}
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_snapshots WHERE payer_id IN ('uhc', 'aetna') AND collection_month = DATE '2026-08-01'`) != 2 {
+		t.Fatal("payer snapshots")
+	}
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload) != 1 {
+		t.Fatal("download jobs")
 	}
 }
 
@@ -376,9 +413,6 @@ func TestIntegrationReimportAndOverlap(t *testing.T) {
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_sources`) != 1 {
 		t.Fatal("sources")
 	}
-	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_feeds`) != 1 {
-		t.Fatal("feeds")
-	}
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_plans`) != 3 {
 		t.Fatal("plans")
 	}
@@ -432,8 +466,8 @@ func TestIntegrationSameURLDifferentMonth(t *testing.T) {
 	const loc = "https://example.test/same.json"
 	var sourceID int64
 	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_sources (source_url, download_status, parse_status)
-VALUES ($1, 'succeeded', 'succeeded')
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ($1, DATE '2026-08-01', 'succeeded', 'succeeded')
 RETURNING id`, loc).Scan(&sourceID); err != nil {
 		t.Fatal(err)
 	}
@@ -450,26 +484,22 @@ RETURNING id`, loc).Scan(&sourceID); err != nil {
 		validAssoc(loc, "plan", "issuer", nil, "hios", "id", "group"),
 	})
 	waitImport(t, pool, bID, jobs.StatusSucceeded)
-	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_sources`) != 1 {
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_sources`) != 2 {
 		t.Fatal("sources")
-	}
-	var feed string
-	if err := pool.QueryRow(context.Background(), `SELECT feed_id FROM mrfpipeline.mrf_feeds`).Scan(&feed); err != nil || feed != formatFeedID(sourceID) {
-		t.Fatalf("feed %s", feed)
-	}
-	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_feeds`) != 1 {
-		t.Fatal("feeds")
 	}
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_snapshots`) != 2 {
 		t.Fatal("snapshots")
 	}
-	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_snapshots WHERE consume_status = 'pending'`) != 2 {
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_snapshots WHERE consume_status = 'pending'`) != 1 {
 		t.Fatal("pending snapshots")
 	}
-	if count(t, pool, `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindConsumerIngest) != 2 {
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_snapshots WHERE consume_status = 'blocked'`) != 1 {
+		t.Fatal("blocked snapshots")
+	}
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindConsumerIngest) != 1 {
 		t.Fatal("ingest")
 	}
-	if count(t, pool, `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload) != 0 {
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload) != 1 {
 		t.Fatal("download")
 	}
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline.plan_attachment_batches`) != 0 {
@@ -482,8 +512,8 @@ func TestIntegrationDistinctURLsAndParsedIngest(t *testing.T) {
 	client := insertClient(t, pool)
 	ws := mustWorkspace(t)
 	if _, err := pool.Exec(context.Background(), `
-INSERT INTO mrfpipeline.mrf_sources (source_url, download_status, parse_status)
-VALUES ('https://example.test/parsed.json', 'succeeded', 'succeeded')`); err != nil {
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ('https://example.test/parsed.json', DATE '2026-08-01', 'succeeded', 'succeeded')`); err != nil {
 		t.Fatal(err)
 	}
 	tocID, _ := insertImportJob(t, pool, client, time.Time{})
@@ -497,9 +527,6 @@ VALUES ('https://example.test/parsed.json', 'succeeded', 'succeeded')`); err != 
 	waitImport(t, pool, tocID, jobs.StatusSucceeded)
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_sources`) != 4 {
 		t.Fatal("sources")
-	}
-	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_feeds`) != 4 {
-		t.Fatal("feeds")
 	}
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload) != 3 {
 		t.Fatal("new downloads")

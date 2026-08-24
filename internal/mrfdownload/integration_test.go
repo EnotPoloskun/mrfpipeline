@@ -106,8 +106,8 @@ func insertClient(t *testing.T, pool *pgxpool.Pool) *river.Client[pgx.Tx] {
 func insertSourceJob(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.Tx], sourceURL string) (sourceID, jobID int64) {
 	t.Helper()
 	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_sources (source_url, download_status, parse_status)
-VALUES ($1, 'pending', 'blocked')
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ($1, DATE '2026-08-01', 'pending', 'blocked')
 RETURNING id`, sourceURL).Scan(&sourceID); err != nil {
 		t.Fatal(err)
 	}
@@ -134,24 +134,17 @@ WHERE id = $1`, sourceID, jobID); err != nil {
 
 func insertBlockedSnapshot(t *testing.T, pool *pgxpool.Pool, sourceID int64) int64 {
 	t.Helper()
-	var feedID, snapID int64
-	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_feeds (payer_id, feed_id)
-VALUES ('uhc', $1)
-ON CONFLICT ON CONSTRAINT mrf_feeds_payer_feed_key DO UPDATE SET feed_id = mrfpipeline.mrf_feeds.feed_id
-RETURNING id`, "mrf-source-"+strconv.FormatInt(sourceID, 10)).Scan(&feedID); err != nil {
-		t.Fatal(err)
-	}
+	var snapID int64
 	err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, mrf_feed_id, collection_month, consume_status)
-VALUES ($1, $2, DATE '2026-08-01', 'blocked')
-ON CONFLICT ON CONSTRAINT mrf_snapshots_source_feed_month_key DO NOTHING
-RETURNING id`, sourceID, feedID).Scan(&snapID)
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
+VALUES ($1, 'uhc', DATE '2026-08-01', 'blocked')
+ON CONFLICT ON CONSTRAINT mrf_snapshots_source_payer_month_key DO NOTHING
+RETURNING id`, sourceID).Scan(&snapID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, mrf_feed_id, collection_month, consume_status)
-VALUES ($1, $2, DATE '2026-09-01', 'blocked')
-RETURNING id`, sourceID, feedID).Scan(&snapID); err != nil {
+	INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
+	VALUES ($1, 'aetna', DATE '2026-08-01', 'blocked')
+	RETURNING id`, sourceID).Scan(&snapID); err != nil {
 			t.Fatal(err)
 		}
 		return snapID
@@ -468,8 +461,8 @@ func TestIntegrationIncompleteResetOnlyClaimed(t *testing.T) {
 	aID, _ := insertSourceJob(t, pool, client, storedURL(""))
 	var bID int64
 	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_sources (source_url, download_status, parse_status)
-VALUES ($1, 'pending', 'blocked')
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ($1, DATE '2026-08-01', 'pending', 'blocked')
 RETURNING id`, storedURL("")).Scan(&bID); err != nil {
 		t.Fatal(err)
 	}

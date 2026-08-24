@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
@@ -157,8 +156,4 @@ func classifyClaimDB(ctx context.Context, err error) error {
 
 func formatMonth(d time.Time) string {
 	return fmt.Sprintf("%04d-%02d", d.Year(), int(d.Month()))
-}
-
-func formatFeedID(sourceID int64) string {
-	return "mrf-source-" + strconv.FormatInt(sourceID, 10)
 }

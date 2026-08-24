@@ -227,16 +227,6 @@ func TestFirstPassOrderAndCount(t *testing.T) {
 	}
 }
 
-func TestFeedFormatting(t *testing.T) {
-	t.Parallel()
-	if formatFeedID(1) != "mrf-source-1" || formatFeedID(9021) != "mrf-source-9021" {
-		t.Fatal(formatFeedID(1), formatFeedID(9021))
-	}
-	if strings.Contains(formatFeedID(12), "012") {
-		t.Fatal("padded")
-	}
-}
-
 func TestDistinctLocationsSortByExactURL(t *testing.T) {
 	t.Parallel()
 	rows := []assocRow{
@@ -250,9 +240,34 @@ func TestDistinctLocationsSortByExactURL(t *testing.T) {
 	if len(got) != 4 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] || got[3] != want[3] {
 		t.Fatalf("%v", got)
 	}
+}
+
+func TestSourceIDsSortedAscending(t *testing.T) {
+	t.Parallel()
 	ids := sourceIDsSorted([]int64{9, 2, 7})
-	if ids[0] != 2 || ids[1] != 7 || ids[2] != 9 {
+	if len(ids) != 3 || ids[0] != 2 || ids[1] != 7 || ids[2] != 9 {
 		t.Fatalf("%v", ids)
+	}
+}
+
+func TestCollectSourceInfosKeepsFirstNonemptyFilename(t *testing.T) {
+	t.Parallel()
+	later := "a.json"
+	rows := []assocRow{
+		{MRFLocation: "https://example.test/a", MRFFilename: nil},
+		{MRFLocation: "https://example.test/a", MRFFilename: &later},
+		{MRFLocation: "https://example.test/b", MRFFilename: nil},
+	}
+
+	infos, keys := collectSourceInfos(rows)
+	if len(keys) != 2 || keys[0] != "https://example.test/a" || keys[1] != "https://example.test/b" {
+		t.Fatalf("keys = %v", keys)
+	}
+	if got := infos["https://example.test/a"].filename; got == nil || *got != later {
+		t.Fatalf("filename = %v, want %q", got, later)
+	}
+	if got := infos["https://example.test/b"].filename; got != nil {
+		t.Fatalf("filename = %q, want nil", *got)
 	}
 }
 

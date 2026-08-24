@@ -84,44 +84,38 @@ func importBatch(ctx context.Context, pool *pgxpool.Pool, client *river.Client[p
 		return classifyImportDB(ctx, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var payer string
+	var month time.Time
+	err = tx.QueryRow(ctx, `
+SELECT payer_id, collection_month
+FROM mrfpipeline.toc_files
+WHERE id = $1
+FOR UPDATE`, meta.tocID).Scan(&payer, &month)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return classifyImportDB(ctx, err)
+	}
+	if payer != meta.payer || !month.Equal(meta.monthDate) {
+		return jobs.Failure(jobs.FailureDomainInvariant)
+	}
 
-	type locInfo struct {
-		filename *string
-		sourceID int64
-	}
-	locs := map[string]locInfo{}
-	keys := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if _, ok := locs[row.MRFLocation]; ok {
-			continue
-		}
-		locs[row.MRFLocation] = locInfo{filename: row.MRFFilename}
-		keys = append(keys, row.MRFLocation)
-	}
-	sort.Strings(keys)
+	locs, keys := collectSourceInfos(rows)
 
 	sourceIDs := make([]int64, 0, len(keys))
 	seenID := map[int64]bool{}
+	sources := map[int64]sourceInfo{}
 	for _, loc := range keys {
 		info := locs[loc]
-		id, inserted, err := upsertSource(ctx, tx, loc, info.filename)
+		id, inserted, err := upsertSource(ctx, tx, loc, meta.monthDate, info.filename)
 		if err != nil {
 			return err
 		}
-		if inserted {
-			jobID, err := jobs.InsertTx(ctx, client, tx, &jobs.MRFDownloadArgs{MRFSourceID: id})
-			if err != nil {
-				return classifyImportDB(ctx, err)
-			}
-			if _, err := tx.Exec(ctx, `
-UPDATE mrfpipeline.mrf_sources
-SET download_river_job_id = $2, updated_at = transaction_timestamp()
-WHERE id = $1`, id, jobID); err != nil {
-				return classifyImportDB(ctx, err)
-			}
-		}
 		info.sourceID = id
+		info.inserted = inserted
 		locs[loc] = info
+		sources[id] = info
 		if !seenID[id] {
 			seenID[id] = true
 			sourceIDs = append(sourceIDs, id)
@@ -135,7 +129,35 @@ WHERE id = $1`, id, jobID); err != nil {
 	}
 	snapshots := map[int64]int64{}
 	for _, src := range locked {
-		snapID, err := upsertFeedSnapshot(ctx, tx, client, src, meta)
+		info, ok := sources[src.id]
+		if !ok {
+			return jobs.Failure(jobs.FailureTOCImportInvariant)
+		}
+		if info.filename != nil {
+			if _, err := tx.Exec(ctx, `
+UPDATE mrfpipeline.mrf_sources
+SET first_mrf_filename = COALESCE(first_mrf_filename, $2),
+    updated_at = CASE
+        WHEN first_mrf_filename IS NULL THEN transaction_timestamp()
+        ELSE updated_at
+    END
+WHERE id = $1`, src.id, info.filename); err != nil {
+				return classifyImportDB(ctx, err)
+			}
+		}
+		if info.inserted {
+			jobID, err := jobs.InsertTx(ctx, client, tx, &jobs.MRFDownloadArgs{MRFSourceID: src.id})
+			if err != nil {
+				return classifyImportDB(ctx, err)
+			}
+			if _, err := tx.Exec(ctx, `
+UPDATE mrfpipeline.mrf_sources
+SET download_river_job_id = $2, updated_at = transaction_timestamp()
+WHERE id = $1`, src.id, jobID); err != nil {
+				return classifyImportDB(ctx, err)
+			}
+		}
+		snapID, err := upsertSnapshot(ctx, tx, client, src, meta)
 		if err != nil {
 			return err
 		}
@@ -166,13 +188,46 @@ type lockedSource struct {
 	parsed string
 }
 
-func upsertSource(ctx context.Context, tx pgx.Tx, location string, filename *string) (int64, bool, error) {
+type sourceInfo struct {
+	filename *string
+	sourceID int64
+	inserted bool
+}
+
+func collectSourceInfos(rows []assocRow) (map[string]sourceInfo, []string) {
+	infos := make(map[string]sourceInfo)
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		info, ok := infos[row.MRFLocation]
+		if !ok {
+			infos[row.MRFLocation] = sourceInfo{filename: firstNonemptyFilename(nil, row.MRFFilename)}
+			keys = append(keys, row.MRFLocation)
+			continue
+		}
+		info.filename = firstNonemptyFilename(info.filename, row.MRFFilename)
+		infos[row.MRFLocation] = info
+	}
+	sort.Strings(keys)
+	return infos, keys
+}
+
+func firstNonemptyFilename(first, next *string) *string {
+	if first != nil && *first != "" {
+		return first
+	}
+	if next != nil && *next != "" {
+		return next
+	}
+	return nil
+}
+
+func upsertSource(ctx context.Context, tx pgx.Tx, location string, month time.Time, filename *string) (int64, bool, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `
-INSERT INTO mrfpipeline.mrf_sources (source_url, first_mrf_filename, download_status, parse_status)
-VALUES ($1, $2, 'pending', 'blocked')
-ON CONFLICT ON CONSTRAINT mrf_sources_source_url_key DO NOTHING
-RETURNING id`, location, filename).Scan(&id)
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, first_mrf_filename, download_status, parse_status)
+VALUES ($1, $2, $3, 'pending', 'blocked')
+ON CONFLICT ON CONSTRAINT mrf_sources_source_url_collection_month_key DO NOTHING
+RETURNING id`, location, month, filename).Scan(&id)
 	if err == nil {
 		return id, true, nil
 	}
@@ -180,17 +235,8 @@ RETURNING id`, location, filename).Scan(&id)
 		return 0, false, classifyImportDB(ctx, err)
 	}
 	if err := tx.QueryRow(ctx, `
-SELECT id FROM mrfpipeline.mrf_sources WHERE source_url = $1`, location).Scan(&id); err != nil {
-		return 0, false, classifyImportDB(ctx, err)
-	}
-	if _, err := tx.Exec(ctx, `
-UPDATE mrfpipeline.mrf_sources
-SET first_mrf_filename = COALESCE(first_mrf_filename, $2),
-    updated_at = CASE
-        WHEN first_mrf_filename IS NULL AND $2 IS NOT NULL THEN transaction_timestamp()
-        ELSE updated_at
-    END
-WHERE id = $1`, id, filename); err != nil {
+SELECT id FROM mrfpipeline.mrf_sources
+WHERE source_url = $1 AND collection_month = $2`, location, month).Scan(&id); err != nil {
 		return 0, false, classifyImportDB(ctx, err)
 	}
 	return id, false, nil
@@ -227,23 +273,7 @@ FOR UPDATE`, ids)
 	return out, nil
 }
 
-func upsertFeedSnapshot(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], src lockedSource, meta importMeta) (int64, error) {
-	feedID := formatFeedID(src.id)
-	var fid int64
-	err := tx.QueryRow(ctx, `
-INSERT INTO mrfpipeline.mrf_feeds (payer_id, feed_id)
-VALUES ($1, $2)
-ON CONFLICT ON CONSTRAINT mrf_feeds_payer_feed_key DO NOTHING
-RETURNING id`, meta.payer, feedID).Scan(&fid)
-	if errors.Is(err, pgx.ErrNoRows) {
-		if err := tx.QueryRow(ctx, `
-SELECT id FROM mrfpipeline.mrf_feeds WHERE payer_id = $1 AND feed_id = $2`, meta.payer, feedID).Scan(&fid); err != nil {
-			return 0, classifyImportDB(ctx, err)
-		}
-	} else if err != nil {
-		return 0, classifyImportDB(ctx, err)
-	}
-
+func upsertSnapshot(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], src lockedSource, meta importMeta) (int64, error) {
 	parsed := src.parsed == jobs.StatusSucceeded
 	consume := jobs.StatusBlocked
 	if parsed {
@@ -252,11 +282,11 @@ SELECT id FROM mrfpipeline.mrf_feeds WHERE payer_id = $1 AND feed_id = $2`, meta
 	var snapID int64
 	var status string
 	var jobID *int64
-	err = tx.QueryRow(ctx, `
-INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, mrf_feed_id, collection_month, consume_status)
+	err := tx.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT ON CONSTRAINT mrf_snapshots_source_feed_month_key DO NOTHING
-RETURNING id, consume_status, consume_river_job_id`, src.id, fid, meta.monthDate, consume).Scan(&snapID, &status, &jobID)
+ON CONFLICT ON CONSTRAINT mrf_snapshots_source_payer_month_key DO NOTHING
+RETURNING id, consume_status, consume_river_job_id`, src.id, meta.payer, meta.monthDate, consume).Scan(&snapID, &status, &jobID)
 	if err == nil {
 		if parsed {
 			if err := scheduleIngest(ctx, tx, client, snapID); err != nil {
@@ -271,7 +301,8 @@ RETURNING id, consume_status, consume_river_job_id`, src.id, fid, meta.monthDate
 	if err := tx.QueryRow(ctx, `
 SELECT id, consume_status, consume_river_job_id
 FROM mrfpipeline.mrf_snapshots
-WHERE mrf_source_id = $1 AND mrf_feed_id = $2 AND collection_month = $3`, src.id, fid, meta.monthDate).Scan(&snapID, &status, &jobID); err != nil {
+WHERE mrf_source_id = $1 AND payer_id = $2 AND collection_month = $3
+FOR UPDATE`, src.id, meta.payer, meta.monthDate).Scan(&snapID, &status, &jobID); err != nil {
 		return 0, classifyImportDB(ctx, err)
 	}
 	if status == jobs.StatusPending && jobID == nil {

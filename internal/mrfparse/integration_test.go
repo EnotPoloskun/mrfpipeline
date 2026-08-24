@@ -86,8 +86,8 @@ func insertParseJob(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.T
 	t.Helper()
 	url := "https://files.test/mrf/" + strconv.FormatInt(sourceURLSeq.Add(1), 10)
 	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_sources (source_url, download_status, parse_status)
-VALUES ($1, 'succeeded', 'pending')
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ($1, DATE '2026-08-01', 'succeeded', 'pending')
 RETURNING id`, url).Scan(&sourceID); err != nil {
 		t.Fatal(err)
 	}
@@ -113,19 +113,16 @@ WHERE id = $1`, sourceID, jobID); err != nil {
 }
 
 func insertBlockedSnapshot(t *testing.T, pool *pgxpool.Pool, sourceID int64, month string) int64 {
+	return insertBlockedSnapshotForPayer(t, pool, sourceID, "uhc", month)
+}
+
+func insertBlockedSnapshotForPayer(t *testing.T, pool *pgxpool.Pool, sourceID int64, payer, month string) int64 {
 	t.Helper()
-	var feedID, snapID int64
+	var snapID int64
 	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_feeds (payer_id, feed_id)
-VALUES ('uhc', $1)
-ON CONFLICT ON CONSTRAINT mrf_feeds_payer_feed_key DO UPDATE SET feed_id = mrfpipeline.mrf_feeds.feed_id
-RETURNING id`, "mrf-source-"+strconv.FormatInt(sourceID, 10)).Scan(&feedID); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(context.Background(), `
-INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, mrf_feed_id, collection_month, consume_status)
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
 VALUES ($1, $2, $3::date, 'blocked')
-RETURNING id`, sourceID, feedID, month).Scan(&snapID); err != nil {
+RETURNING id`, sourceID, payer, month).Scan(&snapID); err != nil {
 		t.Fatal(err)
 	}
 	return snapID
@@ -176,7 +173,7 @@ func TestIntegrationSuccessUnblocksSnapshots(t *testing.T) {
 	client := insertClient(t, pool)
 	sourceID, _ := insertParseJob(t, pool, client)
 	insertBlockedSnapshot(t, pool, sourceID, "2026-08-01")
-	insertBlockedSnapshot(t, pool, sourceID, "2026-09-01")
+	insertBlockedSnapshotForPayer(t, pool, sourceID, "aetna", "2026-08-01")
 	writeDownload(t, ws, sourceID, testdata(t, "mrf.json"))
 	startParseRuntime(t, pool, ws, func(ctx context.Context, cfg mrfparser.Config) error {
 		input, _, _ := generatedPaths(ws, sourceID)
