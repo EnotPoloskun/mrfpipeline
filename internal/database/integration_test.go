@@ -71,14 +71,14 @@ func mustMigrate(t *testing.T, url string) Result {
 func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 	url, pool := withTestDB(t)
 	first := mustMigrate(t, url)
-	if first.ApplicationVersion != 2 || first.AppliedMigrationCount != 2 {
+	if first.ApplicationVersion != 3 || first.AppliedMigrationCount != 3 {
 		t.Fatalf("first %+v", first)
 	}
 	if first.RiverVersion != ExpectedRiverVersion || first.AppliedRiverMigrationCount != ExpectedRiverVersion {
 		t.Fatalf("first river %+v", first)
 	}
 	second := mustMigrate(t, url)
-	if second.ApplicationVersion != 2 || second.AppliedMigrationCount != 0 {
+	if second.ApplicationVersion != 3 || second.AppliedMigrationCount != 0 {
 		t.Fatalf("second %+v", second)
 	}
 	if second.RiverVersion != ExpectedRiverVersion || second.AppliedRiverMigrationCount != 0 {
@@ -89,7 +89,7 @@ func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal("count ledger")
 	}
-	if n != 2 {
+	if n != 3 {
 		t.Fatalf("ledger rows %d", n)
 	}
 
@@ -205,7 +205,7 @@ func TestIntegrationConcurrentMigrators(t *testing.T) {
 			t.Fatalf("migrator %d: %v", i, err)
 		}
 	}
-	if results[0].AppliedMigrationCount+results[1].AppliedMigrationCount != 2 {
+	if results[0].AppliedMigrationCount+results[1].AppliedMigrationCount != 3 {
 		t.Fatalf("applied %+v %+v", results[0], results[1])
 	}
 	if results[0].AppliedRiverMigrationCount+results[1].AppliedRiverMigrationCount != ExpectedRiverVersion {
@@ -215,7 +215,7 @@ func TestIntegrationConcurrentMigrators(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal("count ledger")
 	}
-	if n != 2 {
+	if n != 3 {
 		t.Fatalf("ledger rows %d", n)
 	}
 }
@@ -227,8 +227,8 @@ func TestIntegrationFailingMigrationRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	files = append(files, migrationFile{
-		Version: 3,
-		Name:    "0003_fail.sql",
+		Version: 4,
+		Name:    "0004_fail.sql",
 		SQL:     "CREATE TABLE mrfpipeline.should_not_exist (id int);\nSELECT 1 / 0;",
 	})
 	_, err = applyMigrations(context.Background(), url, files)
@@ -253,7 +253,7 @@ SELECT EXISTS (
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
+	if n != 3 {
 		t.Fatalf("ledger rows %d", n)
 	}
 }
@@ -313,8 +313,8 @@ func TestIntegrationInvalidLedgerRejected(t *testing.T) {
 		sql  string
 	}{
 		{"filename mismatch", `UPDATE mrfpipeline.schema_migrations SET name = 'wrong.sql'`},
-		{"unknown future", `INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (3, '0003_future.sql')`},
-		{"missing", `DELETE FROM mrfpipeline.schema_migrations; INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (3, '0003_future.sql')`},
+		{"unknown future", `INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (4, '0004_future.sql')`},
+		{"missing", `DELETE FROM mrfpipeline.schema_migrations; INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (4, '0004_future.sql')`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -352,14 +352,14 @@ CREATE TABLE mrfpipeline_river.river_migration (broken int)`); err != nil {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 2 {
+	if n != 3 {
 		t.Fatalf("application ledger rewritten: %d", n)
 	}
 	if _, err := pool.Exec(context.Background(), `DROP TABLE mrfpipeline_river.river_migration`); err != nil {
 		t.Fatal(err)
 	}
 	result := mustMigrate(t, url)
-	if result.ApplicationVersion != 2 || result.AppliedMigrationCount != 0 {
+	if result.ApplicationVersion != 3 || result.AppliedMigrationCount != 0 {
 		t.Fatalf("app %+v", result)
 	}
 	if result.RiverVersion != ExpectedRiverVersion || result.AppliedRiverMigrationCount != ExpectedRiverVersion {
@@ -449,6 +449,22 @@ RETURNING id`, runID).Scan(&tocID)
 	if err != nil {
 		t.Fatalf("valid toc: %v", err)
 	}
+	var oldTOCConstraint, monthlyTOCConstraint bool
+	if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE connamespace = 'mrfpipeline'::regnamespace
+      AND conname = 'toc_files_payer_source_url_key'
+), EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE connamespace = 'mrfpipeline'::regnamespace
+      AND conname = 'toc_files_payer_collection_month_source_url_key'
+)`).Scan(&oldTOCConstraint, &monthlyTOCConstraint); err != nil {
+		t.Fatal(err)
+	}
+	if oldTOCConstraint || !monthlyTOCConstraint {
+		t.Fatalf("toc identity constraints old=%v monthly=%v", oldTOCConstraint, monthlyTOCConstraint)
+	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id
@@ -460,6 +476,25 @@ INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id
 ) VALUES ('aetna', DATE '2026-08-01', E'https://example.invalid/toc\n.json', $1)`, runID); err == nil {
 		t.Fatal("newline url")
+	}
+	var otherPayerRunID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month)
+VALUES ('uhc', DATE '2026-08-01')
+RETURNING id`).Scan(&otherPayerRunID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.toc_files (
+    payer_id, collection_month, source_url, first_discovery_run_id
+) VALUES ('uhc', DATE '2026-08-01', 'https://example.invalid/toc.json', $1)`, otherPayerRunID); err != nil {
+		t.Fatalf("same url for another payer: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.toc_files (
+    payer_id, collection_month, source_url, first_discovery_run_id
+) VALUES ('aetna', DATE '2026-09-01', 'https://example.invalid/toc.json', $1)`, runID); err != nil {
+		t.Fatalf("same url for another month: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.toc_files (

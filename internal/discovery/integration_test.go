@@ -77,12 +77,17 @@ func parseReport(t *testing.T, text string) Report {
 
 func mustEnqueue(t *testing.T, pool *pgxpool.Pool, limit int64) Report {
 	t.Helper()
-	text, err := Enqueue(context.Background(), pool, "uhc", "2026-08", limit)
+	return mustEnqueueMonth(t, pool, "2026-08", limit)
+}
+
+func mustEnqueueMonth(t *testing.T, pool *pgxpool.Pool, month string, limit int64) Report {
+	t.Helper()
+	text, err := Enqueue(context.Background(), pool, "uhc", month, limit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := parseReport(t, text)
-	if r.TOCLimit != limit || r.PayerID != "uhc" || r.CollectionMonth != "2026-08" {
+	if r.TOCLimit != limit || r.PayerID != "uhc" || r.CollectionMonth != month {
 		t.Fatalf("%+v", r)
 	}
 	return r
@@ -198,10 +203,10 @@ func TestIntegrationAdmissionAndRepeat(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertCounts(t, pool, r1.DiscoveryRunID, 5, 0, 2, 2)
-	assertTOC(t, pool, "https://example.invalid/known", true)
-	assertTOC(t, pool, "https://example.invalid/new-a", true)
-	assertTOC(t, pool, "https://example.invalid/new-b", false)
-	assertTOC(t, pool, "https://example.invalid/new-c", false)
+	assertTOC(t, pool, "2026-08", "https://example.invalid/known", true)
+	assertTOC(t, pool, "2026-08", "https://example.invalid/new-a", true)
+	assertTOC(t, pool, "2026-08", "https://example.invalid/new-b", false)
+	assertTOC(t, pool, "2026-08", "https://example.invalid/new-c", false)
 	assertMembership(t, pool, r1.DiscoveryRunID, 2)
 	assertDownloadJobs(t, pool, 2)
 
@@ -217,27 +222,24 @@ SELECT was_new FROM mrfpipeline.discovery_run_toc_files
 WHERE discovery_run_id = $1 AND listing_ordinal = 0`, r2.DiscoveryRunID).Scan(&wasNew); err != nil || wasNew {
 		t.Fatalf("known was_new=%v %v", wasNew, err)
 	}
-	assertTOC(t, pool, "https://example.invalid/new-b", true)
-	assertTOC(t, pool, "https://example.invalid/new-c", true)
+	assertTOC(t, pool, "2026-08", "https://example.invalid/new-b", true)
+	assertTOC(t, pool, "2026-08", "https://example.invalid/new-c", true)
 	assertDownloadJobs(t, pool, 4)
-	var month1, month2 time.Time
-	if err := pool.QueryRow(context.Background(), `SELECT collection_month FROM mrfpipeline.toc_files WHERE source_url = $1`, "https://example.invalid/known").Scan(&month1); err != nil {
-		t.Fatal(err)
-	}
-	r3 := mustEnqueue(t, pool, 1)
-	if _, err := pool.Exec(context.Background(), `UPDATE mrfpipeline.discovery_runs SET collection_month = DATE '2026-09' WHERE id = $1`, r3.DiscoveryRunID); err != nil {
-		t.Fatal(err)
-	}
+	r3 := mustEnqueueMonth(t, pool, "2026-09", 1)
 	markRunning(t, pool, r3.DiscoveryRunID)
 	if err := admit(context.Background(), pool, client, r3.DiscoveryRunID, r3.RiverJobID, []TOCFile{{URL: "https://example.invalid/known"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT collection_month FROM mrfpipeline.toc_files WHERE source_url = $1`, "https://example.invalid/known").Scan(&month2); err != nil {
-		t.Fatal(err)
+	assertCounts(t, pool, r3.DiscoveryRunID, 1, 0, 1, 0)
+	assertTOC(t, pool, "2026-08", "https://example.invalid/known", true)
+	assertTOC(t, pool, "2026-09", "https://example.invalid/known", true)
+	var n int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline.toc_files
+WHERE payer_id = 'uhc' AND source_url = 'https://example.invalid/known'`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("monthly captures %d %v", n, err)
 	}
-	if !month1.Equal(month2) {
-		t.Fatalf("collection month changed %v %v", month1, month2)
-	}
+	assertDownloadJobs(t, pool, 5)
 }
 
 func TestIntegrationEmptyListingAndRetryNoop(t *testing.T) {
@@ -545,10 +547,12 @@ FROM mrfpipeline.discovery_runs WHERE id = $1`, id).Scan(&d, &e, &a, &o, &status
 	}
 }
 
-func assertTOC(t *testing.T, pool *pgxpool.Pool, url string, want bool) {
+func assertTOC(t *testing.T, pool *pgxpool.Pool, month, url string, want bool) {
 	t.Helper()
 	var n int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.toc_files WHERE source_url = $1`, url).Scan(&n); err != nil {
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline.toc_files
+WHERE collection_month = $1 AND source_url = $2`, month, url).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if want && n != 1 {

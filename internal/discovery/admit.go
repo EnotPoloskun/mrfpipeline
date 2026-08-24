@@ -67,7 +67,7 @@ FOR UPDATE`, runID).Scan(&status, &assigned, &payer, &month, &limit)
 
 	var existing, admitted, overflow int64
 	for _, hit := range first {
-		id, found, err := lookupTOC(ctx, tx, payer, hit.URL)
+		id, found, err := lookupTOC(ctx, tx, payer, month, hit.URL)
 		if err != nil {
 			return err
 		}
@@ -87,7 +87,7 @@ FOR UPDATE`, runID).Scan(&status, &assigned, &payer, &month, &limit)
 			return err
 		}
 		if !inserted {
-			id, found, err = lookupTOC(ctx, tx, payer, hit.URL)
+			id, found, err = lookupTOC(ctx, tx, payer, month, hit.URL)
 			if err != nil {
 				return err
 			}
@@ -140,11 +140,11 @@ WHERE id = $1`, runID, discovered, existing, admitted, overflow)
 	return nil
 }
 
-func lookupTOC(ctx context.Context, tx pgx.Tx, payer, url string) (int64, bool, error) {
+func lookupTOC(ctx context.Context, tx pgx.Tx, payer string, month time.Time, url string) (int64, bool, error) {
 	var id int64
 	err := tx.QueryRow(ctx, `
 SELECT id FROM mrfpipeline.toc_files
-WHERE payer_id = $1 AND source_url = $2`, payer, url).Scan(&id)
+WHERE payer_id = $1 AND collection_month = $2 AND source_url = $3`, payer, month, url).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -161,7 +161,7 @@ INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id,
     download_status, parse_status, import_status
 ) VALUES ($1, $2, $3, $4, 'pending', 'blocked', 'blocked')
-ON CONFLICT (payer_id, source_url) DO NOTHING
+ON CONFLICT (payer_id, collection_month, source_url) DO NOTHING
 RETURNING id`, payer, month, url, runID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
