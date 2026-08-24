@@ -157,6 +157,44 @@ func TestIntegrationEnqueueAtomicAndDistinct(t *testing.T) {
 	}
 }
 
+func TestIntegrationEnqueueReleaseStateGate(t *testing.T) {
+	_, pool := testDB(t)
+	first := mustEnqueue(t, pool, 2)
+	second := mustEnqueue(t, pool, 2)
+	if first.DiscoveryRunID == second.DiscoveryRunID {
+		t.Fatal("repeat building discovery reused the run")
+	}
+	var before int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.discovery_runs`).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+UPDATE mrfpipeline.monthly_releases
+SET status = 'active', sealed_at = transaction_timestamp(), last_activated_at = transaction_timestamp()
+WHERE payer_id = 'uhc' AND collection_month = DATE '2026-08-01'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Enqueue(context.Background(), pool, "uhc", "2026-08", 2); !jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+		t.Fatalf("active enqueue error %v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+UPDATE mrfpipeline.monthly_releases
+SET status = 'inactive', updated_at = transaction_timestamp()
+WHERE payer_id = 'uhc' AND collection_month = DATE '2026-08-01'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Enqueue(context.Background(), pool, "uhc", "2026-08", 2); !jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+		t.Fatalf("inactive enqueue error %v", err)
+	}
+	var after int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.discovery_runs`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("sealed enqueue mutated runs: before=%d after=%d", before, after)
+	}
+}
+
 func TestIntegrationEnqueueRollback(t *testing.T) {
 	_, pool := testDB(t)
 	_, err := pool.Exec(context.Background(), `

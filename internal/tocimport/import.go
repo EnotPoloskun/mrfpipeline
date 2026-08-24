@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -66,7 +67,8 @@ func importAssociations(ctx context.Context, pool *pgxpool.Pool, client *river.C
 			}
 			if jobs.IsFailure(err, jobs.FailureTOCImportDatabaseFailed) ||
 				jobs.IsFailure(err, jobs.FailureDomainInvariant) ||
-				jobs.IsFailure(err, jobs.FailureTOCImportInvariant) {
+				jobs.IsFailure(err, jobs.FailureTOCImportInvariant) ||
+				jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
 				return err
 			}
 			return mapValidateErr(err)
@@ -86,6 +88,22 @@ func importBatch(ctx context.Context, pool *pgxpool.Pool, client *river.Client[p
 	defer func() { _ = tx.Rollback(ctx) }()
 	var payer string
 	var month time.Time
+	err = tx.QueryRow(ctx, `
+SELECT payer_id, collection_month
+FROM mrfpipeline.toc_files
+WHERE id = $1`, meta.tocID).Scan(&payer, &month)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return classifyImportDB(ctx, err)
+	}
+	if payer != meta.payer || !month.Equal(meta.monthDate) {
+		return jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	if err := release.RequireBuildingForTOC(ctx, tx, meta.tocID); err != nil {
+		return err
+	}
 	err = tx.QueryRow(ctx, `
 SELECT payer_id, collection_month
 FROM mrfpipeline.toc_files

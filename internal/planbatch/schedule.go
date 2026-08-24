@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -61,6 +62,19 @@ func scheduleOnce(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], 
 	var consume string
 	var jobID *int64
 	err := tx.QueryRow(ctx, `
+SELECT consume_status, consume_river_job_id
+FROM mrfpipeline.mrf_snapshots
+WHERE id = $1`, snapshotID).Scan(&consume, &jobID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return false, classifyDB(ctx, err)
+	}
+	if err := release.RequireBuildingForSnapshot(ctx, tx, snapshotID); err != nil {
+		return false, err
+	}
+	err = tx.QueryRow(ctx, `
 SELECT consume_status, consume_river_job_id
 FROM mrfpipeline.mrf_snapshots
 WHERE id = $1

@@ -10,6 +10,7 @@ import (
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/mrfparse"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -50,6 +51,9 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ConsumerIngestArg
 		},
 		Confirm: func(ctx context.Context, tx pgx.Tx) error {
 			return confirmIngestSuccess(ctx, tx, client, ident)
+		},
+		PreLock: func(ctx context.Context, tx pgx.Tx) error {
+			return release.RequireBuildingForSnapshot(ctx, tx, job.Args.MRFSnapshotID)
 		},
 	})
 }

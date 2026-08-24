@@ -105,6 +105,12 @@ func insertClient(t *testing.T, pool *pgxpool.Pool) *river.Client[pgx.Tx] {
 
 func insertSourceJob(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.Tx], sourceURL string) (sourceID, jobID int64) {
 	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', DATE '2026-08-01'), ('aetna', DATE '2026-08-01')
+ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(context.Background(), `
 INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
 VALUES ($1, DATE '2026-08-01', 'pending', 'blocked')
@@ -458,6 +464,11 @@ func TestIntegrationIncompleteResetOnlyClaimed(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := insertClient(t, pool)
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', DATE '2026-08-01') ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
 	aID, _ := insertSourceJob(t, pool, client, storedURL(""))
 	var bID int64
 	if err := pool.QueryRow(context.Background(), `

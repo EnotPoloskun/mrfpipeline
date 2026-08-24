@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,13 +11,17 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/config"
+	"github.com/enotpoloskun/mrfpipeline/internal/consumeringest"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/discovery"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/mrfparse"
 	"github.com/enotpoloskun/mrfpipeline/internal/reconcile"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/enotpoloskun/mrfpipeline/internal/work"
 )
 
@@ -25,11 +30,14 @@ import (
 var version = "dev"
 
 const (
-	cmdMigrate   = "migrate"
-	cmdWork      = "work"
-	cmdDiscover  = "discover"
-	cmdReconcile = "reconcile"
-	cmdRetry     = "retry"
+	cmdMigrate    = "migrate"
+	cmdWork       = "work"
+	cmdDiscover   = "discover"
+	cmdReconcile  = "reconcile"
+	cmdRetry      = "retry"
+	cmdMonth      = "month"
+	monthStatus   = "status"
+	monthActivate = "activate"
 )
 
 // Main is the process entry: signals, os.Args, and standard streams.
@@ -79,6 +87,15 @@ func execute(ctx context.Context, args []string, getenv func(string) string) (st
 		text, opErr = runReconcile(ctx, getenv)
 	case cmdRetry:
 		text, opErr = runRetry(ctx, getenv, parsed.stage, parsed.id)
+	case cmdMonth:
+		switch parsed.monthAction {
+		case monthStatus:
+			text, opErr = runMonthStatus(ctx, getenv, parsed.payer, parsed.month)
+		case monthActivate:
+			text, opErr = runMonthActivate(ctx, getenv, parsed.payer, parsed.month)
+		default:
+			return "", &usageError{command: cmdMonth, reason: "missing subcommand"}
+		}
 	default:
 		return "", &usageError{reason: "unknown command"}
 	}
@@ -290,16 +307,181 @@ func runRetry(ctx context.Context, getenv func(string) string, stage, id string)
 	return reconcile.FormatRetry(result)
 }
 
+func runMonthStatus(ctx context.Context, getenv func(string) string, payer, month string) (string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
+		return "", err
+	}
+	if (payer == "") != (month == "") {
+		return "", &usageError{command: "month status", reason: "--payer and --collection-month must be supplied together"}
+	}
+	var monthDate time.Time
+	if payer != "" {
+		if err := config.ValidatePayerIdentifier(payer); err != nil {
+			return "", err
+		}
+		var err error
+		monthDate, err = parseMonthDate(month)
+		if err != nil {
+			return "", err
+		}
+	}
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.DiscoverMaxConns)
+	if err != nil {
+		return "", err
+	}
+	defer pool.Close()
+	if err := database.ValidateCurrent(ctx, pool); err != nil {
+		return "", err
+	}
+	if payer == "" {
+		outputs, err := release.ListActiveOutputs(ctx, pool)
+		if err != nil {
+			return "", err
+		}
+		out := struct {
+			ActiveOutputs []struct {
+				PayerID         string `json:"payer_id"`
+				CollectionMonth string `json:"collection_month"`
+				OutputID        string `json:"output_id"`
+			} `json:"active_outputs"`
+		}{ActiveOutputs: make([]struct {
+			PayerID         string `json:"payer_id"`
+			CollectionMonth string `json:"collection_month"`
+			OutputID        string `json:"output_id"`
+		}, 0, len(outputs))}
+		for _, item := range outputs {
+			out.ActiveOutputs = append(out.ActiveOutputs, struct {
+				PayerID         string `json:"payer_id"`
+				CollectionMonth string `json:"collection_month"`
+				OutputID        string `json:"output_id"`
+			}{item.PayerID, item.CollectionMonth, item.OutputID})
+		}
+		return encodeJSON(out)
+	}
+	readiness, err := release.Readiness(ctx, pool, payer, monthDate)
+	if err != nil {
+		return "", err
+	}
+	return encodeJSON(readiness)
+}
+
+func runMonthActivate(ctx context.Context, getenv func(string) string, payer, month string) (string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
+		return "", err
+	}
+	if err := config.ValidatePayerIdentifier(payer); err != nil {
+		return "", err
+	}
+	monthDate, err := parseMonthDate(month)
+	if err != nil {
+		return "", err
+	}
+	art, err := config.NormalizeLocalPath(config.EnvArtifactRoot, getenv(config.EnvArtifactRoot))
+	if err != nil {
+		return "", err
+	}
+	warehouse, err := config.NormalizeLocalPath(config.EnvWarehousePath, getenv(config.EnvWarehousePath))
+	if err != nil {
+		return "", err
+	}
+	catalogPath, err := config.NormalizeLocalPath(config.EnvProviderCatalogPath, getenv(config.EnvProviderCatalogPath))
+	if err != nil {
+		return "", err
+	}
+	servicesPath, err := config.NormalizeLocalPath(config.EnvServicesPath, getenv(config.EnvServicesPath))
+	if err != nil {
+		return "", err
+	}
+	services, err := mrfparse.InspectServices(servicesPath)
+	if err != nil {
+		return "", err
+	}
+	catalog, err := consumeringest.InspectCatalog(catalogPath)
+	if err != nil {
+		return "", err
+	}
+	warehouseState, err := consumeringest.InspectWarehouse(warehouse)
+	if err != nil {
+		return "", err
+	}
+	if err := artifact.CheckOverlap(art, warehouse, catalogPath, servicesPath); err != nil {
+		return "", err
+	}
+	if err := consumeringest.CheckWarehouseCatalog(warehouseState, catalog, art, services.Path); err != nil {
+		return "", err
+	}
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.WorkMaxConns)
+	if err != nil {
+		return "", err
+	}
+	defer pool.Close()
+	if err := database.ValidateCurrent(ctx, pool); err != nil {
+		return "", err
+	}
+	lease, err := database.AcquireWorkerLease(ctx, pool)
+	if err != nil {
+		if database.IsLeaseUnavailable(err) {
+			return "", jobs.Failure(jobs.FailureWorkerLeaseUnavailable)
+		}
+		return "", err
+	}
+	defer func() { _ = lease.Release(context.Background()) }()
+	result, err := release.Activate(ctx, pool, payer, monthDate, func(targets []release.Target) error {
+		for _, target := range targets {
+			if err := consumeringest.InspectCompletedSnapshot(warehouse, target.PayerID, target.CollectionMonth, target.OutputID); err != nil {
+				return jobs.Failure(jobs.FailureReleaseNotReady)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return encodeJSON(result)
+}
+
+func parseMonthDate(raw string) (time.Time, error) {
+	if err := config.ValidateCollectionMonth(raw); err != nil {
+		return time.Time{}, err
+	}
+	month, err := time.Parse("2006-01-02", raw+"-01")
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: %s", config.ErrInvalidConfig, config.FieldCollectionMonth)
+	}
+	return month, nil
+}
+
+func encodeJSON(value any) (string, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	return string(raw) + "\n", nil
+}
+
 type parsed struct {
-	command  string
-	help     bool
-	helpText string
-	version  bool
-	payer    string
-	month    string
-	limit    string
-	stage    string
-	id       string
+	command     string
+	help        bool
+	helpText    string
+	version     bool
+	payer       string
+	month       string
+	limit       string
+	stage       string
+	id          string
+	monthAction string
 }
 
 func parse(args []string) (parsed, error) {
@@ -319,7 +501,7 @@ func parse(args []string) (parsed, error) {
 		return parsed{version: true}, nil
 	}
 	switch args[0] {
-	case cmdMigrate, cmdWork, cmdDiscover, cmdReconcile, cmdRetry:
+	case cmdMigrate, cmdWork, cmdDiscover, cmdReconcile, cmdRetry, cmdMonth:
 		return parseCommand(args[0], args[1:])
 	default:
 		return parsed{}, &usageError{reason: "unknown command"}
@@ -348,9 +530,77 @@ func parseCommand(command string, rest []string) (parsed, error) {
 			return parsed{}, err
 		}
 		return parsed{command: command, stage: stage, id: id}, nil
+	case cmdMonth:
+		return parseMonthCommand(rest)
 	default:
 		return parsed{}, &usageError{reason: "unknown command"}
 	}
+}
+
+func parseMonthCommand(rest []string) (parsed, error) {
+	if len(rest) == 1 && rest[0] == "--help" {
+		return parsed{command: cmdMonth, help: true, helpText: monthHelp}, nil
+	}
+	if len(rest) == 0 {
+		return parsed{}, &usageError{command: cmdMonth, reason: "missing subcommand"}
+	}
+	action := rest[0]
+	if len(rest) == 2 && rest[1] == "--help" {
+		switch action {
+		case monthStatus:
+			return parsed{command: cmdMonth, monthAction: action, help: true, helpText: monthStatusHelp}, nil
+		case monthActivate:
+			return parsed{command: cmdMonth, monthAction: action, help: true, helpText: monthActivateHelp}, nil
+		}
+	}
+	switch action {
+	case monthStatus:
+		payer, month, err := parseMonthFlags("month status", rest[1:], false)
+		if err != nil {
+			return parsed{}, err
+		}
+		return parsed{command: cmdMonth, monthAction: action, payer: payer, month: month}, nil
+	case monthActivate:
+		payer, month, err := parseMonthFlags("month activate", rest[1:], true)
+		if err != nil {
+			return parsed{}, err
+		}
+		return parsed{command: cmdMonth, monthAction: action, payer: payer, month: month}, nil
+	default:
+		return parsed{}, &usageError{command: cmdMonth, reason: "unknown subcommand"}
+	}
+}
+
+func parseMonthFlags(command string, rest []string, required bool) (payer, month string, err error) {
+	var havePayer, haveMonth bool
+	for i := 0; i < len(rest); {
+		if rest[i] == "--" || isSingleDash(rest[i]) || !strings.HasPrefix(rest[i], "--") {
+			return "", "", &usageError{command: command, reason: "invalid argument"}
+		}
+		name, value, next, ferr := takeFlag(command, rest, i)
+		if ferr != nil {
+			return "", "", ferr
+		}
+		switch name {
+		case "payer":
+			payer, havePayer = value, true
+		case "collection-month":
+			month, haveMonth = value, true
+		default:
+			return "", "", &usageError{command: command, reason: "unsupported flag"}
+		}
+		i = next
+	}
+	if required && (!havePayer || !haveMonth) {
+		if !havePayer {
+			return "", "", &usageError{command: command, reason: "missing required flag --payer"}
+		}
+		return "", "", &usageError{command: command, reason: "missing required flag --collection-month"}
+	}
+	if !required && havePayer != haveMonth {
+		return "", "", &usageError{command: command, reason: "--payer and --collection-month must be supplied together"}
+	}
+	return payer, month, nil
 }
 
 func rejectExtra(command string, rest []string) error {
@@ -534,6 +784,12 @@ func hint(command string) string {
 		return "Try 'mrfpipeline reconcile --help'."
 	case cmdRetry:
 		return "Try 'mrfpipeline retry --help'."
+	case cmdMonth:
+		return "Try 'mrfpipeline month --help'."
+	case "month status":
+		return "Try 'mrfpipeline month status --help'."
+	case "month activate":
+		return "Try 'mrfpipeline month activate --help'."
 	default:
 		return "Try 'mrfpipeline --help'."
 	}

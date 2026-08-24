@@ -96,6 +96,12 @@ func TestIntegrationRuntimeDownloadsAndParses(t *testing.T) {
 		t.Fatal(err)
 	}
 	var runID, tocID int64
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', DATE '2026-08-01')
+ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(context.Background(), `
 INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, toc_limit, status, completed_at)
 VALUES ('uhc', DATE '2026-08-01', 1, 'succeeded', transaction_timestamp())

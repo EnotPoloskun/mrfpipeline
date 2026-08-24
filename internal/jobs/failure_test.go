@@ -49,6 +49,9 @@ func TestFailureCodes(t *testing.T) {
 		FailureArtifactReconciliationFailed,
 		FailureRetryStageNotFailed,
 		FailureRetryStageInvariant,
+		FailureReleaseNotFound,
+		FailureReleaseNotReady,
+		FailureSealedReleaseInconsistent,
 	} {
 		err := Failure(code)
 		if !errors.Is(err, ErrJob) || !IsFailure(err, code) {

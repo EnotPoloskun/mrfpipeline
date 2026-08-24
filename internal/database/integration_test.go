@@ -71,14 +71,14 @@ func mustMigrate(t *testing.T, url string) Result {
 func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 	url, pool := withTestDB(t)
 	first := mustMigrate(t, url)
-	if first.ApplicationVersion != 3 || first.AppliedMigrationCount != 3 {
+	if first.ApplicationVersion != 4 || first.AppliedMigrationCount != 4 {
 		t.Fatalf("first %+v", first)
 	}
 	if first.RiverVersion != ExpectedRiverVersion || first.AppliedRiverMigrationCount != ExpectedRiverVersion {
 		t.Fatalf("first river %+v", first)
 	}
 	second := mustMigrate(t, url)
-	if second.ApplicationVersion != 3 || second.AppliedMigrationCount != 0 {
+	if second.ApplicationVersion != 4 || second.AppliedMigrationCount != 0 {
 		t.Fatalf("second %+v", second)
 	}
 	if second.RiverVersion != ExpectedRiverVersion || second.AppliedRiverMigrationCount != 0 {
@@ -89,12 +89,13 @@ func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal("count ledger")
 	}
-	if n != 3 {
+	if n != 4 {
 		t.Fatalf("ledger rows %d", n)
 	}
 
 	required := []string{
 		"schema_migrations",
+		"monthly_releases",
 		"discovery_runs",
 		"toc_files",
 		"discovery_run_toc_files",
@@ -172,6 +173,7 @@ WHERE schemaname = 'mrfpipeline' AND indexname ILIKE '%feed%'`).Scan(&feedIndexe
 		"plan_attachment_batches_mrf_snapshot_id_idx",
 		"plan_attachment_batches_status_idx",
 		"mrf_plans_mrf_snapshot_id_idx",
+		"monthly_releases_one_active_per_payer_idx",
 	}
 	for _, name := range indexes {
 		var exists bool
@@ -182,6 +184,94 @@ SELECT EXISTS (
 )`, name).Scan(&exists)
 		if err != nil || !exists {
 			t.Fatalf("missing index %s: %v", name, err)
+		}
+	}
+}
+
+func TestIntegrationMonthlyReleaseBackfillAndForeignKeys(t *testing.T) {
+	url, pool := withTestDB(t)
+	files, err := loadEmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := applyMigrations(context.Background(), url, files[:3]); err != nil || result.ApplicationVersion != 3 {
+		t.Fatalf("apply first three migrations: %+v %v", result, err)
+	}
+	ctx := context.Background()
+	var runID, sourceID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, status, completed_at)
+VALUES ('aetna', DATE '2026-08-01', 'succeeded', transaction_timestamp()) RETURNING id`).Scan(&runID); err != nil {
+		t.Fatal("discovery: ", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.toc_files (payer_id, collection_month, source_url, first_discovery_run_id)
+VALUES ('aetna', DATE '2026-08-01', 'https://example.invalid/toc.json', $1)`, runID); err != nil {
+		t.Fatal("toc: ", err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month)
+VALUES ('https://example.invalid/mrf.json', DATE '2026-08-01') RETURNING id`).Scan(&sourceID); err != nil {
+		t.Fatal("source: ", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
+VALUES ($1, 'aetna', DATE '2026-08-01')`, sourceID); err != nil {
+		t.Fatal("snapshot: ", err)
+	}
+	if _, err := applyMigrations(ctx, url, files); err != nil {
+		t.Fatal("apply release migration: ", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `
+SELECT status FROM mrfpipeline.monthly_releases
+WHERE payer_id = 'aetna' AND collection_month = DATE '2026-08-01'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "building" {
+		t.Fatalf("backfilled status %q", status)
+	}
+	var foreignKeys int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*)
+FROM pg_constraint
+WHERE connamespace = 'mrfpipeline'::regnamespace
+  AND conname IN (
+      'discovery_runs_monthly_release_fkey',
+      'toc_files_monthly_release_fkey',
+      'mrf_snapshots_monthly_release_fkey')`).Scan(&foreignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if foreignKeys != 3 {
+		t.Fatalf("monthly release foreign keys %d", foreignKeys)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, status, sealed_at, last_activated_at)
+VALUES ('aetna', DATE '2026-09-01', 'active', transaction_timestamp(), transaction_timestamp())`); err != nil {
+		t.Fatal("active release: ", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, status, sealed_at, last_activated_at)
+VALUES ('aetna', DATE '2026-10-01', 'active', transaction_timestamp(), transaction_timestamp())`); err == nil {
+		t.Fatal("second active release should be rejected")
+	}
+	if _, err := pool.Exec(ctx, `
+DELETE FROM mrfpipeline.monthly_releases
+WHERE payer_id = 'aetna' AND collection_month = DATE '2026-08-01'`); err == nil {
+		t.Fatal("release referenced by domain rows should be protected")
+	}
+	invalid := []string{
+		`INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month) VALUES ('AETNA', DATE '2026-11-01')`,
+		`INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month) VALUES ('aetna', DATE '2026-11-15')`,
+		`INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, status, sealed_at, last_activated_at) VALUES ('aetna', DATE '2026-11-01', 'unknown', NULL, NULL)`,
+		`INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, status, sealed_at, last_activated_at) VALUES ('aetna', DATE '2026-12-01', 'building', transaction_timestamp(), NULL)`,
+		`INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, status, sealed_at, last_activated_at) VALUES ('aetna', DATE '2027-02-01', 'inactive', NULL, NULL)`,
+		`INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, status, sealed_at, last_activated_at) VALUES ('aetna', DATE '2027-01-01', 'active', NULL, transaction_timestamp())`,
+		`INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, status, sealed_at, last_activated_at) VALUES ('aetna', DATE '2027-03-01', 'inactive', transaction_timestamp(), timestamp '2026-01-01')`,
+	}
+	for _, sql := range invalid {
+		if _, err := pool.Exec(ctx, sql); err == nil {
+			t.Fatalf("expected release constraint rejection: %s", sql)
 		}
 	}
 }
@@ -205,7 +295,7 @@ func TestIntegrationConcurrentMigrators(t *testing.T) {
 			t.Fatalf("migrator %d: %v", i, err)
 		}
 	}
-	if results[0].AppliedMigrationCount+results[1].AppliedMigrationCount != 3 {
+	if results[0].AppliedMigrationCount+results[1].AppliedMigrationCount != 4 {
 		t.Fatalf("applied %+v %+v", results[0], results[1])
 	}
 	if results[0].AppliedRiverMigrationCount+results[1].AppliedRiverMigrationCount != ExpectedRiverVersion {
@@ -215,7 +305,7 @@ func TestIntegrationConcurrentMigrators(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal("count ledger")
 	}
-	if n != 3 {
+	if n != 4 {
 		t.Fatalf("ledger rows %d", n)
 	}
 }
@@ -227,8 +317,8 @@ func TestIntegrationFailingMigrationRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	files = append(files, migrationFile{
-		Version: 4,
-		Name:    "0004_fail.sql",
+		Version: 5,
+		Name:    "0005_fail.sql",
 		SQL:     "CREATE TABLE mrfpipeline.should_not_exist (id int);\nSELECT 1 / 0;",
 	})
 	_, err = applyMigrations(context.Background(), url, files)
@@ -253,7 +343,7 @@ SELECT EXISTS (
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 3 {
+	if n != 4 {
 		t.Fatalf("ledger rows %d", n)
 	}
 }
@@ -352,14 +442,14 @@ CREATE TABLE mrfpipeline_river.river_migration (broken int)`); err != nil {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 3 {
+	if n != 4 {
 		t.Fatalf("application ledger rewritten: %d", n)
 	}
 	if _, err := pool.Exec(context.Background(), `DROP TABLE mrfpipeline_river.river_migration`); err != nil {
 		t.Fatal(err)
 	}
 	result := mustMigrate(t, url)
-	if result.ApplicationVersion != 3 || result.AppliedMigrationCount != 0 {
+	if result.ApplicationVersion != 4 || result.AppliedMigrationCount != 0 {
 		t.Fatalf("app %+v", result)
 	}
 	if result.RiverVersion != ExpectedRiverVersion || result.AppliedRiverMigrationCount != ExpectedRiverVersion {
@@ -408,6 +498,12 @@ func TestIntegrationSchemaConstraints(t *testing.T) {
 	url, pool := withTestDB(t)
 	mustMigrate(t, url)
 	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('aetna', DATE '2026-08-01'), ('aetna', DATE '2026-09-01'), ('uhc', DATE '2026-08-01')
+ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatal("seed releases: ", err)
+	}
 
 	var runID int64
 	err := pool.QueryRow(ctx, `

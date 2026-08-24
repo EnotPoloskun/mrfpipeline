@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -50,6 +51,19 @@ func admit(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx]
 	var payer string
 	var month time.Time
 	var limit int32
+	err = tx.QueryRow(ctx, `
+SELECT status, river_job_id, payer_id, collection_month, toc_limit
+FROM mrfpipeline.discovery_runs
+WHERE id = $1`, runID).Scan(&status, &assigned, &payer, &month, &limit)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return jobs.Failure(jobs.FailureDiscoveryDatabase)
+	}
+	if err := release.RequireBuildingForStage(ctx, tx, jobs.KindDiscoveryRun, runID); err != nil {
+		return err
+	}
 	err = tx.QueryRow(ctx, `
 SELECT status, river_job_id, payer_id, collection_month, toc_limit
 FROM mrfpipeline.discovery_runs

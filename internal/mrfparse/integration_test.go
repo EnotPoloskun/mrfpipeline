@@ -85,6 +85,11 @@ func insertClient(t *testing.T, pool *pgxpool.Pool) *river.Client[pgx.Tx] {
 func insertParseJob(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.Tx]) (sourceID, jobID int64) {
 	t.Helper()
 	url := "https://files.test/mrf/" + strconv.FormatInt(sourceURLSeq.Add(1), 10)
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', DATE '2026-08-01') ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(context.Background(), `
 INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
 VALUES ($1, DATE '2026-08-01', 'succeeded', 'pending')
@@ -118,6 +123,11 @@ func insertBlockedSnapshot(t *testing.T, pool *pgxpool.Pool, sourceID int64, mon
 
 func insertBlockedSnapshotForPayer(t *testing.T, pool *pgxpool.Pool, sourceID int64, payer, month string) int64 {
 	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ($1, $2::date) ON CONFLICT DO NOTHING`, payer, month); err != nil {
+		t.Fatal(err)
+	}
 	var snapID int64
 	if err := pool.QueryRow(context.Background(), `
 INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)

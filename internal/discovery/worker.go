@@ -51,7 +51,8 @@ func (w *Worker) execute(ctx context.Context, job *river.Job[jobs.DiscoveryRunAr
 			jobs.IsFailure(err, jobs.FailureDiscoveryDatabase) ||
 			jobs.IsFailure(err, jobs.FailureDomainInvariant) ||
 			jobs.IsFailure(err, jobs.FailureMissingRecord) ||
-			jobs.IsFailure(err, jobs.FailureInvalidArguments) {
+			jobs.IsFailure(err, jobs.FailureInvalidArguments) ||
+			jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
 			return err
 		}
 		return jobs.Failure(jobs.FailureDiscoveryDatabase)

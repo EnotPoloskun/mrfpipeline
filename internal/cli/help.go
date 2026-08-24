@@ -13,6 +13,8 @@ Usage:
   mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
   mrfpipeline reconcile
   mrfpipeline retry --stage <job-kind> --id <domain-id>
+  mrfpipeline month status [--payer <payer> --collection-month <YYYY-MM>]
+  mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
   mrfpipeline --help
   mrfpipeline --version
 
@@ -22,6 +24,7 @@ Commands:
   discover   Enqueue one bounded UHC discovery run
   reconcile  Repair safe nonterminal scheduling and artifact gaps
   retry      Reopen one exact failed stage with a fresh River series
+  month      Inspect and activate monthly serving releases
 `
 
 const migrateHelp = `Usage:
@@ -60,8 +63,8 @@ const discoverHelp = `Usage:
 Enqueue one background discovery run. Success reports the durable run and
 job identifiers rather than waiting for listing or download.
 
-collection_month is a caller-supplied label assigned to discovered TOC
-records. It is not inferred from URLs or payer contents.
+collection_month selects the caller-supplied monthly release that owns
+discovered TOC records. It is not inferred from URLs or payer contents.
 
 --limit is required and must be a positive integer. Unlimited discovery is
 out of version 1 scope.
@@ -109,6 +112,30 @@ Required environment:
   MRFPIPELINE_DATABASE_URL  PostgreSQL connection string
 `
 
+const monthHelp = `Usage:
+  mrfpipeline month status
+  mrfpipeline month status --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline month --help
+
+Inspect monthly serving state or atomically activate a ready release.
+`
+
+const monthStatusHelp = `Usage:
+  mrfpipeline month status
+  mrfpipeline month status --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline month status --help
+
+Status is read-only and requires only MRFPIPELINE_DATABASE_URL.
+`
+
+const monthActivateHelp = `Usage:
+  mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline month activate --help
+
+Activation requires the complete worker environment and the worker lease.
+`
+
 func helpFor(command string) string {
 	switch command {
 	case cmdMigrate:
@@ -121,6 +148,8 @@ func helpFor(command string) string {
 		return reconcileHelp
 	case cmdRetry:
 		return retryHelp
+	case cmdMonth:
+		return monthHelp
 	default:
 		return rootHelp
 	}

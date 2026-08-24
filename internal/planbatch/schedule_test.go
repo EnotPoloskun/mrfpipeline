@@ -75,6 +75,11 @@ func insertConsumedSnapshot(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	url := "https://files.test/planbatch/" + strconv.FormatInt(sourceURLSeq.Add(1), 10)
 	var sourceID, snapID int64
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', DATE '2026-08-01') ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(context.Background(), `
 INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
 VALUES ($1, DATE '2026-08-01', 'succeeded', 'succeeded') RETURNING id`, url).Scan(&sourceID); err != nil {

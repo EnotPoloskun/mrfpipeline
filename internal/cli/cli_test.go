@@ -63,6 +63,7 @@ func TestInformationalInvocations(t *testing.T) {
 		{"discover", "--help"},
 		{"reconcile", "--help"},
 		{"retry", "--help"},
+		{"month", "--help"},
 		{"--version"},
 	}
 	for _, args := range cases {

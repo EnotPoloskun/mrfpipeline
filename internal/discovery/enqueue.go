@@ -10,6 +10,7 @@ import (
 
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -38,6 +39,9 @@ func Enqueue(ctx context.Context, pool *pgxpool.Pool, payer, month string, limit
 		return "", dbFail(ctx, "begin", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := release.EnsureBuilding(ctx, tx, payer, monthDate); err != nil {
+		return "", err
+	}
 
 	var runID int64
 	err = tx.QueryRow(ctx, `

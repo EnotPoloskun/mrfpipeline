@@ -7,6 +7,7 @@ import (
 
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -51,6 +52,9 @@ func Retry(ctx context.Context, pool *pgxpool.Pool, stage string, domainID int64
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := release.RequireBuildingForStage(ctx, tx, binding.Kind, domainID); err != nil {
+		return zero, err
+	}
 	if err := lockForRetry(ctx, tx, binding, domainID); err != nil {
 		return zero, err
 	}

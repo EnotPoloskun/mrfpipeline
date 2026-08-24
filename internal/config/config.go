@@ -52,8 +52,26 @@ func normalizeLocalPath(name, raw string, abs func(string) (string, error)) (str
 	return filepath.Clean(got), nil
 }
 
-// ValidatePayer accepts only the exact adapter identifier uhc.
+// ValidatePayerIdentifier accepts the payer identifier stored in the domain
+// schema. It does not decide whether a production adapter supports it.
+func ValidatePayerIdentifier(raw string) error {
+	if raw == "" || len(raw) > 128 || !isLowerAlphaNumeric(raw[0]) {
+		return wrap(FieldPayer, "must be a valid payer identifier")
+	}
+	for i := 1; i < len(raw); i++ {
+		b := raw[i]
+		if !isLowerAlphaNumeric(b) && b != '.' && b != '_' && b != '-' {
+			return wrap(FieldPayer, "must be a valid payer identifier")
+		}
+	}
+	return nil
+}
+
+// ValidatePayer accepts only the exact production adapter identifier uhc.
 func ValidatePayer(raw string) error {
+	if err := ValidatePayerIdentifier(raw); err != nil {
+		return err
+	}
 	if raw != "uhc" {
 		return wrap(FieldPayer, "must be the exact adapter identifier uhc")
 	}
@@ -142,6 +160,10 @@ func hasURISchemePrefix(s string) bool {
 
 func isASCIILetter(b byte) bool {
 	return b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
+}
+
+func isLowerAlphaNumeric(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9'
 }
 
 func isSchemeByte(b byte) bool {

@@ -87,6 +87,11 @@ var tocURLSeq atomic.Int64
 
 func insertParseJob(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.Tx]) (tocID, jobID int64) {
 	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', DATE '2026-08-01') ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
 	var runID int64
 	if err := pool.QueryRow(context.Background(), `
 INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, toc_limit, status, completed_at)

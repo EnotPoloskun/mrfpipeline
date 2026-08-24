@@ -58,6 +58,9 @@ const (
 	FailureArtifactReconciliationFailed  = "artifact_reconciliation_failed"
 	FailureRetryStageNotFailed           = "retry_stage_not_failed"
 	FailureRetryStageInvariant           = "retry_stage_invariant"
+	FailureReleaseNotFound               = "release_not_found"
+	FailureReleaseNotReady               = "release_not_ready"
+	FailureSealedReleaseInconsistent     = "sealed_release_inconsistent"
 
 	MaxAttempts    = 8
 	RescueAfter    = 24 * time.Hour
@@ -107,7 +110,9 @@ func allowedFailureCode(code string) bool {
 		FailurePlanAttachOutputInvalid, FailurePlanAttachDatabaseFailed, FailurePlanAttachInvariant,
 		FailureWorkerLeaseUnavailable, FailureWorkerLeaseLost, FailureRiverTerminalWithoutResult,
 		FailureReconciliationDatabaseFailed, FailureArtifactReconciliationFailed,
-		FailureRetryStageNotFailed, FailureRetryStageInvariant:
+		FailureRetryStageNotFailed, FailureRetryStageInvariant,
+		FailureReleaseNotFound, FailureReleaseNotReady,
+		FailureSealedReleaseInconsistent:
 		return true
 	default:
 		return false
@@ -117,7 +122,8 @@ func allowedFailureCode(code string) bool {
 func isImmediateFail(err error) bool {
 	return isFailure(err, FailureInvalidArguments) ||
 		isFailure(err, FailureMissingRecord) ||
-		isFailure(err, FailureDomainInvariant)
+		isFailure(err, FailureDomainInvariant) ||
+		isFailure(err, FailureSealedReleaseInconsistent)
 }
 
 func terminalFailureCode(err error) string {

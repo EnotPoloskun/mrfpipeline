@@ -9,6 +9,7 @@ import (
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/planbatch"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -57,6 +58,19 @@ func claimImport(ctx context.Context, pool *pgxpool.Pool, tocFileID, riverJobID 
 	var imp, download, parse, payer string
 	var stored *int64
 	var month time.Time
+	err = tx.QueryRow(ctx, `
+SELECT import_status, import_river_job_id, download_status, parse_status, payer_id, collection_month
+FROM mrfpipeline.toc_files
+WHERE id = $1`, tocFileID).Scan(&imp, &stored, &download, &parse, &payer, &month)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.ClaimResult{}, zero, jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return jobs.ClaimResult{}, zero, classifyClaimDB(ctx, err)
+	}
+	if err := release.RequireBuildingForTOC(ctx, tx, tocFileID); err != nil {
+		return jobs.ClaimResult{}, zero, err
+	}
 	err = tx.QueryRow(ctx, `
 SELECT import_status, import_river_job_id, download_status, parse_status, payer_id, collection_month
 FROM mrfpipeline.toc_files
@@ -133,13 +147,6 @@ ORDER BY 1`, tocFileID)
 		return fmt.Errorf("%w: %w: confirm", jobs.ErrJob, database.ErrDatabase)
 	}
 	for _, id := range ids {
-		if err := tx.QueryRow(ctx, `
-SELECT id FROM mrfpipeline.mrf_snapshots WHERE id = $1 FOR UPDATE`, id).Scan(&id); err != nil {
-			if ctx != nil && ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return fmt.Errorf("%w: %w: confirm", jobs.ErrJob, database.ErrDatabase)
-		}
 		if _, err := planbatch.Schedule(ctx, tx, client, id); err != nil {
 			return err
 		}

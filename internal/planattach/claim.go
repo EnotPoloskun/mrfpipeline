@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -100,6 +101,22 @@ WHERE id = $1`, batchID, jobs.StatusRunning)
 
 func lockSnapshotThenBatch(ctx context.Context, tx pgx.Tx, snapshotID, batchID int64) (claimIdentity, error) {
 	var zero claimIdentity
+	if err := release.RequireBuildingForBatch(ctx, tx, batchID); err != nil {
+		return zero, err
+	}
+	var batchSnapshotID int64
+	if err := tx.QueryRow(ctx, `
+SELECT mrf_snapshot_id
+FROM mrfpipeline.plan_attachment_batches
+WHERE id = $1
+FOR UPDATE`, batchID).Scan(&batchSnapshotID); errors.Is(err, pgx.ErrNoRows) {
+		return zero, jobs.Failure(jobs.FailureMissingRecord)
+	} else if err != nil {
+		return zero, classifyDB(ctx, err)
+	}
+	if batchSnapshotID != snapshotID {
+		return zero, jobs.Failure(jobs.FailureDomainInvariant)
+	}
 	var consume, payer string
 	var month time.Time
 	err := tx.QueryRow(ctx, `
@@ -107,15 +124,6 @@ SELECT consume_status, payer_id, collection_month
 FROM mrfpipeline.mrf_snapshots
 WHERE id = $1
 FOR UPDATE`, snapshotID).Scan(&consume, &payer, &month)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return zero, jobs.Failure(jobs.FailureMissingRecord)
-	}
-	if err != nil {
-		return zero, classifyDB(ctx, err)
-	}
-	var found int64
-	err = tx.QueryRow(ctx, `
-SELECT id FROM mrfpipeline.plan_attachment_batches WHERE id = $1 FOR UPDATE`, batchID).Scan(&found)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return zero, jobs.Failure(jobs.FailureMissingRecord)
 	}
@@ -157,6 +165,9 @@ WHERE i.plan_attachment_batch_id = $1 AND p.mrf_snapshot_id = $2`, ident.BatchID
 func lockSnapshotForSucceed(ctx context.Context, tx pgx.Tx, snapshotID int64) error {
 	if tx == nil || snapshotID <= 0 {
 		return jobs.Failure(jobs.FailurePlanAttachDatabaseFailed)
+	}
+	if err := release.RequireBuildingForSnapshot(ctx, tx, snapshotID); err != nil {
+		return err
 	}
 	var id int64
 	err := tx.QueryRow(ctx, `

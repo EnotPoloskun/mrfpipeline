@@ -8,6 +8,7 @@ import (
 	"github.com/EnotPoloskun/mrfparser"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -43,6 +44,9 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.MRFParseArgs]) er
 		},
 		Confirm: func(ctx context.Context, tx pgx.Tx) error {
 			return confirmParseSuccess(ctx, tx, client, job.Args.MRFSourceID)
+		},
+		PreLock: func(ctx context.Context, tx pgx.Tx) error {
+			return release.RequireBuildingForStage(ctx, tx, jobs.KindMRFParse, job.Args.MRFSourceID)
 		},
 	})
 }

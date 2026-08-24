@@ -64,7 +64,7 @@ func Run(ctx context.Context, p RunParams) error {
 	}
 	claim, err := claimFn(ctx)
 	if err != nil {
-		if isFailure(err, FailureMissingRecord) || isFailure(err, FailureDomainInvariant) || isFailure(err, FailureInvalidArguments) {
+		if isFailure(err, FailureMissingRecord) || isFailure(err, FailureDomainInvariant) || isFailure(err, FailureInvalidArguments) || isFailure(err, FailureSealedReleaseInconsistent) {
 			return river.JobCancel(err)
 		}
 		return err

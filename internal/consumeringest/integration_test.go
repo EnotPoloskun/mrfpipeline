@@ -91,6 +91,12 @@ func insertIngestJob(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.
 
 func insertIngestJobForURL(t *testing.T, pool *pgxpool.Pool, client *river.Client[pgx.Tx], month, url string) (sourceID, snapID, jobID int64) {
 	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', $1::date)
+ON CONFLICT DO NOTHING`, month); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(context.Background(), `
 INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
 VALUES ($1, $2::date, 'succeeded', 'succeeded')

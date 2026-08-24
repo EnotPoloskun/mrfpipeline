@@ -7,6 +7,7 @@ import (
 
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -42,6 +43,9 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.TOCImportArgs]) e
 		},
 		Confirm: func(ctx context.Context, tx pgx.Tx) error {
 			return confirmImportSuccess(ctx, tx, river.ClientFromContext[pgx.Tx](ctx), job.Args.TOCFileID)
+		},
+		PreLock: func(ctx context.Context, tx pgx.Tx) error {
+			return release.RequireBuildingForTOC(ctx, tx, job.Args.TOCFileID)
 		},
 	})
 }

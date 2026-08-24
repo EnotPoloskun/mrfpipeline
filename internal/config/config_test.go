@@ -144,6 +144,20 @@ func TestValidatePayer(t *testing.T) {
 	}
 }
 
+func TestValidatePayerIdentifier(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{"uhc", "aetna", "payer_2", "a.b-c"} {
+		if err := ValidatePayerIdentifier(raw); err != nil {
+			t.Fatalf("%q: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{"", "UHC", "-payer", "payer ", "payer/2"} {
+		if err := ValidatePayerIdentifier(raw); !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("%q: got %v", raw, err)
+		}
+	}
+}
+
 func TestValidateCollectionMonth(t *testing.T) {
 	t.Parallel()
 	for _, raw := range []string{"0001-01", "9999-12", "2026-08", "2026-01", "2026-12"} {
