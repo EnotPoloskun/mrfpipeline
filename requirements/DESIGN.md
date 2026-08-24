@@ -2,11 +2,12 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–13 architecture and the
-approved Stories 14–19 target below. The numbered requirement stories remain
-authoritative where they are more specific. Until Stories 14–19 are
-implemented, sections explicitly labeled version 1 describe the current
-binary; the target addendum describes the next rebuild-only contract.
+This document describes the implemented Stories 01–19 architecture. The
+numbered requirement stories remain authoritative where they are more
+specific. Sections below the approved contract that are explicitly labeled
+historical version 1 are retained as background only; they are not current
+runtime guidance. The Stories 14–19 requirements and current README describe
+the rebuild-only feed-free contract.
 
 The design records the implemented version 1 decisions that remain normative
 except where the target addendum explicitly replaces them:
@@ -21,18 +22,17 @@ except where the target addendum explicitly replaces them:
   process-level mutex.
 - Ingest rates once per consumer snapshot, then attach newly discovered plans
   additively without rewriting rate/provider data.
-- Treat `feed_id=mrf-source-<id>` as the latest snapshot for one exact source
-  URL, not as a curated cross-month logical network.
-- Treat the operator-supplied collection month as sticky on first TOC
-  admission. A wrong month is rebuilt, not corrected in place.
+- Treat TOC captures as payer + collection month + exact URL, and MRF source
+  captures as exact URL + collection month. A wrong month is rebuilt, not
+  corrected in place.
 - Use PostgreSQL domain records as durable pipeline truth and River for
   at-least-once background execution.
 - Use numeric database identities and exact database uniqueness. Do not add
   hashes as URL, artifact, job, plan, or output identity.
 
-## Approved Stories 14–19 target
+## Implemented Stories 14–19 contract
 
-The next contract is defined by:
+The current contract is defined by:
 
 - [Story 14: Feed-free domain schema](14-feed-free-domain-schema.md)
 - [Story 15: Month-specific TOC captures](15-month-specific-toc-captures.md)
@@ -41,9 +41,8 @@ The next contract is defined by:
 - [Story 18: Monthly release activation](18-monthly-release-activation.md)
 - [Story 19: Release-aware reconciliation, acceptance, and documentation](19-release-aware-reconciliation-acceptance-and-documentation.md)
 
-Stories 14–17 are one atomic breaking delivery batch. They may be separate
-implementation commits, but none is independently mergeable, releasable, or
-deployable. Consumer `2.0.0` is available first, and there is no adapter,
+Stories 14–17 were one atomic breaking delivery batch. Consumer `2.0.0` is
+available, and there is no adapter,
 compatibility mode, feature flag, dual consumer version, temporary feed state,
 or supported intermediate runtime.
 
@@ -84,6 +83,12 @@ month and activates the target for that payer. Activation seals the month;
 active and inactive releases reject new discovery. Warehouse files are never
 rewritten by activation or rollback.
 
+Activation also freezes every selected output's plan associations. The
+pipeline never creates, schedules, retries, reconciles, or invokes plan
+attachment for active or inactive releases. An out-of-band consumer plan part
+is unsupported sealed-release mutation; plan additions or corrections require
+a newly built release.
+
 Active state is a relation rather than one global month. The compact release
 view is:
 
@@ -93,9 +98,10 @@ aetna -> 2026-08
 ```
 
 A future query service joins each active release to its immutable
-`mrf_snapshots` rows and captures the complete
-`(payer_id, collection_month, output_id)` relation once per request, deriving
-`output_id` as `mrf-<snapshot-id>`. A payer-filtered query uses that payer's
+`mrf_snapshots` rows at startup or control-plane refresh, derives `output_id` as
+`mrf-<snapshot-id>`, validates the complete relation against the warehouse, and
+atomically publishes verified serving state. Each request captures that state
+without rescanning warehouse metadata. A payer-filtered query uses that payer's
 output rows; a query without a payer filter uses every active output row.
 Payers with no active release contribute no served data. Consumer outputs with
 no pipeline snapshot are not release members even when payer/month matches.
@@ -119,7 +125,14 @@ The target remains UHC-only for production discovery. Generic payer columns
 and per-payer release state prepare the domain/query boundary for later payer
 adapters without claiming they exist now.
 
-## Purpose
+## Historical version 1 implementation reference
+
+The following architecture sections preserve the original Stories 01–13
+design for migration and incident context. Where they mention feeds, sticky
+months, consumer `1.5.0`, or `current_*` views, the implemented Stories 14–19
+contract above and the numbered requirements supersede them.
+
+### Purpose
 
 CMS Transparency in Coverage data is published as a large graph rather than a
 single file:
@@ -877,9 +890,15 @@ consumer 1.5.0 acceptance contract.
 
 ### 10. Handle plans discovered later
 
-The pipeline never waits for every payer TOC before parsing an MRF. There may
-be thousands of current TOCs, future discoveries may add more, and there is no
-durable signal that the payer's plan association set is permanently complete.
+While a release is building, the pipeline never waits for every payer TOC
+globally before parsing an MRF. There may be thousands of current TOCs, and
+additional bounded discoveries may add plans to that building release.
+
+For the Stories 14–19 target, this incremental behavior applies only while the
+monthly release is `building`. Story 18 activation is the durable completion
+boundary: every admitted TOC and attachment must be complete, and the resulting
+plan set is frozen while the release is `active` or `inactive`. Later plan
+addition requires a newly built release.
 
 Instead, association is incremental:
 

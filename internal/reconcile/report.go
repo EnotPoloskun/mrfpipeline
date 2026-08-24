@@ -1,18 +1,79 @@
 package reconcile
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 )
 
-// Report is the compact reconcile success object. Counts are mutations
-// committed by this invocation.
+// Report is the compact reconcile success object. Mutation counts describe
+// work committed by this invocation; sealed inconsistency is detected state.
 type Report struct {
-	RepairedJobCount         int `json:"repaired_job_count"`
-	UnblockedStageCount      int `json:"unblocked_stage_count"`
-	ScheduledPlanBatchCount  int `json:"scheduled_plan_batch_count"`
-	CleanedArtifactCount     int `json:"cleaned_artifact_count"`
+	RepairedJobCount                int `json:"repaired_job_count"`
+	UnblockedStageCount             int `json:"unblocked_stage_count"`
+	ScheduledPlanBatchCount         int `json:"scheduled_plan_batch_count"`
+	CleanedArtifactCount            int `json:"cleaned_artifact_count"`
+	SealedReleaseInconsistencyCount int `json:"sealed_release_inconsistency_count"`
+
+	logger     *slog.Logger
+	sealedSeen map[sealedDomainKey]struct{}
+}
+
+type sealedDomainKey struct {
+	table string
+	id    int64
+}
+
+func (r *Report) recordSealed(logger *slog.Logger, kind string, domainID int64) {
+	r.recordSealedDomain(logger, sealedTable(kind), kind, domainID)
+}
+
+func (r *Report) recordSealedSnapshot(logger *slog.Logger, kind string, snapshotID int64) {
+	r.recordSealedDomain(logger, "mrf_snapshots", kind, snapshotID)
+}
+
+func (r *Report) recordSealedDomain(logger *slog.Logger, table, kind string, domainID int64) {
+	if r == nil || domainID <= 0 {
+		return
+	}
+	key := sealedDomainKey{table: table, id: domainID}
+	if r.sealedSeen == nil {
+		r.sealedSeen = make(map[sealedDomainKey]struct{})
+	}
+	if _, ok := r.sealedSeen[key]; ok {
+		return
+	}
+	r.sealedSeen[key] = struct{}{}
+	r.SealedReleaseInconsistencyCount++
+	if logger == nil {
+		logger = r.logger
+	}
+	if logger != nil {
+		logger.LogAttrs(context.Background(), slog.LevelWarn, "sealed_release_inconsistent",
+			slog.String("kind", kind),
+			slog.Int64("domain_id", domainID),
+			slog.String("failure", jobs.FailureSealedReleaseInconsistent),
+		)
+	}
+}
+
+func sealedTable(kind string) string {
+	switch kind {
+	case jobs.KindDiscoveryRun:
+		return "discovery_runs"
+	case jobs.KindTOCDownload, jobs.KindTOCParse, jobs.KindTOCImport:
+		return "toc_files"
+	case jobs.KindMRFDownload, jobs.KindMRFParse:
+		return "mrf_sources"
+	case jobs.KindConsumerIngest:
+		return "mrf_snapshots"
+	case jobs.KindConsumerAttachPlans:
+		return "plan_attachment_batches"
+	default:
+		return kind
+	}
 }
 
 // RetryResult is the compact retry success object.

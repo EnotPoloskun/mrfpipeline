@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned.
+Implemented.
 
 ## User story
 
@@ -64,6 +64,9 @@ For `active` or `inactive` releases:
 
 - do not admit new discovery or create work not already represented by durable
   domain rows;
+- do not create plans, batches, batch items, or `consumer.attach_plans` jobs;
+- do not acknowledge an out-of-band plan part as a supported sealed-release
+  change;
 - existing nonterminal rows indicate an invariant violation because activation
   requires readiness;
 - do not silently repair that violation into a changed sealed release;
@@ -77,10 +80,14 @@ pipeline does not deactivate an unhealthy release automatically.
 A sealed-release domain inconsistency is recorded and does not abort safe work
 for unrelated building releases. Reconciliation:
 
-1. records each sanitized sealed inconsistency without mutating that release;
+1. records each affected durable domain row at most once per pass in the
+   aggregate `sealed_release_inconsistency_count` report field, with sanitized
+   structured logs containing only the failure code, stage context, and
+   numeric domain ID;
 2. continues every safe building-release repair and reconciliation page;
 3. completes remaining independent cleanup; and
-4. returns a nonzero summary with sanitized inconsistency and repair counts.
+4. returns a successful nonzero summary when safe continuation is possible.
+   Infrastructure failures still return an error.
 
 Infrastructure failures that prevent safe continuation, such as lost database
 connectivity, may still abort immediately.
@@ -135,8 +142,9 @@ exposes the complete active `(payer_id, collection_month, output_id)` relation
 through PostgreSQL and `month status`.
 
 A future query service must join active releases to their immutable snapshots
-in one PostgreSQL statement and capture the complete relation once per request.
-For example:
+in one PostgreSQL statement at startup or control-plane refresh. It validates
+the complete relation against the consumer warehouse as required by consumer
+Story 23 and atomically publishes only verified serving state. For example:
 
 ```text
 uhc   2026-09  mrf-72
@@ -146,12 +154,14 @@ aetna 2026-08  mrf-41
 
 Semantics:
 
+- each request captures the already verified relation without rescanning
+  warehouse metadata;
 - payer-filtered request: use that payer's active output rows;
 - request without payer filter: use every active output row;
 - payer with no active row: contribute no data;
 - historical request: deliberately bypass active state and label/group months;
   and
-- one request never rereads the mapping between subqueries.
+- one request never rereads serving state between subqueries.
 
 Relationship and plan views join the exact selected output-ID set. Values are
 bound/registered, never interpolated. The query service must not recreate
@@ -174,6 +184,9 @@ that duplicates consumer and future query-service acceptance:
 - Resolve it through supported processing/retry, activate September atomically,
   then reactivate August as rollback.
 - Require warehouse bytes/counts unchanged by activation and rollback.
+- Require each sealed release's plan-association part inventory to remain
+  unchanged through activation, reconciliation, inactivity, and rollback;
+  reactivating the same release restores its same plan-filtered result set.
 
 ### Monthly capture behavior
 
@@ -272,6 +285,8 @@ Current documentation must explain:
 - one month builds while another remains active;
 - activation seals and atomically switches one payer;
 - rollback reactivates sealed immutable history;
+- active and inactive releases have frozen plan-association sets; new plans or
+  attachment work require a newly built release;
 - multiple payers may have different active months;
 - a query without payer filter applies the complete active output relation and
   does not infer membership from every warehouse output in the active month;
@@ -279,9 +294,9 @@ Current documentation must explain:
 - active release corruption is not silently repaired; and
 - populated old database/warehouse state is rebuild-only.
 
-Before implementation lands, the root README labels Stories 14–19 as planned
-and keeps implemented Story 01–13 commands accurate. The requirements design
-may describe the approved target explicitly.
+The root README and requirements design describe Stories 14–19 as the current
+feed-free target. Story 01–13 populated state and consumer `1.5.0` warehouses
+remain rebuild-only.
 
 ## Required checks
 
@@ -309,6 +324,8 @@ or `digest`.
 ## Acceptance criteria
 
 - Reconciliation preserves sealed releases and never changes active state.
+- Reconciliation and retry never add plan associations to active or inactive
+  releases.
 - Two-month activation and rollback are exact, atomic, restart-safe, and do not
   rewrite warehouse data.
 - The complete active-output relation supports different months per payer,

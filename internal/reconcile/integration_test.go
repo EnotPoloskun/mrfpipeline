@@ -96,27 +96,35 @@ func runPass(t *testing.T, pool *pgxpool.Pool, ws *artifact.Workspace) Report {
 }
 
 func insertDiscovery(t *testing.T, pool *pgxpool.Pool) int64 {
+	return insertDiscoveryFor(t, pool, "uhc", "2026-08")
+}
+
+func insertDiscoveryFor(t *testing.T, pool *pgxpool.Pool, payer, month string) int64 {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
 INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
-VALUES ('uhc', DATE '2026-08-01')
-ON CONFLICT DO NOTHING`); err != nil {
+VALUES ($1, $2)
+ON CONFLICT DO NOTHING`, payer, month+"-01"); err != nil {
 		t.Fatal(err)
 	}
 	var id int64
 	if err := pool.QueryRow(context.Background(), `
 INSERT INTO mrfpipeline.discovery_runs (
     payer_id, collection_month, status, river_job_id, started_at, completed_at
-) VALUES ('uhc', DATE '2026-08-01', 'succeeded', 1, transaction_timestamp(), transaction_timestamp())
-RETURNING id`).Scan(&id); err != nil {
+) VALUES ($1, $2, 'succeeded', 1, transaction_timestamp(), transaction_timestamp())
+RETURNING id`, payer, month+"-01").Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
 }
 
 func insertTOC(t *testing.T, pool *pgxpool.Pool, download, parse, imp string) int64 {
+	return insertTOCFor(t, pool, "uhc", "2026-08", download, parse, imp)
+}
+
+func insertTOCFor(t *testing.T, pool *pgxpool.Pool, payer, month, download, parse, imp string) int64 {
 	t.Helper()
-	runID := insertDiscovery(t, pool)
+	runID := insertDiscoveryFor(t, pool, payer, month)
 	var fail any
 	if download == jobs.StatusFailed || parse == jobs.StatusFailed || imp == jobs.StatusFailed {
 		fail = jobs.FailureTOCDownload
@@ -132,8 +140,8 @@ func insertTOC(t *testing.T, pool *pgxpool.Pool, download, parse, imp string) in
 INSERT INTO mrfpipeline.toc_files (
     payer_id, collection_month, source_url, first_discovery_run_id,
     download_status, parse_status, import_status, failure_code
-) VALUES ('uhc', DATE '2026-08-01', $1, $2, $3, $4, $5, $6)
-RETURNING id`, uniqueURL("toc"), runID, download, parse, imp, fail).Scan(&id); err != nil {
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id`, payer, month+"-01", uniqueURL("toc"), runID, download, parse, imp, fail).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -256,6 +264,290 @@ SELECT download_status, failure_code, download_river_job_id FROM mrfpipeline.toc
 	_, err = Retry(context.Background(), pool, jobs.KindTOCDownload, toc)
 	if !jobs.IsFailure(err, jobs.FailureRetryStageNotFailed) {
 		t.Fatalf("retry pending: %v", err)
+	}
+}
+
+func TestIntegrationRetrySealedReleaseForbidden(t *testing.T) {
+	pool := testDB(t)
+	toc := insertTOC(t, pool, jobs.StatusFailed, jobs.StatusBlocked, jobs.StatusBlocked)
+	if _, err := pool.Exec(context.Background(), `
+UPDATE mrfpipeline.monthly_releases
+SET status = 'active', sealed_at = transaction_timestamp(), last_activated_at = transaction_timestamp()
+WHERE payer_id = 'uhc' AND collection_month = DATE '2026-08-01'`); err != nil {
+		t.Fatal(err)
+	}
+	var before int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindTOCDownload).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Retry(context.Background(), pool, jobs.KindTOCDownload, toc)
+	if !jobs.IsFailure(err, jobs.FailureSealedReleaseRetryForbidden) {
+		t.Fatalf("retry sealed: %v", err)
+	}
+	var after int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindTOCDownload).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("sealed retry inserted a job: %d -> %d", before, after)
+	}
+}
+
+func TestIntegrationSharedSourceSealedRetryAndReconcile(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	month := "2026-08-01"
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases
+    (payer_id, collection_month, status, sealed_at, last_activated_at)
+VALUES
+    ('uhc', $1, 'active', transaction_timestamp(), transaction_timestamp()),
+    ('aetna', $1, 'building', NULL, NULL)`, month); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_sources
+    (source_url, collection_month, download_status, parse_status, failure_code)
+VALUES ('https://files.test/shared-source', $1, 'failed', 'blocked', $2)
+RETURNING id`, month, jobs.FailureMRFDownload).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	for _, payer := range []string{"uhc", "aetna"} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots
+    (mrf_source_id, payer_id, collection_month, consume_status)
+VALUES ($1, $2, $3, 'blocked')`, sourceID, payer, month); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var jobsBefore int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload).Scan(&jobsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Retry(ctx, pool, jobs.KindMRFDownload, sourceID); !jobs.IsFailure(err, jobs.FailureSealedReleaseRetryForbidden) {
+		t.Fatalf("shared sealed retry: %v", err)
+	}
+	var status, parse string
+	var jobID *int64
+	if err := pool.QueryRow(ctx, `
+SELECT download_status, parse_status, download_river_job_id
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&status, &parse, &jobID); err != nil {
+		t.Fatal(err)
+	}
+	if status != jobs.StatusFailed || parse != jobs.StatusBlocked || jobID != nil {
+		t.Fatalf("sealed source mutated: %s %s %v", status, parse, jobID)
+	}
+	var jobsAfter int
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload).Scan(&jobsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if jobsAfter != jobsBefore {
+		t.Fatalf("sealed retry inserted a job: %d -> %d", jobsBefore, jobsAfter)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.mrf_sources
+SET download_status = 'succeeded', parse_status = 'pending', failure_code = NULL,
+    download_river_job_id = NULL, parse_river_job_id = NULL
+WHERE id = $1`, sourceID); err != nil {
+		t.Fatal(err)
+	}
+	buildingTOC := insertTOCFor(t, pool, "cigna", "2026-08", jobs.StatusPending, jobs.StatusBlocked, jobs.StatusBlocked)
+	report := runPass(t, pool, workspace(t))
+	if report.SealedReleaseInconsistencyCount != 1 || report.RepairedJobCount != 1 {
+		t.Fatalf("shared source report: %+v", report)
+	}
+	var buildingJob *int64
+	if err := pool.QueryRow(ctx, `
+SELECT download_river_job_id FROM mrfpipeline.toc_files WHERE id = $1`, buildingTOC).Scan(&buildingJob); err != nil {
+		t.Fatal(err)
+	}
+	if buildingJob == nil {
+		t.Fatal("unrelated building repair was not scheduled")
+	}
+}
+
+func TestIntegrationReconcileSealedAndBuildingRows(t *testing.T) {
+	pool := testDB(t)
+	ws := workspace(t)
+	sealed := insertTOC(t, pool, jobs.StatusPending, jobs.StatusBlocked, jobs.StatusBlocked)
+	if _, err := pool.Exec(context.Background(), `
+UPDATE mrfpipeline.monthly_releases
+SET status = 'active', sealed_at = transaction_timestamp(), last_activated_at = transaction_timestamp()
+WHERE payer_id = 'uhc' AND collection_month = DATE '2026-08-01'`); err != nil {
+		t.Fatal(err)
+	}
+	building := insertTOCFor(t, pool, "aetna", "2026-08", jobs.StatusPending, jobs.StatusBlocked, jobs.StatusBlocked)
+	report := runPass(t, pool, ws)
+	if report.SealedReleaseInconsistencyCount != 1 || report.RepairedJobCount != 1 {
+		t.Fatalf("report %+v", report)
+	}
+	var sealedStatus string
+	var sealedJob *int64
+	if err := pool.QueryRow(context.Background(), `
+SELECT download_status, download_river_job_id
+FROM mrfpipeline.toc_files WHERE id = $1`, sealed).Scan(&sealedStatus, &sealedJob); err != nil {
+		t.Fatal(err)
+	}
+	if sealedStatus != jobs.StatusPending || sealedJob != nil {
+		t.Fatalf("sealed row changed: %s %v", sealedStatus, sealedJob)
+	}
+	var buildingJob *int64
+	if err := pool.QueryRow(context.Background(), `
+SELECT download_river_job_id FROM mrfpipeline.toc_files WHERE id = $1`, building).Scan(&buildingJob); err != nil {
+		t.Fatal(err)
+	}
+	if buildingJob == nil {
+		t.Fatal("building row was not repaired")
+	}
+}
+
+func TestIntegrationReconcileHealthySealedReleaseIsQuiet(t *testing.T) {
+	pool := testDB(t)
+	ws := workspace(t)
+	ctx := context.Background()
+	month := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, status, sealed_at, last_activated_at)
+VALUES ('uhc', $1, 'active', transaction_timestamp(), transaction_timestamp())`, month); err != nil {
+		t.Fatal(err)
+	}
+	var runID, sourceID, snapshotID, planID, batchID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, status, completed_at)
+VALUES ('uhc', $1, 'succeeded', transaction_timestamp()) RETURNING id`, month).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.toc_files (
+    payer_id, collection_month, source_url, first_discovery_run_id,
+    download_status, parse_status, import_status
+) VALUES ('uhc', $1, 'https://files.test/quiet-toc', $2, 'succeeded', 'succeeded', 'succeeded')`, month, runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ('https://files.test/quiet-mrf', $1, 'succeeded', 'succeeded') RETURNING id`, month).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
+VALUES ($1, 'uhc', $2, 'succeeded') RETURNING id`, sourceID, month).Scan(&snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_plans (mrf_snapshot_id, plan_name, issuer_name, plan_id_type, plan_id, plan_market_type)
+VALUES ($1, 'A', 'issuer', 'hios', '1', 'group') RETURNING id`, snapshotID).Scan(&planID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.plan_attachment_batches (
+    mrf_snapshot_id, status, requested_plan_count, added_plan_count, completed_at
+) VALUES ($1, 'succeeded', 1, 1, transaction_timestamp()) RETURNING id`, snapshotID).Scan(&batchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.plan_attachment_batch_items (plan_attachment_batch_id, mrf_plan_id)
+VALUES ($1, $2)`, batchID, planID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.monthly_releases
+SET sealed_at = transaction_timestamp(), last_activated_at = transaction_timestamp()
+WHERE payer_id = 'uhc' AND collection_month = $1`, month); err != nil {
+		t.Fatal(err)
+	}
+	services := filepath.Join(t.TempDir(), "services.csv")
+	if err := os.WriteFile(services, []byte("billing_code_type,billing_code\nCPT,99213\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	warehouse := t.TempDir()
+	partDir := filepath.Join(warehouse, "plan_associations", "output_id=mrf-"+strconv.FormatInt(snapshotID, 10))
+	if err := os.MkdirAll(partDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(partDir, "plan-batch-"+strconv.FormatInt(batchID, 10)+"-part-00000.parquet"), []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Run(ctx, Params{
+		Pool: pool, Workspace: ws, ServicesPath: services,
+		WarehousePath: warehouse, ProviderCatalogPath: filepath.Join(t.TempDir(), "cat"),
+		Logger: jobs.NewLogger(io.Discard),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SealedReleaseInconsistencyCount != 0 || report.RepairedJobCount != 0 || report.UnblockedStageCount != 0 {
+		t.Fatalf("healthy sealed release was not quiet: %+v", report)
+	}
+}
+
+func TestIntegrationSealedPlanSetDriftReported(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	month := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases
+    (payer_id, collection_month, status, sealed_at, last_activated_at)
+VALUES ('uhc', $1, 'active', transaction_timestamp(), transaction_timestamp())`, month); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID, snapshotID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ('https://files.test/sealed-drift', $1, 'succeeded', 'succeeded') RETURNING id`, month).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
+VALUES ($1, 'uhc', $2, 'succeeded') RETURNING id`, sourceID, month).Scan(&snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	var batchID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.plan_attachment_batches
+    (mrf_snapshot_id, status, requested_plan_count, added_plan_count, completed_at)
+VALUES ($1, 'succeeded', 1, 1, transaction_timestamp())
+RETURNING id`, snapshotID).Scan(&batchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_plans
+    (mrf_snapshot_id, plan_name, issuer_name, plan_id_type, plan_id, plan_market_type)
+VALUES ($1, 'out-of-band', 'issuer', 'hios', 'sealed-drift', 'group')`, snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	var planID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM mrfpipeline.mrf_plans WHERE mrf_snapshot_id = $1`, snapshotID).Scan(&planID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.plan_attachment_batch_items (plan_attachment_batch_id, mrf_plan_id)
+VALUES ($1, $2)`, batchID, planID); err != nil {
+		t.Fatal(err)
+	}
+	warehouse := t.TempDir()
+	if err := os.WriteFile(filepath.Join(warehouse, "warehouse.json"), []byte(`{"warehouse_schema_version":"2.0.0","provider_catalog":{"schema_version":1,"release_month":"2026-08"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	parts := filepath.Join(warehouse, "plan_associations", "output_id=mrf-"+strconv.FormatInt(snapshotID, 10))
+	if err := os.MkdirAll(parts, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parts, "plan-batch-999-part-00000.parquet"), []byte("not inspected"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var report Report
+	report.logger = jobs.NewLogger(io.Discard)
+	if err := auditSealedPlanSets(ctx, pool, warehouse, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.SealedReleaseInconsistencyCount != 4 {
+		t.Fatalf("drift count = %d", report.SealedReleaseInconsistencyCount)
 	}
 }
 

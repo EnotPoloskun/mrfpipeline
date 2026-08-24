@@ -53,6 +53,9 @@ func Retry(ctx context.Context, pool *pgxpool.Pool, stage string, domainID int64
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if err := release.RequireBuildingForStage(ctx, tx, binding.Kind, domainID); err != nil {
+		if jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+			return zero, jobs.Failure(jobs.FailureSealedReleaseRetryForbidden)
+		}
 		return zero, err
 	}
 	if err := lockForRetry(ctx, tx, binding, domainID); err != nil {

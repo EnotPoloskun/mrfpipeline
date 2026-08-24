@@ -52,6 +52,7 @@ func TestFailureCodes(t *testing.T) {
 		FailureReleaseNotFound,
 		FailureReleaseNotReady,
 		FailureSealedReleaseInconsistent,
+		FailureSealedReleaseRetryForbidden,
 	} {
 		err := Failure(code)
 		if !errors.Is(err, ErrJob) || !IsFailure(err, code) {
@@ -144,5 +145,8 @@ func TestFailureCodes(t *testing.T) {
 	}
 	if isImmediateFail(Failure(FailureRetryStageNotFailed)) {
 		t.Fatal("retry not-failed is not an immediate worker fail")
+	}
+	if !isImmediateFail(Failure(FailureSealedReleaseRetryForbidden)) {
+		t.Fatal("sealed retry must be immediate")
 	}
 }

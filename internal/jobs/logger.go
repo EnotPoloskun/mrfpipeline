@@ -16,6 +16,7 @@ var allowedLogKeys = map[string]bool{
 	"failure":      true,
 	"duration_ms":  true,
 	"count":        true,
+	"domain_id":    true,
 	"phase":        true,
 	"percent":      true,
 	"copied_bytes": true,

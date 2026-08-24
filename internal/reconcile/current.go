@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -13,9 +14,9 @@ import (
 )
 
 const (
-	actionKeep = "keep"
-	actionReplace = "replace"
-	actionFail = "fail"
+	actionKeep      = "keep"
+	actionReplace   = "replace"
+	actionFail      = "fail"
 	actionInvariant = "invariant"
 )
 
@@ -63,6 +64,11 @@ LIMIT $2`, b.Spec.IDColumn, b.Spec.Table, b.Spec.StatusColumn, b.Spec.IDColumn, 
 		for _, id := range ids {
 			n, err := repairOneCurrent(ctx, pool, client, b, id)
 			if err != nil {
+				if jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+					report.recordSealed(report.logger, b.Kind, id)
+					after = id
+					continue
+				}
 				return err
 			}
 			report.RepairedJobCount += n
@@ -78,6 +84,9 @@ func repairOneCurrent(ctx context.Context, pool *pgxpool.Pool, client *river.Cli
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := release.RequireBuildingForStage(ctx, tx, b.Kind, domainID); err != nil {
+		return 0, err
+	}
 	row, err := lockStage(ctx, tx, b.Spec, domainID)
 	if err != nil {
 		return 0, err

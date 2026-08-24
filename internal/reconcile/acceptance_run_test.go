@@ -16,6 +16,7 @@ import (
 
 	"github.com/enotpoloskun/mrfpipeline/internal/config"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -37,6 +38,16 @@ type liveReport struct {
 	RestartSources     int64 `json:"restart_mrf_source_count"`
 	RestartSnapshots   int64 `json:"restart_snapshot_count"`
 	RestartWarehouse   int64 `json:"restart_warehouse_file_count"`
+}
+
+type activeRelation struct {
+	ActiveOutputs []activeOutput `json:"active_outputs"`
+}
+
+type activeOutput struct {
+	PayerID string `json:"payer_id"`
+	Month   string `json:"collection_month"`
+	Output  string `json:"output_id"`
 }
 
 type workProc struct {
@@ -107,6 +118,33 @@ func runLiveAcceptance(ctx context.Context, getenv func(string) string, bin stri
 	if err := waitNoRiverClient(goneWait, dbURL); err != nil {
 		return zero, err
 	}
+	statusOut, err := runBinOutput(ctx, bin, env, "month", "status", "--payer", "uhc", "--collection-month", month)
+	if err != nil {
+		return zero, err
+	}
+	var status release.StatusReport
+	if err := json.Unmarshal(bytes.TrimSpace(statusOut), &status); err != nil || !status.DatabaseReady {
+		return zero, jobs.Failure(jobs.FailureReleaseNotReady)
+	}
+	activationOut, err := runBinOutput(ctx, bin, env, "month", "activate", "--payer", "uhc", "--collection-month", month)
+	if err != nil {
+		return zero, err
+	}
+	var activation release.ActivationResult
+	if err := json.Unmarshal(bytes.TrimSpace(activationOut), &activation); err != nil || activation.OutputCount == 0 {
+		return zero, jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	if err := runBin(ctx, bin, env, "month", "activate", "--payer", "uhc", "--collection-month", month); err != nil {
+		return zero, err
+	}
+	activeOut, err := runBinOutput(ctx, bin, env, "month", "status")
+	if err != nil {
+		return zero, err
+	}
+	var active activeRelation
+	if err := json.Unmarshal(bytes.TrimSpace(activeOut), &active); err != nil || len(active.ActiveOutputs) == 0 {
+		return zero, jobs.Failure(jobs.FailureDomainInvariant)
+	}
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
@@ -127,6 +165,9 @@ func runLiveAcceptance(ctx context.Context, getenv func(string) string, bin stri
 	var rec Report
 	if err := json.Unmarshal(bytes.TrimSpace(out), &rec); err != nil {
 		return zero, jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+	}
+	if rec.SealedReleaseInconsistencyCount != 0 {
+		return zero, jobs.Failure(jobs.FailureSealedReleaseInconsistent)
 	}
 	rep.ReconcileRepaired = int64(rec.RepairedJobCount)
 
@@ -158,7 +199,28 @@ func runLiveAcceptance(ctx context.Context, getenv func(string) string, bin stri
 	if err := json.Unmarshal(bytes.TrimSpace(out), &rec); err != nil {
 		return zero, jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
 	}
-	if rec.RepairedJobCount != 0 || rec.UnblockedStageCount != 0 || rec.ScheduledPlanBatchCount != 0 {
+	if rec.RepairedJobCount != 0 || rec.UnblockedStageCount != 0 || rec.ScheduledPlanBatchCount != 0 || rec.SealedReleaseInconsistencyCount != 0 {
+		return zero, jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	activeAfterRestart, err := runBinOutput(ctx, bin, env, "month", "status")
+	if err != nil {
+		return zero, err
+	}
+	var activeAfter activeRelation
+	if err := json.Unmarshal(bytes.TrimSpace(activeAfterRestart), &activeAfter); err != nil || len(activeAfter.ActiveOutputs) == 0 {
+		return zero, jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	if !sameActiveRelation(active, activeAfter) {
+		return zero, jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	foundActiveMonth := false
+	for _, output := range activeAfter.ActiveOutputs {
+		if output.PayerID == "uhc" && output.Month == month && output.Output != "" {
+			foundActiveMonth = true
+			break
+		}
+	}
+	if !foundActiveMonth {
 		return zero, jobs.Failure(jobs.FailureDomainInvariant)
 	}
 
@@ -183,6 +245,18 @@ func runLiveAcceptance(ctx context.Context, getenv func(string) string, bin stri
 		}
 	}
 	return rep, nil
+}
+
+func sameActiveRelation(left, right activeRelation) bool {
+	if len(left.ActiveOutputs) != len(right.ActiveOutputs) {
+		return false
+	}
+	for i := range left.ActiveOutputs {
+		if left.ActiveOutputs[i] != right.ActiveOutputs[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func liveEnv(getenv func(string) string, dbURL string) []string {

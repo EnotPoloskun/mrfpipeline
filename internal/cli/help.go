@@ -22,7 +22,7 @@ Commands:
   migrate    Apply application and River database migrations
   work       Run background workers
   discover   Enqueue one bounded UHC discovery run
-  reconcile  Repair safe nonterminal scheduling and artifact gaps
+  reconcile  Repair building-release gaps and report sealed inconsistencies
   retry      Reopen one exact failed stage with a fresh River series
   month      Inspect and activate monthly serving releases
 `
@@ -63,8 +63,8 @@ const discoverHelp = `Usage:
 Enqueue one background discovery run. Success reports the durable run and
 job identifiers rather than waiting for listing or download.
 
-collection_month selects the caller-supplied monthly release that owns
-discovered TOC records. It is not inferred from URLs or payer contents.
+collection_month selects the caller-supplied building monthly release that
+owns discovered TOC captures. It is not inferred from URLs or payer contents.
 
 --limit is required and must be a positive integer. Unlimited discovery is
 out of version 1 scope.
@@ -82,10 +82,10 @@ const reconcileHelp = `Usage:
   mrfpipeline reconcile
   mrfpipeline reconcile --help
 
-Acquire the exclusive worker lease and perform only safe nonterminal
-repairs: missing successor jobs, orphaned current jobs, plan-batch
-scheduling, and eligible artifact cleanup. Terminal failed stages are
-not reopened; use retry for those.
+Acquire the exclusive worker lease and repair only safe gaps in building
+releases: missing successor jobs, orphaned current jobs, plan-batch
+scheduling, and eligible artifact cleanup. Sealed-release inconsistencies
+are reported without mutation; terminal failed stages use retry.
 
 Required environment:
   MRFPIPELINE_DATABASE_URL
@@ -103,6 +103,8 @@ Reopen one exact failed domain stage and insert a replacement River
 job. The command does not run the job. The worker must be stopped.
 The same stage identity is retained. An attachment retry reuses the
 frozen plan batch rather than creating a new batch for its items.
+Retries for active or inactive releases fail with
+sealed_release_retry_forbidden.
 
 Required flags:
   --stage   One production job kind

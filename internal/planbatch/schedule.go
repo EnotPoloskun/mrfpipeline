@@ -192,6 +192,13 @@ func snapshotLifecycle(consume string, jobID *int64) error {
 // in one short transaction per snapshot. It is repeat-safe and does not reset
 // failed or running batches.
 func SweepConsumed(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx]) (int, error) {
+	return SweepConsumedReleaseAware(ctx, pool, client, nil)
+}
+
+// SweepConsumedReleaseAware is SweepConsumed with a skip hook for snapshots
+// whose release is sealed. The hook is called after the transaction rolls
+// back, and the sweep continues with the next snapshot.
+func SweepConsumedReleaseAware(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], onSealed func(int64)) (int, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -230,6 +237,29 @@ LIMIT $3`, jobs.StatusSucceeded, after, snapshotPage)
 			return created, nil
 		}
 		for _, id := range ids {
+			var unassigned, unresolved, succeeded bool
+			if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM mrfpipeline.mrf_plans p
+    WHERE p.mrf_snapshot_id = $1
+      AND NOT EXISTS (
+          SELECT 1 FROM mrfpipeline.plan_attachment_batch_items i
+          WHERE i.mrf_plan_id = p.id
+      )
+), EXISTS (
+    SELECT 1 FROM mrfpipeline.plan_attachment_batches b
+    WHERE b.mrf_snapshot_id = $1
+      AND b.status IN ('pending', 'running', 'failed')
+), EXISTS (
+    SELECT 1 FROM mrfpipeline.plan_attachment_batches b
+    WHERE b.mrf_snapshot_id = $1 AND b.status = 'succeeded'
+)`, id).Scan(&unassigned, &unresolved, &succeeded); err != nil {
+				return created, classifyDB(ctx, err)
+			}
+			if !unassigned && !unresolved && succeeded {
+				after = id
+				continue
+			}
 			tx, err := pool.Begin(ctx)
 			if err != nil {
 				return created, classifyDB(ctx, err)
@@ -237,6 +267,11 @@ LIMIT $3`, jobs.StatusSucceeded, after, snapshotPage)
 			ok, err := Schedule(ctx, tx, client, id)
 			if err != nil {
 				_ = tx.Rollback(ctx)
+				if onSealed != nil && jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+					onSealed(id)
+					after = id
+					continue
+				}
 				return created, err
 			}
 			if err := tx.Commit(ctx); err != nil {

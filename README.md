@@ -7,38 +7,46 @@ Version 1 is specified by Stories 01–13 in [`requirements/`](requirements/).
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
-## Planned feed-free monthly-release contract
+## Feed-free monthly-release contract
 
 Stories [14](requirements/14-feed-free-domain-schema.md) through
 [19](requirements/19-release-aware-reconciliation-acceptance-and-documentation.md)
-define the approved next rebuild-only contract. They are requirements, not the
-currently implemented command/schema behavior documented below.
+define the implemented rebuild-only contract. Stories 14–19 are breaking
+changes: an old populated database or warehouse must be rebuilt.
 
 The target removes `mrf_feeds` and `feed_id`, identifies an MRF source capture
 by exact URL + collection month, identifies a consumer snapshot by source +
 payer + collection month, admits stable TOC and MRF URLs as new captures in a
 later month, and integrates exact feed-free `mrfconsumer 2.0.0`.
 
-Stories 14–17 form one atomic breaking delivery batch. They may be implemented
-as separate commits but are not independently mergeable, releasable, or
-deployable. There is no compatibility adapter, temporary feed state, feature
-flag, or supported intermediate runtime.
+There is no compatibility adapter, temporary feed state, feature flag, or
+supported intermediate runtime. The pipeline integrates exact feed-free
+`mrfconsumer 2.0.0`.
 
-The pipeline will keep one monthly release per payer in `building`, `active`,
+The pipeline keeps one monthly release per payer in `building`, `active`,
 or `inactive` state. An operator completes and validates a building month, then
 atomically activates it without rewriting warehouse data. Activation seals the
 month against new discovery; rollback reactivates an already sealed historical
 month. Different payers may have different active months.
 
-A future query service will capture the complete active
-`(payer_id, collection_month, output_id)` relation derived from the pipeline's
-sealed snapshots once per request. Queries with no payer filter must apply
-every active output row, not one global month and not every warehouse output
-that happens to share an active payer/month. Query planning, partition pruning,
-and performance acceptance belong to that query service and the consumer.
+Activation also freezes every selected output's plan associations. The
+pipeline never schedules, retries, reconciles, or invokes plan attachment for
+an active or inactive release. Plan additions or corrections require a newly
+built release.
 
-Until Stories 14–19 are implemented, use the Story 01–13 commands, schema,
-consumer `1.5.0`, and operational guidance in the remaining README.
+A future query service will load the complete active
+`(payer_id, collection_month, output_id)` relation derived from the pipeline's
+sealed snapshots at startup or control-plane refresh, validate it against the
+warehouse, and atomically publish verified serving state. Each request captures
+that already verified relation without rescanning warehouse metadata. Queries
+with no payer filter must apply every active output row, not one global month
+and not every warehouse output that happens to share an active payer/month.
+Query planning, partition pruning, and performance acceptance belong to that
+query service and the consumer.
+
+The remaining sections describe the current feed-free commands and operational
+contract. Historical Story 01–13 databases and `mrfconsumer 1.5.0` warehouses
+are rebuild-only and are not migrated in place.
 
 ## Prerequisites
 
@@ -73,6 +81,9 @@ read those repositories) before `go build` or `go test`. An existing
 mrfpipeline migrate
 mrfpipeline work
 mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
+mrfpipeline month status --payer <payer> --collection-month <YYYY-MM>
+mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
+mrfpipeline month status
 mrfpipeline reconcile
 mrfpipeline retry --stage <job-kind> --id <domain-id>
 ```
@@ -84,8 +95,14 @@ worker lease, runs safe reconciliation, then consumes discovery, TOC
 download, TOC parse, TOC import, MRF download, MRF parse, and consumer
 ingest and attach queues until canceled.
 
-`discover` enqueues one bounded UHC discovery run and reports identifiers
-without waiting for downloads.
+`discover` enqueues one bounded UHC discovery run for a building monthly
+release and reports identifiers without waiting for downloads.
+
+`month status` reports targeted readiness blockers, or the complete active
+`(payer_id, collection_month, output_id)` handoff relation with no selector.
+`month activate` seals a ready building/inactive release and atomically switches
+that payer's active month. Repeating activation is idempotent; activation and
+rollback do not rewrite warehouse files.
 
 `reconcile` performs only safe nonterminal repairs. Terminal failed stages
 require `retry`.
@@ -117,33 +134,96 @@ Lease loss cancels River and prevents beginning another warehouse write.
 
 ## Stage flow
 
-1. `discover` admits at most `--limit` new TOC URLs for one sticky collection
-   month.
+1. `discover` admits at most `--limit` new TOC URLs for one payer/month
+   building release. A TOC capture is identified by payer + month + exact URL.
 2. Each TOC downloads, parses, and imports.
-3. Exact MRF URLs download and parse once, even when several TOCs reference
-   them. Parsing is plan-independent.
-4. Each required source/feed/month snapshot is ingested once.
+3. Exact MRF URL + collection-month captures download and parse once, even
+   when several TOCs reference them. Parsing is plan-independent.
+4. Each required source + payer + month snapshot is ingested once.
 5. Plans attach additively in frozen batches. Later plans do not rewrite
    rate or provider Parquet.
 
 Example: plans A and B attach first; later B and C yield warehouse
 associations A, B, and C, and the second batch writes only C.
 
-## Collection month and current views
+## Monthly releases and serving relation
 
-Collection month is a caller-supplied label. The first admitting discovery
-freezes it on each TOC. A wrong first admission requires rebuilding affected
-pipeline and warehouse state.
+Collection month is part of domain identity and release state, not a label.
+Discovery creates a `building` release transactionally. Activation changes it
+to `active`, freezes discovery and plan associations, and records the selected
+immutable snapshots. An `inactive` release remains available for explicit
+rollback/reactivation.
 
-**Warning:** source-based feeds are not logical cross-month networks. After
-URL rotation, `current_*` warehouse views can double-count the same logical
-product. Serving must use an explicit collection month or a single-month
-warehouse until a curated feed map exists.
+The serving relation is derived from PostgreSQL as
+`(payer_id, collection_month, 'mrf-' || snapshot.id)` for every snapshot in
+each active release. A payer-less query uses the complete relation; it does not
+infer membership from every warehouse output or a global latest month. No
+automatic latest-month or `current_*` serving view is supported.
+
+Active and inactive releases are sealed. New discovery, plans, batches, batch
+items, attachment jobs, and attachment execution require a new building
+release. Reconciliation reports sealed corruption without silently changing it.
 
 A snapshot is plan-ready only when consume succeeded, at least one attachment
 batch succeeded, every plan is assigned, and no pending/running/failed batch
 exists. A planless snapshot is not plan-ready. Do not serve planless rates
 when that PostgreSQL-derived state is required.
+
+## Operator procedures
+
+Check a building release before cutover. This targeted form is authoritative
+and reports sorted blocker codes plus the exact readiness decision:
+
+```text
+mrfpipeline month status --payer uhc --collection-month 2026-09
+{"payer_id":"uhc","collection_month":"2026-09","status":"building","database_ready":true,"blockers":[]}
+```
+
+After readiness succeeds, cut over that payer explicitly. Activation seals the
+month and makes its derived snapshot outputs active; the previous active month
+becomes inactive. To roll back, run the same command for the sealed historical
+month. Both operations are lease-protected, atomic, and idempotent:
+
+```text
+mrfpipeline month activate --payer uhc --collection-month 2026-09
+mrfpipeline month activate --payer uhc --collection-month 2026-08  # rollback
+```
+
+Back up PostgreSQL together with the append-only warehouse, shared parsed MRF
+directories, and provider catalog before a cutover or rebuild. For example:
+
+```text
+pg_dump --format=custom --file=mrfpipeline-2026-09.dump "$MRFPIPELINE_DATABASE_URL"
+tar -C "$MRFPIPELINE_WAREHOUSE_PATH" -czf warehouse-2026-09.tgz .
+tar -C "$MRFPIPELINE_ARTIFACT_ROOT/mrf" -czf parsed-mrf-2026-09.tgz .
+tar -C "$MRFPIPELINE_PROVIDER_CATALOG_PATH" -czf provider-catalog-2026-09.tgz .
+```
+
+Restore the database, warehouse, parsed MRF tree, and catalog as one set before
+starting workers; PostgreSQL's active-release mapping is required for serving.
+For a fresh restore, the corresponding commands are:
+
+```text
+pg_restore --dbname="$MRFPIPELINE_DATABASE_URL" mrfpipeline-2026-09.dump
+tar -C "$MRFPIPELINE_WAREHOUSE_PATH" -xzf warehouse-2026-09.tgz
+tar -C "$MRFPIPELINE_ARTIFACT_ROOT/mrf" -xzf parsed-mrf-2026-09.tgz
+tar -C "$MRFPIPELINE_PROVIDER_CATALOG_PATH" -xzf provider-catalog-2026-09.tgz
+```
+
+Populated pre-Story-14 databases and consumer `1.5.0` warehouses are
+rebuild-only: preserve the backup, create fresh database/filesystem roots, run
+`migrate`, and rebuild through the current feed-free pipeline.
+
+A query-service handoff uses the complete no-selector relation and refreshes it
+atomically after validating every selected `mrf-<snapshot-id>` against the
+consumer 2.0.0 warehouse:
+
+```text
+mrfpipeline month status > active-output-relation.json
+```
+
+The service refreshes on startup/control-plane change, then serves the captured
+relation without inferring membership from other warehouse outputs.
 
 ## First live run
 
@@ -160,11 +240,15 @@ worker if capacity approaches the operator safety threshold.
 
 Interrupted nonterminal work converges through artifact publication and
 startup reconciliation. `reconcile` restores missing eligible jobs and
-normalizes orphaned claims. It never reopens a terminal failed stage.
+normalizes orphaned claims for building releases. It never reopens a terminal
+failed stage, and a sealed inconsistency is reported without mutation while
+unrelated building repairs continue.
 
-Use `retry --stage <kind> --id <id>` for one failed record. Retry preserves
-numeric identity, output IDs, frozen attachment items, and artifacts. The
-normal worker recognizes completed publication.
+Use `retry --stage <kind> --id <id>` for one failed record in a building
+release. Retry preserves numeric identity, output IDs, frozen attachment
+items, and artifacts. A failed stage in an active/inactive release returns
+`sealed_release_retry_forbidden` and does not mutate it. The normal worker
+recognizes completed publication.
 
 Manifest-present invalid parser output is never auto-deleted. Stop the
 worker, inspect that exact generated directory, then `retry`.
@@ -182,32 +266,52 @@ Automatic cleanup, while the lease is held, removes only:
 Shared successful MRF parsed output has no automatic deletion path. The
 pipeline never cleans the consumer warehouse or `<warehouse>/.staging`.
 
-Back up PostgreSQL, shared parsed MRFs, and the append-only warehouse.
+Back up PostgreSQL, shared parsed MRFs, the append-only warehouse, and the
+pinned provider-catalog identity. Restoring only warehouse files is
+insufficient because active release mapping lives in PostgreSQL.
 
 ## Status queries
 
-Default queries are redacted. They return counts and numeric IDs only.
+Default queries are redacted. They return validated payer/month values,
+derived output IDs, blocker codes, counts, statuses, and numeric IDs only.
+The targeted `month status --payer ... --collection-month ...` command is the
+authoritative readiness check, including exact current River-job identity.
+The aggregate query below is an operational overview, not a replacement for
+that targeted check.
 
 ```sql
+SELECT status, count(*) AS n
+FROM mrfpipeline.monthly_releases
+GROUP BY status
+ORDER BY status;
+
+SELECT r.payer_id, r.collection_month, 'mrf-' || s.id AS output_id
+FROM mrfpipeline.monthly_releases r
+JOIN mrfpipeline.mrf_snapshots s
+  ON s.payer_id = r.payer_id AND s.collection_month = r.collection_month
+WHERE r.status = 'active'
+ORDER BY r.payer_id, r.collection_month, s.id;
+
 SELECT status, count(*) AS n
 FROM mrfpipeline.discovery_runs
 GROUP BY status
 ORDER BY status;
 
-SELECT download_status, parse_status, import_status, count(*) AS n
+SELECT payer_id, collection_month, download_status, parse_status,
+       import_status, count(*) AS n
 FROM mrfpipeline.toc_files
+GROUP BY 1, 2, 3, 4, 5
+ORDER BY 1, 2, 3, 4, 5;
+
+SELECT collection_month, download_status, parse_status, count(*) AS n
+FROM mrfpipeline.mrf_sources
 GROUP BY 1, 2, 3
 ORDER BY 1, 2, 3;
 
-SELECT download_status, parse_status, count(*) AS n
-FROM mrfpipeline.mrf_sources
-GROUP BY 1, 2
-ORDER BY 1, 2;
-
-SELECT consume_status, count(*) AS n
+SELECT payer_id, collection_month, consume_status, count(*) AS n
 FROM mrfpipeline.mrf_snapshots
-GROUP BY consume_status
-ORDER BY consume_status;
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3;
 
 SELECT status, count(*) AS n,
        coalesce(sum(requested_plan_count), 0) AS requested_total,
@@ -273,6 +377,11 @@ HAVING count(DISTINCT toc_file_id) > 1
 ORDER BY mrf_source_id;
 ```
 
+`SQLBuildingReleaseBlockers` provides the stable stage/readiness blocker codes
+and current River-job identity checks for all building releases. The targeted
+monthly status command remains authoritative because it also reports release
+counts and performs the full readiness/publication checks.
+
 ### Authorized URL-debug query
 
 For incident response on an authorized connection only. This is not a CLI
@@ -308,9 +417,10 @@ in-flight work. Do not cancel, retry, or delete jobs from the UI.
 
 ## Limitations
 
-UHC only. Local storage only. No automatic enrichment. No plan
-removal/correction. No recurring discovery. Sticky collection month.
-Required `--limit`. No UI in this binary. TOC import rejects HTTPS MRF
+Discovery is UHC-only; month control and import honor the generic payer
+contract. Local storage only. No automatic enrichment. No plan
+removal/correction. No recurring discovery. Required `--limit`. No UI in this
+binary. TOC import rejects HTTPS MRF
 URLs that contain user information; the shared downloader would refuse
 those locations.
 
@@ -352,6 +462,7 @@ warehouse roots). Raise the test timeout to cover the wait, for example
 `go test -timeout 3h ./internal/reconcile -run TestRealUHCAcceptance`.
 
 The harness builds `./cmd/mrfpipeline`, runs `migrate`, starts one
-`work` process, runs `discover`, waits until domain stages are idle,
-stops the worker, runs `reconcile`, restarts `work`, and asserts that
-domain and warehouse counts do not increase.
+`work` process, runs bounded UHC `discover`, waits until domain stages are
+idle, checks readiness, activates the month, stops and restarts the worker,
+then reconciles twice. It verifies the active relation survives restart and
+converged reconciliation and that domain and warehouse counts do not increase.

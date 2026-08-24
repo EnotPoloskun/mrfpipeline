@@ -6,6 +6,7 @@ import (
 
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
@@ -39,6 +40,11 @@ LIMIT $2`, after, pageSize)
 		for _, id := range ids {
 			n, err := restoreOneDownload(ctx, pool, client, ws, artifact.KindTOC, jobs.TOCDownloadStage, jobs.TOCParseStage, jobs.KindTOCDownload, id)
 			if err != nil {
+				if jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+					report.recordSealed(report.logger, jobs.KindTOCDownload, id)
+					after = id
+					continue
+				}
 				return err
 			}
 			report.RepairedJobCount += n
@@ -66,6 +72,11 @@ LIMIT $2`, after, pageSize)
 		for _, id := range ids {
 			n, err := restoreOneDownload(ctx, pool, client, ws, artifact.KindMRF, jobs.MRFDownloadStage, jobs.MRFParseStage, jobs.KindMRFDownload, id)
 			if err != nil {
+				if jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+					report.recordSealed(report.logger, jobs.KindMRFDownload, id)
+					after = id
+					continue
+				}
 				return err
 			}
 			report.RepairedJobCount += n
@@ -75,6 +86,14 @@ LIMIT $2`, after, pageSize)
 }
 
 func restoreOneDownload(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], ws *artifact.Workspace, kind string, downloadSpec, parseSpec jobs.StageSpec, downloadKind string, id int64) (int, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, dbFail(ctx.Err())
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := release.RequireBuildingForStage(ctx, tx, downloadKind, id); err != nil {
+		return 0, err
+	}
 	parsed, err := ws.InspectParsed(kind, id)
 	if err != nil {
 		return 0, artFail()
@@ -87,15 +106,11 @@ func restoreOneDownload(ctx context.Context, pool *pgxpool.Pool, client *river.C
 		return 0, artFail()
 	}
 	if dl != artifact.DownloadAbsent && dl != artifact.DownloadIncomplete {
+		if err := tx.Commit(ctx); err != nil {
+			return 0, dbFail(ctx.Err())
+		}
 		return 0, nil
 	}
-
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return 0, dbFail(ctx.Err())
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
 	drow, err := lockStage(ctx, tx, downloadSpec, id)
 	if err != nil {
 		return 0, err
@@ -190,6 +205,11 @@ func unblockGap(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pg
 		for _, id := range ids {
 			ok, err := unblockOne(ctx, pool, client, spec, kind, id)
 			if err != nil {
+				if jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+					report.recordSealed(report.logger, kind, id)
+					after = id
+					continue
+				}
 				return err
 			}
 			if ok {
@@ -207,6 +227,9 @@ func unblockOne(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pg
 		return false, dbFail(ctx.Err())
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := release.RequireBuildingForStage(ctx, tx, kind, id); err != nil {
+		return false, err
+	}
 	row, err := lockStage(ctx, tx, spec, id)
 	if err != nil {
 		return false, err
@@ -241,8 +264,29 @@ LIMIT $2`, after, pageSize)
 			return nil
 		}
 		for _, id := range ids {
+			var needs bool
+			if err := pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM mrfpipeline.mrf_snapshots
+    WHERE mrf_source_id = $1
+      AND (
+          consume_status = 'blocked'
+          OR (consume_status IN ('pending', 'running') AND consume_river_job_id IS NULL)
+      )
+)`, id).Scan(&needs); err != nil {
+				return err
+			}
+			if !needs {
+				after = id
+				continue
+			}
 			n, err := scheduleSourceSnapshots(ctx, pool, client, id)
 			if err != nil {
+				if jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+					report.recordSealed(report.logger, jobs.KindMRFParse, id)
+					after = id
+					continue
+				}
 				return err
 			}
 			report.RepairedJobCount += n
@@ -259,6 +303,9 @@ func scheduleSourceSnapshots(ctx context.Context, pool *pgxpool.Pool, client *ri
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := release.RequireBuildingForStage(ctx, tx, jobs.KindMRFParse, sourceID); err != nil {
+		return 0, err
+	}
 	var parse string
 	if err := tx.QueryRow(ctx, `
 SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1 FOR UPDATE`, sourceID).Scan(&parse); err != nil {

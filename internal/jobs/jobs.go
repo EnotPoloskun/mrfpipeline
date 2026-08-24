@@ -61,6 +61,7 @@ const (
 	FailureReleaseNotFound               = "release_not_found"
 	FailureReleaseNotReady               = "release_not_ready"
 	FailureSealedReleaseInconsistent     = "sealed_release_inconsistent"
+	FailureSealedReleaseRetryForbidden   = "sealed_release_retry_forbidden"
 
 	MaxAttempts    = 8
 	RescueAfter    = 24 * time.Hour
@@ -112,7 +113,7 @@ func allowedFailureCode(code string) bool {
 		FailureReconciliationDatabaseFailed, FailureArtifactReconciliationFailed,
 		FailureRetryStageNotFailed, FailureRetryStageInvariant,
 		FailureReleaseNotFound, FailureReleaseNotReady,
-		FailureSealedReleaseInconsistent:
+		FailureSealedReleaseInconsistent, FailureSealedReleaseRetryForbidden:
 		return true
 	default:
 		return false
@@ -123,7 +124,8 @@ func isImmediateFail(err error) bool {
 	return isFailure(err, FailureInvalidArguments) ||
 		isFailure(err, FailureMissingRecord) ||
 		isFailure(err, FailureDomainInvariant) ||
-		isFailure(err, FailureSealedReleaseInconsistent)
+		isFailure(err, FailureSealedReleaseInconsistent) ||
+		isFailure(err, FailureSealedReleaseRetryForbidden)
 }
 
 func terminalFailureCode(err error) string {

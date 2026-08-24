@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -64,7 +65,7 @@ func TestFormatReportAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text != `{"repaired_job_count":3,"unblocked_stage_count":2,"scheduled_plan_batch_count":1,"cleaned_artifact_count":4}`+"\n" {
+	if text != `{"repaired_job_count":3,"unblocked_stage_count":2,"scheduled_plan_batch_count":1,"cleaned_artifact_count":4,"sealed_release_inconsistency_count":0}`+"\n" {
 		t.Fatalf("report %q", text)
 	}
 	if strings.Contains(text, "http") || strings.Contains(text, "toc-") {
@@ -307,6 +308,7 @@ func TestHealthCanceledContextIsNotLeaseLost(t *testing.T) {
 func TestStatusSQLHasNoURLs(t *testing.T) {
 	t.Parallel()
 	for _, q := range []string{
+		SQLReleaseCounts, SQLActiveOutputs, SQLBuildingReleaseBlockers,
 		SQLDiscoveryCounts, SQLTOCStageCounts, SQLMRFSourceCounts, SQLSnapshotConsumeCounts,
 		SQLPlanBatchCounts, SQLTerminalFailures, SQLUnassignedPlans, SQLPlanReadySnapshots, SQLSharedSources,
 	} {
@@ -316,6 +318,9 @@ func TestStatusSQLHasNoURLs(t *testing.T) {
 	}
 	if !strings.Contains(SQLAuthorizedURLDebug, "source_url") {
 		t.Fatal("debug query must return urls")
+	}
+	if !strings.Contains(SQLActiveOutputs, "'mrf-' || s.id") {
+		t.Fatal("active output query must expose derived output IDs")
 	}
 }
 
@@ -329,8 +334,27 @@ func TestReportJSONAllowlist(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &obj); err != nil {
 		t.Fatal(err)
 	}
-	if len(obj) != 4 {
+	if len(obj) != 5 {
 		t.Fatalf("fields %v", obj)
+	}
+}
+
+func TestReportDeduplicatesSealedRows(t *testing.T) {
+	t.Parallel()
+	var report Report
+	var logs bytes.Buffer
+	report.recordSealed(jobs.NewLogger(&logs), jobs.KindTOCDownload, 7)
+	report.recordSealed(nil, jobs.KindTOCParse, 7)
+	report.recordSealed(nil, jobs.KindMRFParse, 8)
+	report.recordSealed(nil, jobs.KindMRFDownload, 8)
+	if report.SealedReleaseInconsistencyCount != 2 {
+		t.Fatalf("count %d", report.SealedReleaseInconsistencyCount)
+	}
+	if !strings.Contains(logs.String(), `"domain_id":7`) || !strings.Contains(logs.String(), jobs.FailureSealedReleaseInconsistent) {
+		t.Fatalf("log %q", logs.String())
+	}
+	if strings.Contains(logs.String(), "https://") || strings.Contains(logs.String(), "/tmp/") {
+		t.Fatalf("unsafe log %q", logs.String())
 	}
 }
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned.
+Implemented.
 
 ## User story
 
@@ -290,6 +290,25 @@ Readiness does not scan full rate/provider Parquet rows, call DuckDB, contact
 the payer, refresh the provider catalog, or infer completeness beyond admitted
 domain records.
 
+## Sealed plan-set invariant
+
+Activation freezes the complete plan-association set for every output in the
+release. The exclusive worker lease and readiness gate ensure that all admitted
+TOCs are imported, every canonical plan is assigned to a succeeded attachment
+batch, and no attachment is pending or running before the status changes.
+
+After a release becomes `active` or `inactive`, the pipeline must never:
+
+- create another canonical plan, attachment batch, or batch item for it;
+- schedule or execute `consumer.attach_plans` for one of its snapshots;
+- retry or reconcile an attachment into that sealed release; or
+- invoke the standalone consumer attachment CLI/API out of band.
+
+Any such database or warehouse state is `sealed_release_inconsistent`; it is
+reported without mutation. Adding or correcting plans requires a newly built
+release. Rollback therefore restores the exact same output and plan sets, and
+plan discovery cannot change between release cutovers.
+
 ## Activation algorithm
 
 Activation has a read-only filesystem preflight followed by one short database
@@ -346,11 +365,13 @@ aetna -> 2026-08
 ```
 
 A future query service reads all active release rows joined to their snapshots
-in one PostgreSQL statement and captures the complete
-`(payer_id, collection_month, output_id)` relation once per request. A query
-with a payer filter uses that payer's output rows. A query spanning payers uses
-every active output row. Payers without an active row contribute no served
-data. It never expands payer/month by scanning warehouse ingestions.
+in one PostgreSQL statement at startup or control-plane refresh, validates the
+complete `(payer_id, collection_month, output_id)` relation against the
+warehouse, and atomically publishes verified serving state. Each request
+captures that state without rescanning warehouse metadata. A query with a payer
+filter uses that payer's output rows. A query spanning payers uses every active
+output row. Payers without an active row contribute no served data. Membership
+is never expanded by scanning every warehouse ingestion for payer/month.
 
 Per-payer activations are atomic but are not a synchronized global release. A
 cross-payer request sees one committed mapping snapshot, which may legitimately
@@ -379,6 +400,8 @@ Add or revise tests proving:
 - no-flag status returns the deterministic complete active-output relation;
 - activation `output_count` equals the number of derived snapshots and remains
   stable on idempotent activation and rollback;
+- activation freezes plan batches and association parts; active/inactive work,
+  retry, and reconciliation cannot add another plan;
 - an extra consumer output with an active payer/month but no pipeline snapshot
   is absent from status and the query handoff;
 - consumer warehouse bytes and manifests are unchanged by activation;

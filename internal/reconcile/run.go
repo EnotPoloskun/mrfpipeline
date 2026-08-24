@@ -86,6 +86,7 @@ func Run(ctx context.Context, p Params) (Report, error) {
 	if logger == nil {
 		logger = jobs.NewLogger(nil)
 	}
+	report.logger = logger
 	client, err := jobs.NewInsertClient(ctx, p.Pool, logger)
 	if err != nil {
 		return report, err
@@ -102,11 +103,16 @@ func Run(ctx context.Context, p Params) (Report, error) {
 	if err := scheduleParsedSources(ctx, p.Pool, client, &report); err != nil {
 		return report, err
 	}
-	n, err := planbatch.SweepConsumed(ctx, p.Pool, client)
+	n, err := planbatch.SweepConsumedReleaseAware(ctx, p.Pool, client, func(snapshotID int64) {
+		report.recordSealedSnapshot(logger, jobs.KindConsumerAttachPlans, snapshotID)
+	})
 	if err != nil {
 		return report, err
 	}
 	report.ScheduledPlanBatchCount += n
+	if err := auditSealedPlanSets(ctx, p.Pool, p.WarehousePath, &report); err != nil {
+		return report, err
+	}
 	if err := cleanArtifacts(ctx, p.Pool, p.Workspace, p.ServicesPath, &report); err != nil {
 		return report, err
 	}
