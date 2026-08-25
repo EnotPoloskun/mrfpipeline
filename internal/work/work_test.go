@@ -69,6 +69,19 @@ func TestWorkerLeaseLossLogIsRuntimeOnly(t *testing.T) {
 	}
 }
 
+func TestWorkerStartedLogIncludesAttachedRole(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logWorkerStarted(jobs.NewLogger(&buf).With("role", "mrf"))
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["msg"] != "worker_started" || record["kind"] != "runtime" || record["role"] != "mrf" {
+		t.Fatalf("record %v", record)
+	}
+}
+
 func TestRunRequiresServices(t *testing.T) {
 	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
 	if err != nil {

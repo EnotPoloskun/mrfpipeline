@@ -238,6 +238,7 @@ func (r Runtime) Run(ctx context.Context) error {
 		}
 		return jobs.Failure("start")
 	}
+	logWorkerStarted(logger)
 	select {
 	case <-workCtx.Done():
 		if err := jobs.Shutdown(context.Background(), client); err != nil {
@@ -254,6 +255,15 @@ func (r Runtime) Run(ctx context.Context) error {
 	case <-client.Stopped():
 		return jobs.Failure("runtime")
 	}
+}
+
+func logWorkerStarted(logger *slog.Logger) {
+	if logger == nil {
+		return
+	}
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "worker_started",
+		slog.String("kind", "runtime"),
+	)
 }
 
 func logWorkerLeaseLost(logger *slog.Logger) {

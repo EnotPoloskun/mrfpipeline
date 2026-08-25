@@ -3,17 +3,18 @@
 Operator executable for CMS Transparency in Coverage discovery, TOC and MRF
 processing, warehouse ingestion, and additive plan attachment.
 
-Version 1 is specified by Stories 01–21 in [`requirements/`](requirements/).
+Version 1 is specified by Stories 01–22 in [`requirements/`](requirements/).
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
 ## Feed-free monthly-release contract
 
 Stories [14](requirements/14-feed-free-domain-schema.md) through
-[21](requirements/21-bounded-local-worker-scaling.md) define the current
-rebuild-only contract. Story 21 adds bounded MRF admission, resident slots,
-and ordinary role-specific River workers. These stories do not upgrade an old
-populated warehouse in place.
+[22](requirements/22-runnable-local-acceptance-and-test-convergence.md) define
+the current rebuild-only contract. Story 21 adds bounded MRF admission,
+resident slots, and ordinary role-specific River workers. Story 22 makes the
+local image, Compose recipe, and verification contract runnable. These stories
+do not upgrade an old populated warehouse in place.
 
 The target removes `mrf_feeds` and `feed_id`, identifies an MRF source capture
 by exact URL + collection month, identifies a consumer snapshot by source +
@@ -76,6 +77,49 @@ A clean checkout needs that `GOPRIVATE` value (and credentials that can
 read those repositories) before `go build` or `go test`. An existing
 `GOMODCACHE` populated from those revisions is also sufficient.
 
+The preferred local container build forwards an SSH agent only while private
+modules are downloaded. It does not copy the key into the image:
+
+```text
+eval "$(ssh-agent -s)"
+ssh-add <path-to-private-module-key>
+export GOPRIVATE=github.com/EnotPoloskun/*,github.com/enotpoloskun/mrfconsumer
+DOCKER_BUILDKIT=1 docker compose -f docker-compose.story21.yml build
+```
+
+Compose forwards the agent through its `build.ssh: [default]` configuration
+and builds the image used by every service. A direct build is also supported:
+`DOCKER_BUILDKIT=1 docker build --ssh default --tag mrfpipeline:local .`.
+
+If the SSH agent or private-module access is missing, the build fails during
+dependency resolution. No database URL, accepted catalog, host path, or
+credential is a build argument or image layer. The Dockerfile's `CGO_ENABLED=0`
+setting can be compile-checked on the host with `CGO_ENABLED=0 go build ./cmd/mrfpipeline`;
+a host-built
+macOS/Windows binary is not a substitute for the Linux container image.
+
+## External local inputs
+
+The Compose file mounts the accepted provider catalog and service selector
+from paths outside the image. Prepare ignored local paths and copy the real
+catalog into the catalog directory; do not copy the placeholder catalog from
+this checkout:
+
+```text
+cp .env.example .env
+mkdir -p local/provider-catalog
+cp config/services.csv.example local/services.csv
+```
+
+Edit `.env` so `MRFPIPELINE_PROVIDER_CATALOG_DIR` points to the operator's
+accepted catalog and `MRFPIPELINE_SERVICES_FILE` points to the compatible
+selector. The selector must keep the exact
+`billing_code_type,billing_code` header. The supplied machine-specific
+`services3.csv` is not modified or reinterpreted; make a compatible copy with
+that header before using it. The catalog must contain a real `manifest.json`
+and catalog files accepted by the pinned consumer. Missing or incompatible
+inputs produce the existing sanitized runtime configuration failure.
+
 ## Commands
 
 ```text
@@ -134,33 +178,101 @@ slot is returned to blocked waiting state until control can refill it.
 `retry` needs only the database URL so a remote operator can enqueue work for
 the correctly configured worker host.
 
-## Local worker topology
+## Local Docker topology and operator commands
 
-Use [`docker-compose.story21.yml`](docker-compose.story21.yml) as a starting
-point for a local Docker Desktop run. The control, MRF, and consumer services
-share PostgreSQL and one named artifact volume. Start control first, then run
-multiple ordinary MRF processes if desired:
+[`docker-compose.story21.yml`](docker-compose.story21.yml) is the runnable
+local topology. It uses PostgreSQL's Compose service name on the private
+Compose network; PostgreSQL is intentionally not published to the host. The
+`cli` service is the preferred one-shot path for database commands.
+
+Build and start in stages. Staging makes control initialization visible and
+avoids treating Compose's `service_started` dependency as a readiness signal:
 
 ```text
-docker compose -f docker-compose.story21.yml up -d postgres control
-docker compose -f docker-compose.story21.yml up -d --scale mrf=4 mrf consumer
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli migrate
+docker compose -f docker-compose.story21.yml up -d control
+docker compose -f docker-compose.story21.yml logs -f --tail=50 control
 ```
 
-Four MRF containers provide up to four concurrent parser calls because each
-container has one parse worker; each container may set its own `GOMAXPROCS` or
-Docker CPU allowance. The parser memory limit is per process. Docker memory
-limits are hard termination limits, not soft backpressure. The shared
-PostgreSQL resident capacity bounds selected raw/in-progress MRF files across
-all MRF containers, not parsed output, temporary peak expansion, PostgreSQL,
-or the consumer warehouse. The current consumer process lease intentionally
-allows one consumer container until a concurrent-safe mrfconsumer revision is
-pinned.
+Control also waits for Compose's repeatable `migrate` service, so a direct
+control start cannot race schema application; after the preferred one-shot
+command above this dependency is a no-op migration check.
 
-On Windows Docker Desktop, prefer the Linux named volume shown in the compose
-file over a cloud-synchronized host directory for the first run.
+After the control log shows the application-owned structured event
+with `msg=worker_started`, `kind=runtime`, and `role=control` fields, stop
+following logs with Ctrl-C (this does not stop the container), then start the
+MRF and consumer roles:
 
-Control lease loss cancels control work; per-source and per-output execution
-locks defer rescued or duplicate deliveries without mutating domain attempts.
+```text
+docker compose -f docker-compose.story21.yml up -d --scale mrf=2 mrf consumer
+```
+
+The control service has no automatic restart. A permanent capacity or
+configuration error therefore leaves it exited with a sanitized log instead
+of entering a restart loop. The MRF and consumer services use bounded
+`on-failure` restarts for ordinary process crashes. They do not initialize the
+artifact root; if they are started before control, they fail safely and may
+retry, so the staged startup above is the supported path. If control exits,
+stop those roles and inspect `docker compose logs control mrf consumer` before
+repairing the input or capacity.
+
+There is deliberately no control health check: a persistent workspace file is
+not proof that a current process owns the control lease. Readiness is the
+current control process log plus successful role startup. No heartbeat table
+or monitoring service is added.
+
+Run the following commands through the one-shot `cli` service. They use the
+same internal database URL and mounts as the workers:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 1 --mrf-source-limit 3
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total <N|all>
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli retry --stage <kind> --id <domain-id>
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli reconcile
+```
+
+`reconcile` requires only the control service to be stopped; leave MRF and
+consumer running. It coordinates through release and exact execution locks,
+while `retry` may also run with roles active:
+
+```text
+docker compose -f docker-compose.story21.yml stop control
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli reconcile
+docker compose -f docker-compose.story21.yml up -d control
+```
+
+For a controlled retry, leave the MRF/consumer roles running and execute only
+the `retry` command. `month activate` is also a one-shot CLI command, but use
+it only after a targeted status reports `database_ready:true`:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli month activate --payer uhc --collection-month <YYYY-MM>
+```
+
+Stop roles in reverse ownership order after a run:
+
+```text
+docker compose -f docker-compose.story21.yml stop consumer mrf control
+```
+
+`docker compose down` removes containers and the network but keeps named
+volumes. Do not use `docker compose down -v` unless deleting the disposable
+PostgreSQL database and artifact volume is intentional.
+
+Each MRF container has one parser worker, so two MRF containers provide up to
+two concurrent parser calls; scale the service for more. The consumer remains
+exactly one process because the pinned warehouse writer is not concurrent-safe.
+The shared PostgreSQL resident capacity bounds selected raw/in-progress MRF
+sources across all MRF containers. It is a count, not a byte quota, and does
+not bound parsed output, temporary peak expansion, PostgreSQL, River history,
+or the consumer warehouse. Docker CPU and memory limits are hard termination
+limits, not soft backpressure; set them only after measuring the local run.
+
+On Windows Docker Desktop, prefer the Linux named artifact volume in Compose
+over a cloud-synchronized host directory for the first run. Control lease loss
+cancels control work; per-source and per-output execution locks defer rescued
+or duplicate deliveries without mutating domain attempts.
 
 ## Stage flow
 
@@ -263,6 +375,25 @@ cumulative target with `month sources set-total` after inspecting the sample.
 Resident capacity is a shared count of raw/in-progress sources; it is not a
 byte quota.
 
+The numeric target is cumulative even when PostgreSQL already contains many
+pending sources: only the stable selected prefix up to the target can acquire
+resident slots and executable MRF jobs. After those selected sources drain,
+status remains partial with the `mrf_source_target_partial` blocker and
+activation is rejected without mutation. Increase the target in another
+bounded step, or set it to `all` only when you intentionally accept processing
+every known source for the payer/month:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month 2026-09 --total 6
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month 2026-09
+```
+
+Do not use activation as a sample check. Activation requires target `all`, all
+known sources and release gates to drain, and complete consumer/plan output.
+The active `(payer, collection_month, output_id)` relation is a handoff for a
+future serving process; this repository creates no query HTTP service or SQL
+query facade.
+
 Before a bounded run, record free space on the artifact and warehouse
 filesystems. During the run, monitor download and parsed bytes, warehouse
 bytes, free space, database size, and pending/running MRF download/parse
@@ -298,12 +429,18 @@ raw errors, URLs, paths, SQL, and response text are never logged. A runtime
 `worker_lease_lost` record means the process stopped after its lease health
 check failed.
 
-For stalled work, execute the exported `reconcile.SQLStaleStages` query on an
-authorized PostgreSQL connection with `$1` bound to a positive interval such
-as `interval '30 minutes'`. It returns only `stage`, `domain_id`, `status`,
-`river_job_id`, `attempt`, and `age_seconds`; investigate when progress stops
-and running age keeps increasing. The pipeline does not automatically cancel,
-retry, or delete stalled jobs.
+For stalled work, run the repository's redacted copy-paste query on an
+authorized PostgreSQL connection:
+
+```text
+psql "$MRFPIPELINE_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/stalled-work.sql
+```
+
+It returns only `stage`, `domain_id`, `status`, `river_job_id`, `attempt`, and
+`age_seconds`; change `stale_after` in that script to another positive
+interval when needed. Investigate when progress stops and running age keeps
+increasing. The pipeline does not automatically cancel, retry, or delete
+stalled jobs.
 
 Manifest-present invalid parser output is never auto-deleted. Stop the
 worker, inspect that exact generated directory, then `retry`.
@@ -330,6 +467,13 @@ Automatic cleanup, while the lease is held, removes only:
 
 Shared successful MRF parsed output has no automatic deletion path. The
 pipeline never cleans the consumer warehouse or `<warehouse>/.staging`.
+
+After success, parsed MRF output, consumer warehouse output, PostgreSQL data,
+River job history, and any deliberate backups remain until an operator uses a
+separate retention or backup procedure. Normal slot release deletes only the
+raw/staging material that is safe to remove after successful publication; it
+does not imply disk reclamation for the whole run. Keep a measured free-space
+threshold and stop roles before crossing it.
 
 Back up PostgreSQL, shared parsed MRFs, the append-only warehouse, and the
 pinned provider-catalog identity. Restoring only warehouse files is
@@ -515,15 +659,28 @@ overlap, including the service selector sitting inside the warehouse.
 
 ## Tests
 
-There is no CI configuration. Tests, including PostgreSQL integration,
-DuckDB consumer paths, and `go test -race`, run on an operator machine
-that can resolve the private sibling modules.
+Tests, including PostgreSQL integration, DuckDB consumer paths, and focused
+race tests, run on an operator machine that can resolve the private sibling
+modules. Repository CI uses the explicitly named
+`MRFPIPELINE_PRIVATE_MODULES_SSH_KEY` secret; until that secret is configured,
+CI fails with a missing-prerequisite error rather than skipping private
+modules or reporting a false green build.
 
 ```text
 export GOPRIVATE=github.com/EnotPoloskun/*,github.com/enotpoloskun/mrfconsumer
 go test ./...
 go vet ./...
+go test -race ./internal/jobs ./internal/mrfparse ./internal/work ./internal/reconcile
+MRFPIPELINE_TEST_DATABASE_URL=<disposable-test-database> go test -p 1 ./...
 ```
+
+The database-enabled command must use a disposable database whose name starts
+with `mrfpipeline_test_`. Each package drops and recreates the application,
+River, and `mrfpipeline_test` schemas, so `-p 1` is required when running the
+complete suite against one database. The safety guard rejects production,
+development, and ambiguously named databases before destructive DDL. Plain
+`go test ./...` is the non-database command; do not use a parallel database
+suite against the same URL.
 
 Live UHC acceptance is `TestRealUHCAcceptance` in `internal/reconcile`.
 It is skipped unless every opt-in variable is set, the database name
@@ -556,3 +713,6 @@ month, stops and restarts all roles, then reconciles twice. Set
 it verifies selected work drains, resident slots and raw files are released,
 and activation remains blocked. The harness records safe counts and verifies
 restart/reconciliation do not duplicate domain or warehouse results.
+
+The ordinary commands above never run live UHC acceptance. The real accepted
+provider catalog and compatible selector remain explicit operator inputs.

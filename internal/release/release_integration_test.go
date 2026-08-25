@@ -75,7 +75,7 @@ INSERT INTO mrfpipeline.toc_files (
 	}
 	if err := pool.QueryRow(ctx, `
 	INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
-VALUES ($1, $2, 'succeeded', 'succeeded') RETURNING id, updated_at`, "https://example.invalid/mrf/"+suffix).Scan(&sourceID, &sourceUpdated); err != nil {
+VALUES ($1, $2, 'succeeded', 'succeeded') RETURNING id, updated_at`, "https://example.invalid/mrf/"+suffix, monthDate).Scan(&sourceID, &sourceUpdated); err != nil {
 		t.Fatal("source: ", err)
 	}
 	if _, err := pool.Exec(ctx, `
@@ -124,7 +124,7 @@ VALUES ('uhc', DATE '2026-08-01')`); err != nil {
 		t.Fatal(err)
 	}
 	incomplete, err := Readiness(ctx, pool, "uhc", time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC))
-	if err != nil || incomplete.DatabaseReady || len(incomplete.Blockers) != 3 || incomplete.Blockers[0] != "discovery_missing" || incomplete.Blockers[1] != "snapshot_missing" || incomplete.Blockers[2] != "toc_missing" {
+	if err != nil || incomplete.DatabaseReady || len(incomplete.Blockers) != 4 || incomplete.Blockers[0] != "discovery_missing" || incomplete.Blockers[1] != "mrf_source_target_partial" || incomplete.Blockers[2] != "snapshot_missing" || incomplete.Blockers[3] != "toc_missing" {
 		t.Fatalf("incomplete readiness %+v, %v", incomplete, err)
 	}
 	aug := seedReadyRelease(t, pool, "uhc", "2026-08", "uhc-aug")

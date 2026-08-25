@@ -58,7 +58,7 @@ services:
 
   mrf:
     <<: *pipeline-image
-    restart: on-failure
+    restart: "on-failure:5"
     command: ["work", "--role", "mrf"]
     depends_on:
       control:
@@ -68,7 +68,7 @@ services:
 
   consumer:
     <<: *pipeline-image
-    restart: on-failure
+    restart: "on-failure:5"
     command: ["work", "--role", "consumer"]
     depends_on:
       control:
@@ -80,6 +80,9 @@ services:
     <<: *pipeline-image
     profiles: [operator]
     entrypoint: ["/usr/local/bin/mrfpipeline"]
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment: *pipeline-env
     volumes: *pipeline-volumes
 

@@ -120,6 +120,7 @@ func TestIntegrationWorkOrderlyShutdown(t *testing.T) {
 		config.EnvWarehousePath:       filepath.Join(base, "warehouse"),
 		config.EnvProviderCatalogPath: filepath.Join(base, "catalog"),
 		config.EnvServicesPath:        filepath.Join(base, "services.csv"),
+		config.EnvMRFResidentCapacity: "2",
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)

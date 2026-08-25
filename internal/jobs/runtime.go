@@ -54,6 +54,11 @@ func NewRuntime(ctx context.Context, pool *pgxpool.Pool, workers *river.Workers,
 		return nil, err
 	}
 	cfg := ClientConfig(workers, queues, handler, logger)
+	// Role-specific clients produce successor work owned by another role (for
+	// example control schedules MRF downloads). Registration is intentionally
+	// limited to the current role's workers, so River must allow those durable
+	// inserts without requiring placeholder workers in the producer process.
+	cfg.SkipUnknownJobCheck = true
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {
 		return nil, jobErr("client")

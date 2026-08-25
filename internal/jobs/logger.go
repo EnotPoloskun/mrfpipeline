@@ -10,6 +10,7 @@ import (
 
 var allowedLogKeys = map[string]bool{
 	"kind":         true,
+	"role":         true,
 	"queue":        true,
 	"job_id":       true,
 	"attempt":      true,

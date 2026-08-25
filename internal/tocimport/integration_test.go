@@ -137,6 +137,12 @@ WHERE id = $1`, tocID, jobID); err != nil {
 
 func startImportRuntime(t *testing.T, pool *pgxpool.Pool, ws *artifact.Workspace, maxAttempts int, mutate func(*Worker)) *river.Client[pgx.Tx] {
 	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.pipeline_runtime (artifact_root, resident_capacity)
+VALUES ($1, 10000)
+ON CONFLICT (id) DO NOTHING`, ws.Root); err != nil {
+		t.Fatal(err)
+	}
 	w := &Worker{Pool: pool, Workspace: ws, Logger: jobs.NewLogger(io.Discard)}
 	if mutate != nil {
 		mutate(w)

@@ -152,6 +152,27 @@ UPDATE mrfpipeline.toc_files SET download_river_job_id = $2 WHERE id = $1`, tocI
 			ProviderCatalogPath: catPath,
 		}.Run(ctx)
 	}()
+	controlReady := false
+	controlDeadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(controlDeadline) {
+		var root string
+		if err := pool.QueryRow(context.Background(), `
+SELECT artifact_root FROM mrfpipeline.pipeline_runtime WHERE id = true`).Scan(&root); err == nil && root == ws.Root {
+			controlReady = true
+			break
+		}
+		select {
+		case err := <-done:
+			cancel()
+			t.Fatalf("control stopped before initialization: %v", err)
+		default:
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !controlReady {
+		cancel()
+		t.Fatal("control did not initialize runtime")
+	}
 	go func() {
 		done <- Runtime{
 			Role: "mrf", Pool: pool, Workspace: ws, Downloader: dl,
@@ -167,6 +188,12 @@ UPDATE mrfpipeline.toc_files SET download_river_job_id = $2 WHERE id = $1`, tocI
 	}()
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			cancel()
+			t.Fatalf("role stopped before materialization: %v", err)
+		default:
+		}
 		var status, parse, imp, mrfDL, mrfParse, consume, ingestState, attachState, batch string
 		err := pool.QueryRow(context.Background(), `
 SELECT t.download_status, t.parse_status, t.import_status,

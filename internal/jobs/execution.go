@@ -86,6 +86,12 @@ func (l *executionLease) check(ctx context.Context) error {
 	if l == nil {
 		return Failure(FailureStageExecutionInterrupted)
 	}
+	if ctx == nil {
+		return Failure(FailureStageExecutionInterrupted)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.conn == nil {
@@ -111,7 +117,15 @@ func (l *executionLease) watch(ctx context.Context, cancel context.CancelFunc, l
 	if l == nil || l.conn == nil {
 		return
 	}
-	if err := l.check(ctx); err != nil {
+	check := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		checkCtx, checkCancel := context.WithTimeout(context.Background(), time.Second)
+		defer checkCancel()
+		return l.check(checkCtx)
+	}
+	if err := check(); err != nil {
 		if ctx.Err() == nil {
 			lost <- struct{}{}
 			cancel()
@@ -125,7 +139,7 @@ func (l *executionLease) watch(ctx context.Context, cancel context.CancelFunc, l
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := l.check(ctx); err != nil {
+			if err := check(); err != nil {
 				if ctx.Err() == nil {
 					lost <- struct{}{}
 				}

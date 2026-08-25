@@ -2,12 +2,12 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–21 architecture. The
+This document describes the implemented Stories 01–22 architecture. The
 numbered requirement stories remain authoritative where they are more
 specific. Sections below the approved contract that are explicitly labeled
 historical version 1 are retained as background only; they are not current
-runtime guidance. The Stories 14–19 requirements and current README describe
-the rebuild-only feed-free contract.
+runtime guidance. The Stories 14–22 requirements and current README describe
+the rebuild-only feed-free contract and runnable local operation.
 
 The design records the implemented version 1 decisions that remain normative
 except where the target addendum explicitly replaces them:
@@ -30,7 +30,7 @@ except where the target addendum explicitly replaces them:
 - Use numeric database identities and exact database uniqueness. Do not add
   hashes as URL, artifact, job, plan, or output identity.
 
-## Implemented Stories 14–19 contract
+## Active current architecture: Stories 14–22
 
 The current contract is defined by:
 
@@ -40,6 +40,9 @@ The current contract is defined by:
 - [Story 17: Consumer 2.0 feed-free integration](17-consumer-2-feed-free-integration.md)
 - [Story 18: Monthly release activation](18-monthly-release-activation.md)
 - [Story 19: Release-aware reconciliation, acceptance, and documentation](19-release-aware-reconciliation-acceptance-and-documentation.md)
+- [Story 20: Production hardening and test readiness](20-production-hardening-and-test-readiness.md)
+- [Story 21: Bounded local worker scaling](21-bounded-local-worker-scaling.md)
+- [Story 22: Runnable local acceptance and test convergence](22-runnable-local-acceptance-and-test-convergence.md)
 
 Stories 14–17 were one atomic breaking delivery batch. Consumer `2.0.0` is
 available, and there is no adapter,
@@ -145,12 +148,53 @@ mrfpipeline work --role consumer
 The older one-worker and serialized-topology statements below are historical
 version-1 context; they do not override this addendum.
 
+## Current Story 22 local operation
+
+The current deployment is one control process, one or more ordinary MRF River
+processes, and exactly one consumer process. Queue ownership is explicit:
+
+| Role | Queues | Cardinality |
+|---|---|---|
+| control | discovery, TOC download/parse/import, admission and control scheduling | one control lease |
+| mrf | MRF download and parse | one parser call per process; scale processes |
+| consumer | consumer ingest and plan attachment | one process with the pinned writer |
+
+Discovery imports feed-free monthly captures. Source admission selects a
+cumulative stable prefix and the shared resident-slot table admits only as
+many raw/in-progress sources as capacity permits. A slot is held across MRF
+download and parse and is released after raw/staging cleanup. The capacity is
+a source count, not a byte quota.
+
+Every MRF source and consumer output has an exact execution lock. Locks are
+deterministic PostgreSQL advisory keys over positive `bigint` identities; they
+are not hashes and are never part of ordinary logs. A busy lock defers work,
+while a lost lock interrupts it before success confirmation.
+
+The active-output relation is the handoff
+`(payer, collection_month, output_id)` derived from sealed monthly releases.
+Activation does not serve queries and this repository has no query API or SQL
+facade. A numeric source target is intentionally partial and non-activatable;
+target `all` plus drained known sources and release gates is required for
+activation.
+
+The local Compose recipe builds with BuildKit SSH forwarding, mounts the
+operator's accepted catalog and selector, starts PostgreSQL and migration,
+then starts control before MRF and consumer roles. Control has no automatic
+restart for permanent configuration/capacity errors. No stale-file health
+check or heartbeat table is used. Parsed MRF output, warehouse output,
+PostgreSQL data, and River history have no automatic retention policy.
+
 ## Historical version 1 implementation reference
+
+Everything below this heading is retained for migration and incident context
+only. It is not the active deployment or schema contract. Where it mentions
+feeds, sticky months, consumer `1.5.0`, `current_*` views, or a single worker,
+Stories 14–22 and the README supersede it.
 
 The following architecture sections preserve the original Stories 01–13
 design for migration and incident context. Where they mention feeds, sticky
-months, consumer `1.5.0`, or `current_*` views, the implemented Stories 14–19
-contract above and the numbered requirements supersede them.
+months, consumer `1.5.0`, or `current_*` views, the active contract above and
+the numbered requirements supersede them.
 
 ### Purpose
 

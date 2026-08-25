@@ -1,5 +1,7 @@
 .git
 .env
+local/
+/mrfpipeline
 config/services.csv
 config/provider-catalog/*
 !config/provider-catalog/README.md

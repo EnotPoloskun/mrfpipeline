@@ -415,7 +415,10 @@ RETURNING id`, month, jobs.FailureMRFDownload).Scan(&sourceID); err != nil {
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
-VALUES ($1, 'uhc', $2);
+VALUES ($1, 'uhc', $2)`, sourceID, month); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.monthly_release_mrf_sources (payer_id, collection_month, mrf_source_id)
 VALUES ('uhc', $2, $1)`, sourceID, month); err != nil {
 		t.Fatal(err)
@@ -473,10 +476,16 @@ RETURNING id`, month, jobs.FailureMRFDownload).Scan(&sourceID); err != nil {
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
-VALUES ($1, 'uhc', $2);
+VALUES ($1, 'uhc', $2)`, sourceID, month); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.monthly_release_mrf_sources (payer_id, collection_month, mrf_source_id)
-VALUES ('uhc', $2, $1);
-INSERT INTO mrfpipeline.mrf_materialization_slots (mrf_source_id) VALUES ($1)`, sourceID, month); err != nil {
+VALUES ('uhc', $2, $1)`, sourceID, month); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_materialization_slots (mrf_source_id) VALUES ($1)`, sourceID); err != nil {
 		t.Fatal(err)
 	}
 	ws := workspace(t)
