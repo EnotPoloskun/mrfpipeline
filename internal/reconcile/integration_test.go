@@ -976,14 +976,20 @@ func TestIntegrationPlanBatchScheduleAndRetry(t *testing.T) {
 	url := uniqueURL("mrf")
 	var sourceID, snapID, planID int64
 	if _, err := pool.Exec(context.Background(), `
-INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
-VALUES ('uhc', DATE '2026-08-01')
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, mrf_source_target_kind)
+VALUES ('uhc', DATE '2026-08-01', 'all')
 ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(context.Background(), `
 INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status, download_river_job_id, parse_river_job_id)
 VALUES ($1, DATE '2026-08-01', 'succeeded', 'succeeded', 11, 12) RETURNING id`, url).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id)
+VALUES ('uhc', DATE '2026-08-01', $1)`, sourceID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(context.Background(), `

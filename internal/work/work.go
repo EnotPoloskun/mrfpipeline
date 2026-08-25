@@ -44,19 +44,6 @@ type Runtime struct {
 	ProviderCatalogPath string
 }
 
-// Queues is the Story 12 worker map: discovery through mrf_parse plus consumer.
-func Queues() map[string]river.QueueConfig {
-	return map[string]river.QueueConfig{
-		jobs.QueueDiscovery:   {MaxWorkers: 1},
-		jobs.QueueTOCDownload: {MaxWorkers: 4},
-		jobs.QueueTOCParse:    {MaxWorkers: 2},
-		jobs.QueueTOCImport:   {MaxWorkers: 2},
-		jobs.QueueMRFDownload: {MaxWorkers: 2},
-		jobs.QueueMRFParse:    {MaxWorkers: 1},
-		jobs.QueueConsumer:    {MaxWorkers: 1},
-	}
-}
-
 // QueuesForRole returns the queues owned by one explicit long-lived process.
 func QueuesForRole(role string) map[string]river.QueueConfig {
 	switch role {
@@ -80,13 +67,11 @@ func QueuesForRole(role string) map[string]river.QueueConfig {
 	}
 }
 
-// Run starts a River client that consumes discovery.run, toc.download,
-// toc.parse, toc.import, mrf.download, mrf.parse, consumer.ingest, and
-// consumer.attach_plans, waits until ctx is canceled or the client stops,
-// then shuts down. A requested shutdown after Start succeeds returns nil.
-// Queue concurrency 1 on mrf_parse is not the parser safety contract; every
-// mrfparser.Parse holds the process mutex. consumer max 1 is the only
-// warehouse writer.
+// Run starts one explicit role-specific River client, waits until ctx is
+// canceled or the client stops, then shuts down. A requested shutdown after
+// Start succeeds returns nil. MRF parse concurrency is one per process because
+// every parser call holds the process mutex. Consumer concurrency is one while
+// the pinned warehouse writer requires serialized writes.
 func (r Runtime) Run(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")

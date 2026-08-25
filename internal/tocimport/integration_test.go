@@ -94,8 +94,8 @@ func insertImportJobForPayer(t *testing.T, pool *pgxpool.Pool, client *river.Cli
 		month = time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	}
 	if _, err := pool.Exec(context.Background(), `
-INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
-VALUES ($1, $2) ON CONFLICT DO NOTHING`, payer, month); err != nil {
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, mrf_source_target_kind)
+VALUES ($1, $2, 'all') ON CONFLICT DO NOTHING`, payer, month); err != nil {
 		t.Fatal(err)
 	}
 	var runID int64

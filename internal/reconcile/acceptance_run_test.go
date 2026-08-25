@@ -106,16 +106,13 @@ func runLiveAcceptance(ctx context.Context, getenv func(string) string, bin stri
 		_ = stopProc(control, stopWork)
 		return zero, err
 	}
-	mrfWorkers := []*workProc{mrf}
-	if bounded {
-		mrf2, err := startWork(workCtx, bin, env, "mrf", residentCapacity)
-		if err != nil {
-			_ = stopProc(mrf, stopWork)
-			_ = stopProc(control, stopWork)
-			return zero, err
-		}
-		mrfWorkers = append(mrfWorkers, mrf2)
+	mrfSecond, err := startWork(workCtx, bin, env, "mrf", residentCapacity)
+	if err != nil {
+		_ = stopProc(mrf, stopWork)
+		_ = stopProc(control, stopWork)
+		return zero, err
 	}
+	mrfWorkers := []*workProc{mrf, mrfSecond}
 	consumer, err := startWork(workCtx, bin, env, "consumer", residentCapacity)
 	if err != nil {
 		for _, p := range mrfWorkers {
@@ -229,11 +226,8 @@ ORDER BY a.mrf_source_id`, month+"-01")
 		rep.PeakArtifactBytes = peaks[0]
 		rep.PeakWarehouseBytes = peaks[1]
 		rep.PeakResidentHeld = peaks[2]
-		rep.DurationMS = time.Since(start).Milliseconds()
-		if err := writeLiveReport(getenv, rep); err != nil {
-			return zero, err
-		}
-		return rep, nil
+		return boundedRestartAcceptance(ctx, bin, env, dbURL, pool, getenv, month,
+			residentCapacity, wait, limit, status, rep, start)
 	}
 	if !status.DatabaseReady {
 		return zero, jobs.Failure(jobs.FailureReleaseNotReady)
@@ -295,13 +289,20 @@ ORDER BY a.mrf_source_id`, month+"-01")
 		_ = stopProc(control2, stop2)
 		return zero, err
 	}
-	consumer2, err := startWork(work2Ctx, bin, env, "consumer", residentCapacity)
+	mrf3, err := startWork(work2Ctx, bin, env, "mrf", residentCapacity)
 	if err != nil {
 		_ = stopProc(mrf2, stop2)
 		_ = stopProc(control2, stop2)
 		return zero, err
 	}
-	procs2 := []*workProc{control2, mrf2, consumer2}
+	consumer2, err := startWork(work2Ctx, bin, env, "consumer", residentCapacity)
+	if err != nil {
+		_ = stopProc(mrf3, stop2)
+		_ = stopProc(mrf2, stop2)
+		_ = stopProc(control2, stop2)
+		return zero, err
+	}
+	procs2 := []*workProc{control2, mrf2, mrf3, consumer2}
 	defer func() {
 		for _, p := range procs2 {
 			_ = stopProc(p, stop2)
@@ -368,6 +369,93 @@ ORDER BY a.mrf_source_id`, month+"-01")
 	rep.DurationMS = time.Since(start).Milliseconds()
 	if err := writeLiveReport(getenv, rep); err != nil {
 		return zero, err
+	}
+	return rep, nil
+}
+
+func boundedRestartAcceptance(ctx context.Context, bin string, env []string, dbURL string, pool *pgxpool.Pool,
+	getenv func(string) string, month, residentCapacity string, wait time.Duration,
+	limit int64, before release.StatusReport, rep liveReport, start time.Time) (liveReport, error) {
+	if _, err := runBinOutput(ctx, bin, env, "reconcile"); err != nil {
+		return liveReport{}, err
+	}
+	workCtx, stopWork := context.WithCancel(ctx)
+	defer stopWork()
+	control, err := startWork(workCtx, bin, env, "control", residentCapacity)
+	if err != nil {
+		return liveReport{}, err
+	}
+	mrfA, err := startWork(workCtx, bin, env, "mrf", residentCapacity)
+	if err != nil {
+		_ = stopProc(control, stopWork)
+		return liveReport{}, err
+	}
+	mrfB, err := startWork(workCtx, bin, env, "mrf", residentCapacity)
+	if err != nil {
+		_ = stopProc(mrfA, stopWork)
+		_ = stopProc(control, stopWork)
+		return liveReport{}, err
+	}
+	consumer, err := startWork(workCtx, bin, env, "consumer", residentCapacity)
+	if err != nil {
+		_ = stopProc(mrfB, stopWork)
+		_ = stopProc(mrfA, stopWork)
+		_ = stopProc(control, stopWork)
+		return liveReport{}, err
+	}
+	procs := []*workProc{control, mrfA, mrfB, consumer}
+	defer func() {
+		for _, p := range procs {
+			_ = stopProc(p, stopWork)
+		}
+	}()
+	ready, cancelReady := context.WithTimeout(ctx, wait)
+	defer cancelReady()
+	if err := waitRiverClient(ready, dbURL, control); err != nil {
+		return liveReport{}, err
+	}
+	idle, cancelIdle := context.WithTimeout(ctx, wait)
+	defer cancelIdle()
+	if _, err := waitIdle(idle, dbURL, getenv(config.EnvArtifactRoot), getenv(config.EnvWarehousePath), control); err != nil {
+		return liveReport{}, err
+	}
+	for _, p := range procs {
+		if err := stopProc(p, stopWork); err != nil {
+			return liveReport{}, err
+		}
+	}
+	noRiver, cancelNoRiver := context.WithTimeout(ctx, wait)
+	defer cancelNoRiver()
+	if err := waitNoRiverClient(noRiver, dbURL); err != nil {
+		return liveReport{}, err
+	}
+	if _, err := runBinOutput(ctx, bin, env, "reconcile"); err != nil {
+		return liveReport{}, err
+	}
+	statusOut, err := runBinOutput(ctx, bin, env, "month", "status", "--payer", "uhc", "--collection-month", month)
+	if err != nil {
+		return liveReport{}, err
+	}
+	var afterStatus release.StatusReport
+	if err := json.Unmarshal(bytes.TrimSpace(statusOut), &afterStatus); err != nil {
+		return liveReport{}, jobs.Failure(jobs.FailureReleaseNotReady)
+	}
+	if !boundedReleaseStatus(afterStatus) || afterStatus.MRFResidentHeld != 0 || afterStatus.DatabaseReady || len(afterStatus.Blockers) != len(before.Blockers) || afterStatus.Blockers[0] != before.Blockers[0] {
+		return liveReport{}, jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	after, err := snapshotLive(ctx, pool, getenv(config.EnvWarehousePath), limit, start)
+	if err != nil {
+		return liveReport{}, err
+	}
+	if after.Sources != rep.Sources || after.SnapshotsSucceeded != rep.SnapshotsSucceeded || after.WarehouseFiles != rep.WarehouseFiles {
+		return liveReport{}, jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	rep.RestartSources = after.Sources
+	rep.RestartSnapshots = after.SnapshotsSucceeded
+	rep.RestartWarehouse = after.WarehouseFiles
+	rep.DurationMS = time.Since(start).Milliseconds()
+	if err := writeLiveReport(getenv, rep); err != nil {
+		return liveReport{}, err
 	}
 	return rep, nil
 }

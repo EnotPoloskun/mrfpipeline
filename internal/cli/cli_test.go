@@ -89,6 +89,24 @@ func TestInformationalInvocations(t *testing.T) {
 	}
 }
 
+func TestCurrentOperatorCoordinationHelp(t *testing.T) {
+	t.Parallel()
+	for command, want := range map[string][]string{
+		"retry":     {"may run while worker roles are active", "execution locks"},
+		"reconcile": {"singleton control lease", "Stop the control worker", "MRF and consumer roles may remain running"},
+	} {
+		text := helpFor(command)
+		for _, fragment := range want {
+			if !strings.Contains(text, fragment) {
+				t.Fatalf("%s help missing %q: %s", command, fragment, text)
+			}
+		}
+	}
+	if strings.Contains(helpFor("retry"), "worker must be stopped") {
+		t.Fatal("retry help retained obsolete stop-worker instruction")
+	}
+}
+
 func TestVersionOutput(t *testing.T) {
 	t.Parallel()
 	code, stdout, stderr := runCLI(context.Background(), []string{"--version"}, fatalEnv(t))

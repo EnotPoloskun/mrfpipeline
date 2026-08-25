@@ -97,8 +97,8 @@ func TestIntegrationRuntimeDownloadsAndParses(t *testing.T) {
 	}
 	var runID, tocID int64
 	if _, err := pool.Exec(context.Background(), `
-INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
-VALUES ('uhc', DATE '2026-08-01')
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, mrf_source_target_kind)
+VALUES ('uhc', DATE '2026-08-01', 'all')
 ON CONFLICT DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
@@ -144,11 +144,25 @@ UPDATE mrfpipeline.toc_files SET download_river_job_id = $2 WHERE id = $1`, tocI
 	warehouse := filepath.Join(t.TempDir(), "warehouse")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
+	done := make(chan error, 3)
 	go func() {
 		done <- Runtime{
-			Pool: pool, Workspace: ws, Downloader: dl, Logger: jobs.NewLogger(io.Discard),
-			ServicesPath: svcPath, WarehousePath: warehouse, ProviderCatalogPath: catPath,
+			Role: "control", ResidentCapacity: 2, Pool: pool, Workspace: ws, Downloader: dl,
+			Logger: jobs.NewLogger(io.Discard), ServicesPath: svcPath, WarehousePath: warehouse,
+			ProviderCatalogPath: catPath,
+		}.Run(ctx)
+	}()
+	go func() {
+		done <- Runtime{
+			Role: "mrf", Pool: pool, Workspace: ws, Downloader: dl,
+			Logger: jobs.NewLogger(io.Discard), ServicesPath: svcPath,
+		}.Run(ctx)
+	}()
+	go func() {
+		done <- Runtime{
+			Role: "consumer", Pool: pool, Workspace: ws,
+			Logger: jobs.NewLogger(io.Discard), ServicesPath: svcPath, WarehousePath: warehouse,
+			ProviderCatalogPath: catPath,
 		}.Run(ctx)
 	}()
 	deadline := time.Now().Add(90 * time.Second)
@@ -242,12 +256,14 @@ WHERE t.id = $1`, tocID).Scan(&status, &parse, &imp, &mrfDL, &mrfParse, &consume
 		t.Fatal("snapshot plans")
 	}
 	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
+	for i := 0; i < 3; i++ {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatal("shutdown")
 		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("shutdown")
 	}
 }

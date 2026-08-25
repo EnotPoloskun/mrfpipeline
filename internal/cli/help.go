@@ -92,10 +92,12 @@ const reconcileHelp = `Usage:
   mrfpipeline reconcile
   mrfpipeline reconcile --help
 
-Acquire the exclusive worker lease and repair only safe gaps in building
+Acquire the singleton control lease and repair only safe gaps in building
 releases: missing successor jobs, orphaned current jobs, plan-batch
-scheduling, and eligible artifact cleanup. Sealed-release inconsistencies
-are reported without mutation; terminal failed stages use retry.
+scheduling, and eligible artifact cleanup. Stop the control worker before
+running this command; MRF and consumer roles may remain running. Sealed-
+release inconsistencies are reported without mutation; terminal failed stages
+use retry.
 
 Required environment:
   MRFPIPELINE_DATABASE_URL
@@ -109,9 +111,10 @@ const retryHelp = `Usage:
   mrfpipeline retry --stage <job-kind> --id <domain-id>
   mrfpipeline retry --help
 
-Reopen one exact failed domain stage and insert a replacement River
-job. The command does not run the job. The worker must be stopped.
-The same stage identity is retained. An attachment retry reuses the
+Reopen one exact failed domain stage and insert a replacement River job. The
+command does not run the job and may run while worker roles are active. It
+coordinates through the release and exact source/output execution locks. The
+same stage identity is retained. An attachment retry reuses the
 frozen plan batch rather than creating a new batch for its items.
 Retries for active or inactive releases fail with
 sealed_release_retry_forbidden.

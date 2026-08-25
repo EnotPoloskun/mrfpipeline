@@ -263,9 +263,9 @@ ORDER BY s.id`)
 	for _, id := range ids {
 		if _, err := tx.Exec(ctx, `
 INSERT INTO mrfpipeline.monthly_release_mrf_sources (payer_id, collection_month, mrf_source_id)
-SELECT DISTINCT payer_id, collection_month, $1
+SELECT DISTINCT payer_id, collection_month, $1::bigint
 FROM mrfpipeline.mrf_snapshots
-WHERE mrf_source_id = $1
+WHERE mrf_source_id = $1::bigint
 ON CONFLICT DO NOTHING`, id); err != nil {
 			return dbFailure(ctx, err)
 		}

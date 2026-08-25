@@ -87,7 +87,7 @@ WHERE payer_id = $1 AND collection_month = $2`, payer, monthDate); err != nil {
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.monthly_release_mrf_sources
     (payer_id, collection_month, mrf_source_id, selected_at)
-VALUES ($1, $2, $3, $4 - interval '1 second')`, payer, monthDate, sourceID, sourceUpdated); err != nil {
+VALUES ($1, $2, $3, $4::timestamptz - interval '1 second')`, payer, monthDate, sourceID, sourceUpdated); err != nil {
 		t.Fatal("source selection: ", err)
 	}
 	if err := pool.QueryRow(ctx, `
@@ -233,8 +233,8 @@ VALUES ($1, $2, $3, 'succeeded')`, sourceID, payer, month); err != nil {
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.monthly_release_mrf_sources
     (payer_id, collection_month, mrf_source_id, selected_at)
-VALUES ('uhc', $1, $2, $3 - interval '1 second'),
-       ('aetna', $1, $2, $3 + interval '1 second')`, month, sourceID, updated); err != nil {
+VALUES ('uhc', $1, $2, $3::timestamptz - interval '1 second'),
+       ('aetna', $1, $2, $3::timestamptz + interval '1 second')`, month, sourceID, updated); err != nil {
 		t.Fatal(err)
 	}
 	original, err := Readiness(ctx, pool, "uhc", month)
@@ -333,13 +333,22 @@ INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month
 VALUES ($1, 'aetna', DATE '2026-08-01', 'succeeded') RETURNING id`, sourceID).Scan(new(int64)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.monthly_releases
+SET mrf_source_target_kind = 'all'
+WHERE payer_id = 'aetna' AND collection_month = DATE '2026-08-01'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id)
+VALUES ('aetna', DATE '2026-08-01', $1)`, sourceID); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(ctx, `SELECT id FROM mrfpipeline.discovery_runs WHERE payer_id = 'uhc'`).Scan(&runID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT id FROM mrfpipeline.toc_files WHERE payer_id = 'uhc'`).Scan(&tocID); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT id FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&sourceID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT id FROM mrfpipeline.plan_attachment_batches WHERE mrf_snapshot_id = $1`, uhcSnapshot).Scan(&batchID); err != nil {

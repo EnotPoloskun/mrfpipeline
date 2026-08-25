@@ -3,7 +3,6 @@ package jobs
 import (
 	"context"
 	"log/slog"
-	"math"
 	"sync"
 	"time"
 
@@ -18,33 +17,47 @@ const (
 )
 
 type executionLease struct {
-	mu        sync.Mutex
-	conn      *pgxpool.Conn
-	namespace int32
-	domainID  int32
+	mu       sync.Mutex
+	conn     *pgxpool.Conn
+	key      int64
+	classID  uint32
+	objectID uint32
 }
 
-func executionDomainID(domainID int64) (int32, error) {
-	if domainID <= 0 || domainID > math.MaxInt32 {
+// executionKey maps the two mutable domains into one advisory bigint key.
+// Positive keys are MRF sources and negative keys are consumer outputs. This
+// is deterministic, collision-free for the positive bigint domain IDs, and
+// deliberately does not hash or expose the database identity.
+func executionKey(namespace int32, domainID int64) (int64, error) {
+	if domainID <= 0 {
 		return 0, Failure(FailureInvalidArguments)
 	}
-	return int32(domainID), nil
+	switch namespace {
+	case LockNamespaceMRF:
+		return domainID, nil
+	case LockNamespaceConsumer:
+		return -domainID, nil
+	default:
+		return 0, Failure(FailureInvalidArguments)
+	}
 }
 
 func acquireExecutionLease(ctx context.Context, pool *pgxpool.Pool, namespace int32, domainID int64) (*executionLease, bool, error) {
 	if pool == nil {
 		return nil, false, Failure(FailureInvalidArguments)
 	}
-	key, err := executionDomainID(domainID)
+	key, err := executionKey(namespace, domainID)
 	if err != nil {
 		return nil, false, err
 	}
+	classID := uint32(uint64(key) >> 32)
+	objectID := uint32(uint64(key))
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return nil, false, err
 	}
 	var locked bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1::int, $2::int)`, namespace, key).Scan(&locked); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1::bigint)`, key).Scan(&locked); err != nil {
 		conn.Release()
 		return nil, false, err
 	}
@@ -52,7 +65,7 @@ func acquireExecutionLease(ctx context.Context, pool *pgxpool.Pool, namespace in
 		conn.Release()
 		return nil, true, nil
 	}
-	return &executionLease{conn: conn, namespace: namespace, domainID: key}, false, nil
+	return &executionLease{conn: conn, key: key, classID: classID, objectID: objectID}, false, nil
 }
 
 func (l *executionLease) release(ctx context.Context) {
@@ -64,7 +77,7 @@ func (l *executionLease) release(ctx context.Context) {
 	if l.conn == nil {
 		return
 	}
-	_, _ = l.conn.Exec(ctx, `SELECT pg_advisory_unlock($1::int, $2::int)`, l.namespace, l.domainID)
+	_, _ = l.conn.Exec(ctx, `SELECT pg_advisory_unlock($1::bigint)`, l.key)
 	l.conn.Release()
 	l.conn = nil
 }
@@ -85,7 +98,7 @@ SELECT EXISTS (
   WHERE locktype = 'advisory' AND objid = $2::oid
     AND classid = $1::oid
     AND granted AND pid = pg_backend_pid()
-)`, l.namespace, l.domainID).Scan(&held); err != nil {
+)`, l.classID, l.objectID).Scan(&held); err != nil {
 		return err
 	}
 	if !held {

@@ -65,9 +65,10 @@ func seedActivationFixture(t *testing.T, pool *pgxpool.Pool, sealed bool) activa
 	month := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.monthly_releases
-    (payer_id, collection_month, status, sealed_at, last_activated_at)
-VALUES ('uhc', DATE '2026-07-01', 'active', transaction_timestamp(), transaction_timestamp()),
-       ('uhc', $1, 'building', NULL, NULL)`, month); err != nil {
+    (payer_id, collection_month, status, sealed_at, last_activated_at,
+     mrf_source_target_kind)
+VALUES ('uhc', DATE '2026-07-01', 'active', transaction_timestamp(), transaction_timestamp(), 'all'),
+       ('uhc', $1, 'building', NULL, NULL, 'all')`, month); err != nil {
 		t.Fatal(err)
 	}
 	var runID, sourceID, snapshotID, planID, batchID int64
@@ -87,6 +88,12 @@ RETURNING id`, month, runID).Scan(new(int64)); err != nil {
 	if err := pool.QueryRow(ctx, `
 INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
 VALUES ('https://files.test/activation-mrf', $1, 'succeeded', 'succeeded') RETURNING id`, month).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id)
+VALUES ('uhc', $1, $2)`, month, sourceID); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `

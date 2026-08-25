@@ -14,35 +14,6 @@ import (
 	"github.com/parquet-go/parquet-go"
 )
 
-func TestQueues(t *testing.T) {
-	t.Parallel()
-	q := Queues()
-	if len(q) != 7 {
-		t.Fatalf("queues %v", q)
-	}
-	if q[jobs.QueueDiscovery].MaxWorkers != 1 {
-		t.Fatalf("discovery %d", q[jobs.QueueDiscovery].MaxWorkers)
-	}
-	if q[jobs.QueueTOCDownload].MaxWorkers != 4 {
-		t.Fatalf("toc_download %d", q[jobs.QueueTOCDownload].MaxWorkers)
-	}
-	if q[jobs.QueueTOCParse].MaxWorkers != 2 {
-		t.Fatalf("toc_parse %d", q[jobs.QueueTOCParse].MaxWorkers)
-	}
-	if q[jobs.QueueTOCImport].MaxWorkers != 2 {
-		t.Fatalf("toc_import %d", q[jobs.QueueTOCImport].MaxWorkers)
-	}
-	if q[jobs.QueueMRFDownload].MaxWorkers != 2 {
-		t.Fatalf("mrf_download %d", q[jobs.QueueMRFDownload].MaxWorkers)
-	}
-	if q[jobs.QueueMRFParse].MaxWorkers != 1 {
-		t.Fatalf("mrf_parse %d", q[jobs.QueueMRFParse].MaxWorkers)
-	}
-	if q[jobs.QueueConsumer].MaxWorkers != 1 {
-		t.Fatalf("consumer %d", q[jobs.QueueConsumer].MaxWorkers)
-	}
-}
-
 func TestQueuesForRole(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

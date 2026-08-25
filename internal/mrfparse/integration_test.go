@@ -147,6 +147,13 @@ VALUES ($1, $2, $3::date, 'blocked')
 RETURNING id`, sourceID, payer, month).Scan(&snapID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id)
+VALUES ($1, $2::date, $3)
+ON CONFLICT DO NOTHING`, payer, month, sourceID); err != nil {
+		t.Fatal(err)
+	}
 	return snapID
 }
 

@@ -1,3 +1,10 @@
+x-pipeline-image: &pipeline-image
+  image: mrfpipeline:local
+  build:
+    context: .
+    ssh:
+      - default
+
 x-pipeline-env: &pipeline-env
   MRFPIPELINE_DATABASE_URL: postgres://mrfpipeline:local-only@postgres/mrfpipeline?sslmode=disable
   MRFPIPELINE_ARTIFACT_ROOT: /var/lib/mrfpipeline/artifacts
@@ -5,9 +12,14 @@ x-pipeline-env: &pipeline-env
   MRFPIPELINE_PROVIDER_CATALOG_PATH: /etc/mrfpipeline/provider-catalog
   MRFPIPELINE_SERVICES_PATH: /etc/mrfpipeline/services.csv
 
+x-pipeline-volumes: &pipeline-volumes
+  - artifacts:/var/lib/mrfpipeline
+  - ${MRFPIPELINE_PROVIDER_CATALOG_DIR:-./config/provider-catalog}:/etc/mrfpipeline/provider-catalog:ro
+  - ${MRFPIPELINE_SERVICES_FILE:-./config/services.csv}:/etc/mrfpipeline/services.csv:ro
+
 x-control-env: &control-env
   <<: *pipeline-env
-  MRFPIPELINE_MRF_RESIDENT_CAPACITY: "4"
+  MRFPIPELINE_MRF_RESIDENT_CAPACITY: ${MRFPIPELINE_MRF_RESIDENT_CAPACITY:-2}
 
 services:
   postgres:
@@ -26,56 +38,50 @@ services:
       retries: 30
 
   migrate:
-    image: mrfpipeline:local
+    <<: *pipeline-image
     command: ["migrate"]
     depends_on:
       postgres:
         condition: service_healthy
     environment: *pipeline-env
-    volumes:
-      - artifacts:/var/lib/mrfpipeline
-      - ./config:/etc/mrfpipeline:ro
+    volumes: *pipeline-volumes
 
   control:
-    image: mrfpipeline:local
-    restart: unless-stopped
+    <<: *pipeline-image
+    restart: "no"
     command: ["work", "--role", "control"]
     depends_on:
       migrate:
         condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD-SHELL", "test -f /var/lib/mrfpipeline/artifacts/workspace.json"]
-      interval: 2s
-      timeout: 5s
-      retries: 30
     environment: *control-env
-    volumes:
-      - artifacts:/var/lib/mrfpipeline
-      - ./config:/etc/mrfpipeline:ro
+    volumes: *pipeline-volumes
 
   mrf:
-    image: mrfpipeline:local
-    restart: unless-stopped
+    <<: *pipeline-image
+    restart: on-failure
     command: ["work", "--role", "mrf"]
     depends_on:
       control:
-        condition: service_healthy
+        condition: service_started
     environment: *pipeline-env
-    volumes:
-      - artifacts:/var/lib/mrfpipeline
-      - ./config:/etc/mrfpipeline:ro
+    volumes: *pipeline-volumes
 
   consumer:
-    image: mrfpipeline:local
-    restart: unless-stopped
+    <<: *pipeline-image
+    restart: on-failure
     command: ["work", "--role", "consumer"]
     depends_on:
       control:
-        condition: service_healthy
+        condition: service_started
     environment: *pipeline-env
-    volumes:
-      - artifacts:/var/lib/mrfpipeline
-      - ./config:/etc/mrfpipeline:ro
+    volumes: *pipeline-volumes
+
+  cli:
+    <<: *pipeline-image
+    profiles: [operator]
+    entrypoint: ["/usr/local/bin/mrfpipeline"]
+    environment: *pipeline-env
+    volumes: *pipeline-volumes
 
 volumes:
   pgdata:

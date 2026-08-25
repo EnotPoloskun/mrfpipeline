@@ -1247,7 +1247,7 @@ Stories 01–13 are the full version 1 implementation sequence:
 | 12 | Plan batch projection and additive consumer attachment worker. |
 | 13 | Reconciliation, operational acceptance, 1→2→5 TOC live progression, authorized URL-debug queries, retention guidance, and final documentation. |
 
-Stories 14–20 are the approved rebuild-only next sequence:
+Stories 14–22 are the approved rebuild-only next sequence:
 
 | Story | Deliverable |
 |---:|---|
@@ -1259,6 +1259,7 @@ Stories 14–20 are the approved rebuild-only next sequence:
 | 19 | Make reconciliation/acceptance/documentation release-aware and hand off the complete active-output query contract. |
 | 20 | Gate every worker claim on release mutability, validate frozen publication inventory, expose redacted lifecycle/stalled-work diagnostics, and verify active publication durability. |
 | 21 | Bound cumulative MRF admission and shared resident capacity, add role-specific local workers, durable refill/recovery, and bounded acceptance. |
+| 22 | Make the local topology buildable, converge PostgreSQL integration tests, align operator contracts, and validate a reproducible bounded first run. |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC

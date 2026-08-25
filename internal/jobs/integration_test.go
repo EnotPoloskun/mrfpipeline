@@ -292,6 +292,12 @@ func TestIntegrationExecutionLockLossInterruptsOperation(t *testing.T) {
 		result <- err
 	}()
 	<-started
+	key, err := executionKey(LockNamespaceMRF, 52)
+	if err != nil {
+		t.Fatal(err)
+	}
+	classID := uint32(uint64(key) >> 32)
+	objectID := uint32(uint64(key))
 	var pid int32
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -299,7 +305,8 @@ func TestIntegrationExecutionLockLossInterruptsOperation(t *testing.T) {
 SELECT pid::int FROM pg_locks
 WHERE locktype = 'advisory' AND classid = $1::oid AND objid = $2::oid
   AND granted AND pid <> pg_backend_pid()
-LIMIT 1`, LockNamespaceMRF, 52).Scan(&pid)
+
+LIMIT 1`, classID, objectID).Scan(&pid)
 		if err == nil {
 			break
 		}
@@ -319,6 +326,26 @@ LIMIT 1`, LockNamespaceMRF, 52).Scan(&pid)
 	case <-time.After(12 * time.Second):
 		t.Fatal("execution lock operation did not stop after connection loss")
 	}
+}
+
+func TestIntegrationExecutionLocksSupportBigintIDs(t *testing.T) {
+	url, pool := testDB(t)
+	migrateAndFixtures(t, url, pool)
+	const id = int64(1<<32 + 17)
+	ctx := context.Background()
+	first, busy, err := acquireExecutionLease(ctx, pool, LockNamespaceMRF, id)
+	if err != nil || busy || first == nil {
+		t.Fatalf("large source lock: lease=%v busy=%v err=%v", first, busy, err)
+	}
+	defer first.release(ctx)
+	if _, busy, err := acquireExecutionLease(ctx, pool, LockNamespaceMRF, id); err != nil || !busy {
+		t.Fatalf("large source lock was not exclusive: busy=%v err=%v", busy, err)
+	}
+	consumer, busy, err := acquireExecutionLease(ctx, pool, LockNamespaceConsumer, id)
+	if err != nil || busy || consumer == nil {
+		t.Fatalf("large consumer lock: lease=%v busy=%v err=%v", consumer, busy, err)
+	}
+	consumer.release(ctx)
 }
 
 func TestIntegrationInsertTxVisibility(t *testing.T) {

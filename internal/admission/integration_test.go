@@ -198,9 +198,12 @@ func TestIntegrationConcurrentSchedulersRespectResidentCapacity(t *testing.T) {
 	month := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
-VALUES ('uhc', $1);
+VALUES ('uhc', $1)`, month); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.pipeline_runtime (artifact_root, resident_capacity)
-VALUES ('/tmp/admission-test', 2)`, month); err != nil {
+VALUES ('/tmp/admission-test', 2)`); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
@@ -212,7 +215,10 @@ VALUES ($1, $2) RETURNING id`, "https://files.test/capacity/"+string(rune('a'+i)
 		}
 		if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
-VALUES ($1, 'uhc', $2);
+VALUES ($1, 'uhc', $2)`, sourceID, month); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.monthly_release_mrf_sources (payer_id, collection_month, mrf_source_id)
 VALUES ('uhc', $2, $1)`, sourceID, month); err != nil {
 			t.Fatal(err)

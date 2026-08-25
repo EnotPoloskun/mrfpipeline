@@ -9,8 +9,12 @@ import (
 const (
 	// DiscoverMaxConns is the bounded pool for discover enqueue.
 	DiscoverMaxConns int32 = 2
-	// WorkMaxConns is the production pool for the River worker process.
-	WorkMaxConns int32 = 8
+	// WorkMaxConns is the conservative pool shared by role processes and
+	// operator reconciliation/retry commands. It leaves room for River's
+	// runtime connections in addition to one advisory-lock connection per
+	// executing MRF/consumer job and lease/bookkeeping checks. The supported
+	// MRF process has two download workers and one parse worker.
+	WorkMaxConns int32 = 12
 )
 
 // Open parses databaseURL, creates a pool with maxConns, and pings.
