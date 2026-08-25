@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/release"
@@ -12,8 +13,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Retry reopens one failed production stage. It acquires the worker lease,
-// inserts a replacement River job, and does not run the job.
+// Retry reopens one failed production stage under its release and execution
+// locks, inserts a replacement River job when capacity permits, and does not
+// run the job.
 func Retry(ctx context.Context, pool *pgxpool.Pool, stage string, domainID int64) (RetryResult, error) {
 	if ctx == nil {
 		panic("nil context")
@@ -32,54 +34,112 @@ func Retry(ctx context.Context, pool *pgxpool.Pool, stage string, domainID int64
 	if err := database.ValidateCurrent(ctx, pool); err != nil {
 		return zero, err
 	}
-	lease, err := database.AcquireWorkerLease(ctx, pool)
-	if err != nil {
-		if database.IsLeaseUnavailable(err) {
-			return zero, jobs.Failure(jobs.FailureWorkerLeaseUnavailable)
+	lockDomain := domainID
+	namespace := jobs.LockNamespaceMRF
+	if binding.Kind == jobs.KindConsumerIngest || binding.Kind == jobs.KindConsumerAttachPlans {
+		namespace = jobs.LockNamespaceConsumer
+	}
+	if binding.Kind == jobs.KindConsumerAttachPlans {
+		if err := pool.QueryRow(ctx, `
+SELECT mrf_snapshot_id FROM mrfpipeline.plan_attachment_batches WHERE id = $1`, domainID).Scan(&lockDomain); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return zero, jobs.Failure(jobs.FailureMissingRecord)
+			}
+			return zero, dbFail(ctx.Err())
 		}
-		return zero, err
 	}
-	defer func() { _ = lease.Release(context.Background()) }()
-
-	client, err := jobs.NewInsertClient(ctx, pool, jobs.NewLogger(nil))
-	if err != nil {
-		return zero, err
-	}
-
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return zero, dbFail(ctx.Err())
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if err := release.RequireBuildingForStage(ctx, tx, binding.Kind, domainID); err != nil {
-		if jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
-			return zero, jobs.Failure(jobs.FailureSealedReleaseRetryForbidden)
+	var result RetryResult
+	busy, err := jobs.WithExecutionLock(ctx, pool, namespace, lockDomain, func(ctx context.Context) error {
+		client, err := jobs.NewInsertClient(ctx, pool, jobs.NewLogger(nil))
+		if err != nil {
+			return err
 		}
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			return dbFail(ctx.Err())
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if err := release.RequireBuildingForStage(ctx, tx, binding.Kind, domainID); err != nil {
+			if jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+				return jobs.Failure(jobs.FailureSealedReleaseRetryForbidden)
+			}
+			return err
+		}
+		if err := lockForRetry(ctx, tx, binding, domainID); err != nil {
+			return err
+		}
+		if err := requireFailedRetryable(ctx, tx, binding, domainID); err != nil {
+			return err
+		}
+		if binding.Kind == jobs.KindMRFDownload {
+			var selected, hasSlot bool
+			if err := tx.QueryRow(ctx, `
+SELECT EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+               WHERE a.mrf_source_id = $1),
+       EXISTS (SELECT 1 FROM mrfpipeline.mrf_materialization_slots s
+               WHERE s.mrf_source_id = $1)`, domainID).Scan(&selected, &hasSlot); err != nil {
+				return dbFail(ctx.Err())
+			}
+			if !selected {
+				return jobs.Failure(jobs.FailureDomainInvariant)
+			}
+			if !hasSlot {
+				if err := reopenWaiting(ctx, tx, binding.Spec, domainID); err != nil {
+					return err
+				}
+				if err := admission.WakeTx(ctx, tx, client); err != nil {
+					return err
+				}
+				if err := tx.Commit(ctx); err != nil {
+					return dbFail(ctx.Err())
+				}
+				result = RetryResult{Stage: binding.Kind, DomainID: domainID}
+				return nil
+			}
+		} else if binding.Kind == jobs.KindMRFParse {
+			var hasSlot bool
+			if err := tx.QueryRow(ctx, `
+SELECT EXISTS (SELECT 1 FROM mrfpipeline.mrf_materialization_slots WHERE mrf_source_id = $1)`, domainID).Scan(&hasSlot); err != nil {
+				return dbFail(ctx.Err())
+			}
+			if !hasSlot {
+				return jobs.Failure(jobs.FailureDomainInvariant)
+			}
+		}
+		args, err := jobs.ArgsFor(binding.Kind, domainID)
+		if err != nil {
+			return err
+		}
+		jobID, err := jobs.InsertTx(ctx, client, tx, args)
+		if err != nil {
+			return err
+		}
+		if err := reopenFailed(ctx, tx, binding.Spec, domainID, jobID); err != nil {
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return dbFail(ctx.Err())
+		}
+		result = RetryResult{Stage: binding.Kind, DomainID: domainID, RiverJobID: jobID}
+		return nil
+	})
+	if err != nil {
 		return zero, err
 	}
-	if err := lockForRetry(ctx, tx, binding, domainID); err != nil {
-		return zero, err
+	if busy {
+		return zero, jobs.Failure(jobs.FailureStageExecutionBusy)
 	}
-	if err := requireFailedRetryable(ctx, tx, binding, domainID); err != nil {
-		return zero, err
-	}
+	return result, nil
+}
 
-	args, err := jobs.ArgsFor(binding.Kind, domainID)
-	if err != nil {
-		return zero, err
+func reopenWaiting(ctx context.Context, tx pgx.Tx, spec jobs.StageSpec, domainID int64) error {
+	q := fmt.Sprintf(`UPDATE %s SET %s = $2, %s = NULL, %s = NULL, %s = transaction_timestamp() WHERE %s = $1`,
+		spec.Table, spec.StatusColumn, spec.JobIDColumn, spec.FailureCodeColumn, spec.UpdatedAtColumn, spec.IDColumn)
+	tag, err := tx.Exec(ctx, q, domainID, jobs.StatusBlocked)
+	if err != nil || tag.RowsAffected() != 1 {
+		return dbFail(ctx.Err())
 	}
-	jobID, err := jobs.InsertTx(ctx, client, tx, args)
-	if err != nil {
-		return zero, err
-	}
-	if err := reopenFailed(ctx, tx, binding.Spec, domainID, jobID); err != nil {
-		return zero, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return zero, dbFail(ctx.Err())
-	}
-	return RetryResult{Stage: binding.Kind, DomainID: domainID, RiverJobID: jobID}, nil
+	return nil
 }
 
 func bindingFor(kind string) (jobs.KindBinding, bool) {

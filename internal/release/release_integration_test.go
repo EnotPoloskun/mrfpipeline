@@ -60,6 +60,7 @@ ON CONFLICT (payer_id, collection_month) DO NOTHING`, payer, monthDate); err != 
 		t.Fatal("release: ", err)
 	}
 	var runID, sourceID, snapshotID, planID, batchID int64
+	var sourceUpdated time.Time
 	if err := pool.QueryRow(ctx, `
 INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, status, completed_at)
 VALUES ($1, $2, 'succeeded', transaction_timestamp()) RETURNING id`, payer, monthDate).Scan(&runID); err != nil {
@@ -73,9 +74,21 @@ INSERT INTO mrfpipeline.toc_files (
 		t.Fatal("toc: ", err)
 	}
 	if err := pool.QueryRow(ctx, `
-INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
-VALUES ($1, $2, 'succeeded', 'succeeded') RETURNING id`, "https://example.invalid/mrf/"+suffix, monthDate).Scan(&sourceID); err != nil {
+	INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ($1, $2, 'succeeded', 'succeeded') RETURNING id, updated_at`, "https://example.invalid/mrf/"+suffix).Scan(&sourceID, &sourceUpdated); err != nil {
 		t.Fatal("source: ", err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.monthly_releases
+SET mrf_source_target_kind = 'all', updated_at = transaction_timestamp()
+WHERE payer_id = $1 AND collection_month = $2`, payer, monthDate); err != nil {
+		t.Fatal("source target: ", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id, selected_at)
+VALUES ($1, $2, $3, $4 - interval '1 second')`, payer, monthDate, sourceID, sourceUpdated); err != nil {
+		t.Fatal("source selection: ", err)
 	}
 	if err := pool.QueryRow(ctx, `
 INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
@@ -190,6 +203,47 @@ WHERE payer_id = 'uhc' AND status = 'active'`).Scan(&activeMonth); err != nil ||
 	_ = tx.Rollback(ctx)
 	if !jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
 		t.Fatalf("sealed gate error %v", err)
+	}
+}
+
+func TestIntegrationReuseCountDistinguishesOriginalAndLaterSelection(t *testing.T) {
+	pool := releaseTestDB(t)
+	ctx := context.Background()
+	month := time.Date(2026, time.December, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month, mrf_source_target_kind)
+VALUES ('uhc', $1, 'all'), ('aetna', $1, 'all')`, month); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID int64
+	var updated time.Time
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ('https://example.invalid/mrf/reuse', $1, 'succeeded', 'succeeded')
+RETURNING id, updated_at`, month).Scan(&sourceID, &updated); err != nil {
+		t.Fatal(err)
+	}
+	for _, payer := range []string{"uhc", "aetna"} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month, consume_status)
+VALUES ($1, $2, $3, 'succeeded')`, sourceID, payer, month); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id, selected_at)
+VALUES ('uhc', $1, $2, $3 - interval '1 second'),
+       ('aetna', $1, $2, $3 + interval '1 second')`, month, sourceID, updated); err != nil {
+		t.Fatal(err)
+	}
+	original, err := Readiness(ctx, pool, "uhc", month)
+	if err != nil || original.MRFSourcesReusingOutput != 0 {
+		t.Fatalf("original reuse count=%d err=%v", original.MRFSourcesReusingOutput, err)
+	}
+	later, err := Readiness(ctx, pool, "aetna", month)
+	if err != nil || later.MRFSourcesReusingOutput != 1 {
+		t.Fatalf("later reuse count=%d err=%v", later.MRFSourcesReusingOutput, err)
 	}
 }
 

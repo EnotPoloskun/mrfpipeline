@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/consumeringest"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
@@ -47,8 +48,29 @@ func Command(ctx context.Context, p Params) (Report, error) {
 		}
 		return zero, err
 	}
-	defer func() { _ = lease.Release(context.Background()) }()
-	return Run(ctx, p)
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Second)
+		_ = lease.Release(cleanupCtx)
+		cleanupCancel()
+	}()
+	if err := lease.Check(ctx); err != nil {
+		return zero, jobs.Failure(jobs.FailureWorkerLeaseLost)
+	}
+	workCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	watchDone := make(chan struct{})
+	var lost atomic.Bool
+	go func() {
+		defer close(watchDone)
+		WatchLease(workCtx, lease, cancel, &lost)
+	}()
+	report, err := Run(workCtx, p)
+	cancel()
+	<-watchDone
+	if lost.Load() {
+		return zero, jobs.Failure(jobs.FailureWorkerLeaseLost)
+	}
+	return report, err
 }
 
 func inspectEnv(p Params) error {
@@ -91,6 +113,12 @@ func Run(ctx context.Context, p Params) (Report, error) {
 	if err != nil {
 		return report, err
 	}
+	if err := admission.AuditSlots(ctx, p.Pool, p.Workspace); err != nil {
+		return report, err
+	}
+	if err := admission.RestoreWakes(ctx, p.Pool, client); err != nil {
+		return report, err
+	}
 	if err := restorePrerequisites(ctx, p.Pool, client, p.Workspace, &report); err != nil {
 		return report, err
 	}
@@ -98,6 +126,12 @@ func Run(ctx context.Context, p Params) (Report, error) {
 		return report, err
 	}
 	if err := repairCurrentJobs(ctx, p.Pool, client, &report); err != nil {
+		return report, err
+	}
+	if err := releaseEmptyTerminalDownloads(ctx, p.Pool, p.Workspace, logger); err != nil {
+		return report, err
+	}
+	if err := admission.ScheduleWaitingWithLogger(ctx, p.Pool, client, logger); err != nil {
 		return report, err
 	}
 	if err := scheduleParsedSources(ctx, p.Pool, client, &report); err != nil {
@@ -114,6 +148,15 @@ func Run(ctx context.Context, p Params) (Report, error) {
 		return report, err
 	}
 	if err := cleanArtifacts(ctx, p.Pool, p.Workspace, p.ServicesPath, &report); err != nil {
+		return report, err
+	}
+	// Staging cleanup can make a previously terminal, empty download eligible
+	// for slot release. Re-run the repair after that cleanup so the refill wake
+	// is published in this same reconciliation pass.
+	if err := releaseEmptyTerminalDownloads(ctx, p.Pool, p.Workspace, logger); err != nil {
+		return report, err
+	}
+	if err := admission.ScheduleWaitingWithLogger(ctx, p.Pool, client, logger); err != nil {
 		return report, err
 	}
 	return report, nil

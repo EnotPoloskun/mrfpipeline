@@ -181,7 +181,7 @@ func TestCleanupEligibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	var report Report
-	if err := cleanStaging(ws, &report); err != nil {
+	if err := cleanStaging(context.Background(), nil, ws, &report); err != nil {
 		t.Fatal(err)
 	}
 	if report.CleanedArtifactCount != 1 {
@@ -200,7 +200,7 @@ func TestCleanupEligibility(t *testing.T) {
 	oldTime = time.Now().Add(-25 * time.Hour)
 	_ = os.Chtimes(link, oldTime, oldTime)
 	report = Report{}
-	if err := cleanStaging(ws, &report); err != nil {
+	if err := cleanStaging(context.Background(), nil, ws, &report); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(link); err != nil {

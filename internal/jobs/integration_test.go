@@ -229,6 +229,98 @@ UPDATE mrfpipeline_test.stages SET river_job_id = $2 WHERE id = $1`, id, riverJo
 
 func testLogger() *slog.Logger { return NewLogger(io.Discard) }
 
+func TestIntegrationExecutionLocksUseSeparateDomains(t *testing.T) {
+	url, pool := testDB(t)
+	migrateAndFixtures(t, url, pool)
+	ctx := context.Background()
+	first, busy, err := acquireExecutionLease(ctx, pool, LockNamespaceMRF, 41)
+	if err != nil || busy || first == nil {
+		t.Fatalf("first source lock: lease=%v busy=%v err=%v", first, busy, err)
+	}
+	defer first.release(ctx)
+	if _, busy, err := acquireExecutionLease(ctx, pool, LockNamespaceMRF, 41); err != nil || !busy {
+		t.Fatalf("same source lock was not busy: busy=%v err=%v", busy, err)
+	}
+	second, busy, err := acquireExecutionLease(ctx, pool, LockNamespaceMRF, 42)
+	if err != nil || busy || second == nil {
+		t.Fatalf("different source lock: lease=%v busy=%v err=%v", second, busy, err)
+	}
+	second.release(ctx)
+	third, busy, err := acquireExecutionLease(ctx, pool, LockNamespaceConsumer, 41)
+	if err != nil || busy || third == nil {
+		t.Fatalf("consumer/output domain collided with MRF: lease=%v busy=%v err=%v", third, busy, err)
+	}
+	third.release(ctx)
+}
+
+func TestIntegrationExecutionLockNormalAndBusy(t *testing.T) {
+	url, pool := testDB(t)
+	migrateAndFixtures(t, url, pool)
+	ctx := context.Background()
+	holder, busy, err := acquireExecutionLease(ctx, pool, LockNamespaceMRF, 51)
+	if err != nil || busy || holder == nil {
+		t.Fatalf("holder: lease=%v busy=%v err=%v", holder, busy, err)
+	}
+	called := false
+	wasBusy, err := WithExecutionLock(ctx, pool, LockNamespaceMRF, 51, func(context.Context) error {
+		called = true
+		return nil
+	})
+	if err != nil || !wasBusy || called {
+		t.Fatalf("busy lock: busy=%v called=%v err=%v", wasBusy, called, err)
+	}
+	holder.release(ctx)
+	wasBusy, err = WithExecutionLock(ctx, pool, LockNamespaceMRF, 51, func(context.Context) error {
+		return nil
+	})
+	if err != nil || wasBusy {
+		t.Fatalf("normal lock: busy=%v err=%v", wasBusy, err)
+	}
+}
+
+func TestIntegrationExecutionLockLossInterruptsOperation(t *testing.T) {
+	url, pool := testDB(t)
+	migrateAndFixtures(t, url, pool)
+	started := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, err := WithExecutionLock(context.Background(), pool, LockNamespaceMRF, 52, func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		result <- err
+	}()
+	<-started
+	var pid int32
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		err := pool.QueryRow(context.Background(), `
+SELECT pid::int FROM pg_locks
+WHERE locktype = 'advisory' AND classid = $1::oid AND objid = $2::oid
+  AND granted AND pid <> pg_backend_pid()
+LIMIT 1`, LockNamespaceMRF, 52).Scan(&pid)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if pid == 0 {
+		t.Fatal("execution lock backend was not found")
+	}
+	if _, err := pool.Exec(context.Background(), `SELECT pg_terminate_backend($1)`, pid); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if !isFailure(err, FailureStageExecutionInterrupted) {
+			t.Fatalf("loss result: %v", err)
+		}
+	case <-time.After(12 * time.Second):
+		t.Fatal("execution lock operation did not stop after connection loss")
+	}
+}
+
 func TestIntegrationInsertTxVisibility(t *testing.T) {
 	url, pool := testDB(t)
 	migrateAndFixtures(t, url, pool)

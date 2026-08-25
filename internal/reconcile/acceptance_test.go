@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
 )
 
 func TestRealAcceptanceGuardsWithoutOptIn(t *testing.T) {
@@ -18,6 +19,44 @@ func TestRealAcceptanceGuardsWithoutOptIn(t *testing.T) {
 	}
 	if _, err := CheckAcceptanceGuards(os.Getenv); err == nil {
 		t.Fatal("ordinary go test must not enable live acceptance")
+	}
+}
+
+func TestBoundedReleaseStatusRequiresOnlyIntentionalPartialBlocker(t *testing.T) {
+	good := release.StatusReport{
+		Partial:            true,
+		Blockers:           []string{"mrf_source_target_partial"},
+		MRFSourcesSelected: 1,
+		ConsumerSucceeded:  1,
+	}
+	if !boundedReleaseStatus(good) {
+		t.Fatal("valid bounded status rejected")
+	}
+	bad := good
+	bad.ConsumerFailed = 1
+	if boundedReleaseStatus(bad) {
+		t.Fatal("failed consumer accepted")
+	}
+	bad = good
+	bad.Blockers = []string{"mrf_source_target_partial", "consume_incomplete"}
+	if boundedReleaseStatus(bad) {
+		t.Fatal("incomplete consumer blocker accepted")
+	}
+}
+
+func TestWriteLiveReport(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.json")
+	getenv := func(key string) string {
+		if key == EnvRealReport {
+			return path
+		}
+		return ""
+	}
+	if err := writeLiveReport(getenv, liveReport{TOCRows: 1, PeakResidentHeld: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -45,7 +84,7 @@ func TestRealUHCAcceptance(t *testing.T) {
 	if rep.TOCRows == 0 {
 		t.Fatal("no admitted TOC")
 	}
-	if rep.RestartSources != rep.Sources || rep.RestartSnapshots != rep.SnapshotsSucceeded || rep.RestartWarehouse != rep.WarehouseFiles {
+	if os.Getenv(EnvRealBounded) != "1" && (rep.RestartSources != rep.Sources || rep.RestartSnapshots != rep.SnapshotsSucceeded || rep.RestartWarehouse != rep.WarehouseFiles) {
 		t.Fatalf("restart mutated domain or warehouse counts: %+v", rep)
 	}
 }

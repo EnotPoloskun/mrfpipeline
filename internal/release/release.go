@@ -28,14 +28,39 @@ type Target struct {
 }
 
 type StatusReport struct {
-	PayerID           string   `json:"payer_id"`
-	CollectionMonth   string   `json:"collection_month"`
-	Status            string   `json:"status"`
-	DatabaseReady     bool     `json:"database_ready"`
-	Blockers          []string `json:"blockers"`
-	DiscoveryRunCount int64    `json:"discovery_run_count"`
-	TOCCount          int64    `json:"toc_count"`
-	SnapshotCount     int64    `json:"snapshot_count"`
+	PayerID                   string   `json:"payer_id"`
+	CollectionMonth           string   `json:"collection_month"`
+	Status                    string   `json:"status"`
+	DatabaseReady             bool     `json:"database_ready"`
+	Blockers                  []string `json:"blockers"`
+	DiscoveryRunCount         int64    `json:"discovery_run_count"`
+	TOCCount                  int64    `json:"toc_count"`
+	SnapshotCount             int64    `json:"snapshot_count"`
+	MRFSourceTarget           string   `json:"mrf_source_target"`
+	MRFSourcesSelected        int64    `json:"mrf_sources_selected"`
+	MRFSourcesKnown           int64    `json:"mrf_sources_known"`
+	MRFSourcesBlockedByLimit  int64    `json:"mrf_sources_blocked_by_limit"`
+	MRFSourcesWaitingCapacity int64    `json:"mrf_sources_waiting_capacity"`
+	MRFSourcesReusingOutput   int64    `json:"mrf_sources_reusing_output"`
+	MRFResidentHeld           int64    `json:"mrf_resident_held"`
+	MRFResidentCapacity       int64    `json:"mrf_resident_capacity"`
+	MRFResidentFree           int64    `json:"mrf_resident_free"`
+	MRFDownloadPending        int64    `json:"mrf_download_pending"`
+	MRFDownloadRunning        int64    `json:"mrf_download_running"`
+	MRFDownloadRetrying       int64    `json:"mrf_download_retrying"`
+	MRFDownloadFailed         int64    `json:"mrf_download_failed"`
+	MRFParsePending           int64    `json:"mrf_parse_pending"`
+	MRFParseRunning           int64    `json:"mrf_parse_running"`
+	MRFParseRetrying          int64    `json:"mrf_parse_retrying"`
+	MRFParseFailed            int64    `json:"mrf_parse_failed"`
+	MRFParsedSucceeded        int64    `json:"mrf_parsed_succeeded"`
+	MRFRawCleanupFailed       int64    `json:"mrf_raw_cleanup_failed"`
+	ConsumerPending           int64    `json:"consumer_pending"`
+	ConsumerRunning           int64    `json:"consumer_running"`
+	ConsumerRetrying          int64    `json:"consumer_retrying"`
+	ConsumerFailed            int64    `json:"consumer_failed"`
+	ConsumerSucceeded         int64    `json:"consumer_succeeded"`
+	Partial                   bool     `json:"partial"`
 }
 
 type ActivationResult struct {
@@ -370,6 +395,132 @@ WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&status)
 	out.CollectionMonth = formatMonth(month)
 	out.Status = status
 	out.Blockers = make([]string, 0)
+	var targetKind string
+	var targetCount *int64
+	if err := q.QueryRow(ctx, `
+SELECT mrf_source_target_kind, mrf_source_target_count
+FROM mrfpipeline.monthly_releases
+WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&targetKind, &targetCount); err != nil {
+		return StatusReport{}, dbFailure(ctx)
+	}
+	if targetKind == "numeric" && targetCount != nil {
+		out.MRFSourceTarget = fmt.Sprintf("%d", *targetCount)
+	} else {
+		out.MRFSourceTarget = targetKind
+	}
+	if err := q.QueryRow(ctx, `
+SELECT count(*) FROM mrfpipeline.monthly_release_mrf_sources
+WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&out.MRFSourcesSelected); err != nil {
+		return StatusReport{}, dbFailure(ctx)
+	}
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM mrfpipeline.mrf_materialization_slots`).Scan(&out.MRFResidentHeld); err != nil {
+		return StatusReport{}, dbFailure(ctx)
+	}
+	if err := q.QueryRow(ctx, `
+SELECT coalesce((SELECT resident_capacity FROM mrfpipeline.pipeline_runtime WHERE id = true), 0)`).Scan(&out.MRFResidentCapacity); err != nil {
+		return StatusReport{}, dbFailure(ctx)
+	}
+	if err := q.QueryRow(ctx, `
+SELECT count(DISTINCT mrf_source_id)
+FROM mrfpipeline.mrf_snapshots
+WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&out.MRFSourcesKnown); err != nil {
+		return StatusReport{}, dbFailure(ctx)
+	}
+	out.MRFSourcesBlockedByLimit = out.MRFSourcesKnown - out.MRFSourcesSelected
+	if out.MRFSourcesBlockedByLimit < 0 {
+		out.MRFSourcesBlockedByLimit = 0
+	}
+	out.MRFResidentFree = out.MRFResidentCapacity - out.MRFResidentHeld
+	if out.MRFResidentFree < 0 {
+		out.MRFResidentFree = 0
+	}
+	out.Partial = targetKind == "unset" || out.MRFSourcesBlockedByLimit > 0
+	if out.Partial {
+		addBlocker(&out.Blockers, true, "mrf_source_target_partial")
+	}
+	if err := q.QueryRow(ctx, `
+	SELECT count(*) FILTER (WHERE s.parse_status = 'succeeded'),
+	       count(*) FILTER (WHERE s.parse_status = 'succeeded' AND a.selected_at > s.updated_at),
+       count(*) FILTER (WHERE s.download_status = 'pending'),
+       count(*) FILTER (WHERE s.download_status = 'running'),
+       count(*) FILTER (WHERE s.download_status = 'failed'),
+       count(*) FILTER (WHERE s.parse_status = 'pending'),
+       count(*) FILTER (WHERE s.parse_status = 'running'),
+       count(*) FILTER (WHERE s.parse_status = 'failed'),
+       count(*) FILTER (WHERE s.parse_status = 'failed' AND s.failure_code = 'mrf_parse_cleanup_failed'),
+       count(*) FILTER (WHERE s.download_status <> 'failed' AND s.parse_status <> 'failed'
+                         AND (s.download_status IN ('blocked', 'pending', 'running')
+                          OR (s.download_status = 'succeeded' AND s.parse_status IN ('blocked', 'pending', 'running')))
+                         AND NOT EXISTS (
+           SELECT 1 FROM mrfpipeline.mrf_materialization_slots x WHERE x.mrf_source_id = s.id
+       ))
+FROM mrfpipeline.mrf_sources s
+JOIN mrfpipeline.monthly_release_mrf_sources a ON a.mrf_source_id = s.id
+WHERE a.payer_id = $1 AND a.collection_month = $2`, payer, month).Scan(
+		&out.MRFParsedSucceeded, &out.MRFSourcesReusingOutput, &out.MRFDownloadPending, &out.MRFDownloadRunning,
+		&out.MRFDownloadFailed, &out.MRFParsePending, &out.MRFParseRunning,
+		&out.MRFParseFailed, &out.MRFRawCleanupFailed, &out.MRFSourcesWaitingCapacity); err != nil {
+		return StatusReport{}, dbFailure(ctx)
+	}
+	if err := q.QueryRow(ctx, `
+SELECT
+  (SELECT count(*) FROM mrfpipeline.mrf_snapshots s
+   JOIN mrfpipeline.monthly_release_mrf_sources a ON a.payer_id = s.payer_id AND a.collection_month = s.collection_month AND a.mrf_source_id = s.mrf_source_id
+   WHERE s.payer_id = $1 AND s.collection_month = $2 AND s.consume_status = 'pending')
+  + (SELECT count(*) FROM mrfpipeline.plan_attachment_batches b JOIN mrfpipeline.mrf_snapshots s ON s.id = b.mrf_snapshot_id
+     WHERE s.payer_id = $1 AND s.collection_month = $2 AND b.status = 'pending'),
+  (SELECT count(*) FROM mrfpipeline.mrf_snapshots s
+   JOIN mrfpipeline.monthly_release_mrf_sources a ON a.payer_id = s.payer_id AND a.collection_month = s.collection_month AND a.mrf_source_id = s.mrf_source_id
+   WHERE s.payer_id = $1 AND s.collection_month = $2 AND s.consume_status = 'running')
+  + (SELECT count(*) FROM mrfpipeline.plan_attachment_batches b JOIN mrfpipeline.mrf_snapshots s ON s.id = b.mrf_snapshot_id
+     WHERE s.payer_id = $1 AND s.collection_month = $2 AND b.status = 'running'),
+  (SELECT count(*) FROM mrfpipeline.mrf_snapshots s
+   JOIN mrfpipeline.monthly_release_mrf_sources a ON a.payer_id = s.payer_id AND a.collection_month = s.collection_month AND a.mrf_source_id = s.mrf_source_id
+   WHERE s.payer_id = $1 AND s.collection_month = $2 AND s.consume_status = 'failed')
+  + (SELECT count(*) FROM mrfpipeline.plan_attachment_batches b JOIN mrfpipeline.mrf_snapshots s ON s.id = b.mrf_snapshot_id
+     WHERE s.payer_id = $1 AND s.collection_month = $2 AND b.status = 'failed'),
+  (SELECT count(*) FROM mrfpipeline.mrf_snapshots s
+   JOIN mrfpipeline.monthly_release_mrf_sources a ON a.payer_id = s.payer_id AND a.collection_month = s.collection_month AND a.mrf_source_id = s.mrf_source_id
+   WHERE s.payer_id = $1 AND s.collection_month = $2 AND s.consume_status = 'succeeded')
+  + (SELECT count(*) FROM mrfpipeline.plan_attachment_batches b JOIN mrfpipeline.mrf_snapshots s ON s.id = b.mrf_snapshot_id
+     WHERE s.payer_id = $1 AND s.collection_month = $2 AND b.status = 'succeeded')`, payer, month).Scan(
+		&out.ConsumerPending, &out.ConsumerRunning, &out.ConsumerFailed, &out.ConsumerSucceeded); err != nil {
+		return StatusReport{}, dbFailure(ctx)
+	}
+	if err := q.QueryRow(ctx, `
+SELECT
+  (SELECT count(*) FROM mrfpipeline.mrf_snapshots s
+   JOIN mrfpipeline.monthly_release_mrf_sources a ON a.payer_id = s.payer_id AND a.collection_month = s.collection_month AND a.mrf_source_id = s.mrf_source_id
+   WHERE s.payer_id = $1 AND s.collection_month = $2 AND s.consume_status IN ('pending', 'running')
+     AND s.consume_river_job_id IS NOT NULL
+     AND EXISTS (SELECT 1 FROM mrfpipeline_river.river_job j WHERE j.id = s.consume_river_job_id AND j.state = 'retryable'))
+  + (SELECT count(*) FROM mrfpipeline.plan_attachment_batches b
+     JOIN mrfpipeline.mrf_snapshots s ON s.id = b.mrf_snapshot_id
+     WHERE s.payer_id = $1 AND s.collection_month = $2 AND b.status IN ('pending', 'running')
+       AND b.river_job_id IS NOT NULL
+       AND EXISTS (SELECT 1 FROM mrfpipeline_river.river_job j WHERE j.id = b.river_job_id AND j.state = 'retryable'))`, payer, month).Scan(&out.ConsumerRetrying); err != nil {
+		return StatusReport{}, dbFailure(ctx)
+	}
+	if err := q.QueryRow(ctx, `
+SELECT count(*) FROM mrfpipeline.mrf_sources s
+JOIN mrfpipeline.monthly_release_mrf_sources a ON a.mrf_source_id = s.id
+WHERE a.payer_id = $1 AND a.collection_month = $2
+  AND s.download_status IN ('pending', 'running')
+  AND s.download_river_job_id IS NOT NULL
+  AND EXISTS (SELECT 1 FROM mrfpipeline_river.river_job j
+              WHERE j.id = s.download_river_job_id AND j.state = 'retryable')`, payer, month).Scan(&out.MRFDownloadRetrying); err != nil {
+		return StatusReport{}, dbFailure(ctx)
+	}
+	if err := q.QueryRow(ctx, `
+SELECT count(*) FROM mrfpipeline.mrf_sources s
+JOIN mrfpipeline.monthly_release_mrf_sources a ON a.mrf_source_id = s.id
+WHERE a.payer_id = $1 AND a.collection_month = $2
+  AND s.parse_status IN ('pending', 'running')
+  AND s.parse_river_job_id IS NOT NULL
+  AND EXISTS (SELECT 1 FROM mrfpipeline_river.river_job j
+              WHERE j.id = s.parse_river_job_id AND j.state = 'retryable')`, payer, month).Scan(&out.MRFParseRetrying); err != nil {
+		return StatusReport{}, dbFailure(ctx)
+	}
 
 	var bad int64
 	if err := q.QueryRow(ctx, `
@@ -395,8 +546,8 @@ WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&out.TOCCount
 	if err := q.QueryRow(ctx, `
 SELECT count(*), count(*) FILTER (WHERE s.download_status <> 'succeeded' OR s.parse_status <> 'succeeded')
 FROM mrfpipeline.mrf_sources s
-JOIN (SELECT DISTINCT mrf_source_id FROM mrfpipeline.mrf_snapshots WHERE payer_id = $1 AND collection_month = $2) x
-  ON x.mrf_source_id = s.id`, payer, month).Scan(new(int64), &sourceBad); err != nil {
+JOIN mrfpipeline.monthly_release_mrf_sources a ON a.mrf_source_id = s.id
+WHERE a.payer_id = $1 AND a.collection_month = $2`, payer, month).Scan(new(int64), &sourceBad); err != nil {
 		return StatusReport{}, dbFailure(ctx)
 	}
 	addBlocker(&out.Blockers, sourceBad != 0, "source_incomplete")
@@ -405,7 +556,12 @@ JOIN (SELECT DISTINCT mrf_source_id FROM mrfpipeline.mrf_snapshots WHERE payer_i
 	if err := q.QueryRow(ctx, `
 SELECT count(*), count(*) FILTER (WHERE consume_status <> 'succeeded')
 FROM mrfpipeline.mrf_snapshots
-WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&out.SnapshotCount, &snapshotBad); err != nil {
+WHERE payer_id = $1 AND collection_month = $2
+  AND EXISTS (
+      SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+      WHERE a.payer_id = $1 AND a.collection_month = $2
+        AND a.mrf_source_id = mrf_snapshots.mrf_source_id
+  )`, payer, month).Scan(&out.SnapshotCount, &snapshotBad); err != nil {
 		return StatusReport{}, dbFailure(ctx)
 	}
 	addBlocker(&out.Blockers, out.SnapshotCount == 0, "snapshot_missing")
@@ -421,7 +577,10 @@ SELECT
       SELECT 1 FROM mrfpipeline.plan_attachment_batches b
       WHERE b.mrf_snapshot_id = s.id AND b.status IN ('pending', 'running', 'failed')))
 FROM mrfpipeline.mrf_snapshots s
-WHERE s.payer_id = $1 AND s.collection_month = $2`, payer, month).Scan(&missingAttachment, &incompleteAttachment); err != nil {
+WHERE s.payer_id = $1 AND s.collection_month = $2
+  AND EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+              WHERE a.payer_id = $1 AND a.collection_month = $2
+                AND a.mrf_source_id = s.mrf_source_id)`, payer, month).Scan(&missingAttachment, &incompleteAttachment); err != nil {
 		return StatusReport{}, dbFailure(ctx)
 	}
 	addBlocker(&out.Blockers, missingAttachment != 0, "attachment_missing")
@@ -433,6 +592,9 @@ SELECT count(*)
 FROM mrfpipeline.mrf_plans p
 JOIN mrfpipeline.mrf_snapshots s ON s.id = p.mrf_snapshot_id
 WHERE s.payer_id = $1 AND s.collection_month = $2
+  AND EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+              WHERE a.payer_id = $1 AND a.collection_month = $2
+                AND a.mrf_source_id = s.mrf_source_id)
   AND NOT EXISTS (
       SELECT 1
       FROM mrfpipeline.plan_attachment_batch_items i
@@ -471,13 +633,19 @@ WITH relevant(job_id, kind, arg_key, domain_id, nonterminal) AS (
            m.download_status IN ('pending', 'running')
     FROM mrfpipeline.mrf_sources m
     JOIN (SELECT DISTINCT mrf_source_id FROM mrfpipeline.mrf_snapshots
-          WHERE payer_id = $1 AND collection_month = $2) x ON x.mrf_source_id = m.id
+          WHERE payer_id = $1 AND collection_month = $2
+            AND EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+                        WHERE a.payer_id = $1 AND a.collection_month = $2
+                          AND a.mrf_source_id = mrf_snapshots.mrf_source_id)) x ON x.mrf_source_id = m.id
     UNION ALL
     SELECT m.parse_river_job_id, 'mrf.parse', 'mrf_source_id', m.id,
            m.parse_status IN ('pending', 'running')
     FROM mrfpipeline.mrf_sources m
     JOIN (SELECT DISTINCT mrf_source_id FROM mrfpipeline.mrf_snapshots
-          WHERE payer_id = $1 AND collection_month = $2) x ON x.mrf_source_id = m.id
+          WHERE payer_id = $1 AND collection_month = $2
+            AND EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+                        WHERE a.payer_id = $1 AND a.collection_month = $2
+                          AND a.mrf_source_id = mrf_snapshots.mrf_source_id)) x ON x.mrf_source_id = m.id
     UNION ALL
     SELECT s.consume_river_job_id, 'consumer.ingest', 'mrf_snapshot_id', s.id,
            s.consume_status IN ('pending', 'running')
@@ -547,6 +715,11 @@ func ListTargets(ctx context.Context, pool *pgxpool.Pool, payer string, month ti
 SELECT payer_id, collection_month, id
 FROM mrfpipeline.mrf_snapshots
 WHERE payer_id = $1 AND collection_month = $2
+  AND EXISTS (
+      SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+      WHERE a.payer_id = $1 AND a.collection_month = $2
+        AND a.mrf_source_id = mrf_snapshots.mrf_source_id
+  )
 ORDER BY id`, payer, month)
 	if err != nil {
 		return nil, dbFailure(ctx)

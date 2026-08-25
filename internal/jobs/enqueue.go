@@ -32,3 +32,28 @@ func InsertTx(ctx context.Context, client *river.Client[pgx.Tx], tx pgx.Tx, args
 	}
 	return res.Job.ID, nil
 }
+
+// InsertCoalescedTx publishes a unique wake-up and treats an existing
+// equivalent River job as success.
+func InsertCoalescedTx(ctx context.Context, client *river.Client[pgx.Tx], tx pgx.Tx, args river.JobArgs) error {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if client == nil || tx == nil || args == nil {
+		return jobErr("insert")
+	}
+	res, err := client.InsertTx(ctx, tx, args, nil)
+	if err != nil {
+		return classifyJob(ctx, "insert", err)
+	}
+	if res == nil {
+		return jobErr("insert")
+	}
+	if res.UniqueSkippedAsDuplicate {
+		return nil
+	}
+	if res.Job == nil || res.Job.ID <= 0 {
+		return jobErr("insert")
+	}
+	return nil
+}

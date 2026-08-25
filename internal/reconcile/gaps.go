@@ -15,10 +15,7 @@ import (
 const pageSize = 100
 
 func restorePrerequisites(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], ws *artifact.Workspace, report *Report) error {
-	if err := restoreTOCDownloads(ctx, pool, client, ws, report); err != nil {
-		return err
-	}
-	return restoreMRFDownloads(ctx, pool, client, ws, report)
+	return restoreTOCDownloads(ctx, pool, client, ws, report)
 }
 
 func restoreTOCDownloads(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], ws *artifact.Workspace, report *Report) error {
@@ -42,38 +39,6 @@ LIMIT $2`, after, pageSize)
 			if err != nil {
 				if jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
 					report.recordSealed(report.logger, jobs.KindTOCDownload, id)
-					after = id
-					continue
-				}
-				return err
-			}
-			report.RepairedJobCount += n
-			after = id
-		}
-	}
-}
-
-func restoreMRFDownloads(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], ws *artifact.Workspace, report *Report) error {
-	var after int64
-	for {
-		ids, err := pageIDs(ctx, pool, `
-SELECT id FROM mrfpipeline.mrf_sources
-WHERE download_status = 'succeeded'
-  AND parse_status IN ('blocked', 'pending', 'running')
-  AND id > $1
-ORDER BY id
-LIMIT $2`, after, pageSize)
-		if err != nil {
-			return err
-		}
-		if len(ids) == 0 {
-			return nil
-		}
-		for _, id := range ids {
-			n, err := restoreOneDownload(ctx, pool, client, ws, artifact.KindMRF, jobs.MRFDownloadStage, jobs.MRFParseStage, jobs.KindMRFDownload, id)
-			if err != nil {
-				if jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
-					report.recordSealed(report.logger, jobs.KindMRFDownload, id)
 					after = id
 					continue
 				}
@@ -179,10 +144,6 @@ ORDER BY id LIMIT $2`, jobs.TOCParseStage, jobs.KindTOCParse},
 SELECT id FROM mrfpipeline.toc_files
 WHERE parse_status = 'succeeded' AND import_status = 'blocked' AND import_river_job_id IS NULL AND id > $1
 ORDER BY id LIMIT $2`, jobs.TOCImportStage, jobs.KindTOCImport},
-		{`
-SELECT id FROM mrfpipeline.mrf_sources
-WHERE download_status = 'succeeded' AND parse_status = 'blocked' AND parse_river_job_id IS NULL AND id > $1
-ORDER BY id LIMIT $2`, jobs.MRFParseStage, jobs.KindMRFParse},
 	}
 	for _, g := range gaps {
 		if err := unblockGap(ctx, pool, client, g.query, g.spec, g.kind, report); err != nil {
@@ -222,6 +183,25 @@ func unblockGap(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pg
 }
 
 func unblockOne(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], spec jobs.StageSpec, kind string, id int64) (bool, error) {
+	if kind == jobs.KindMRFParse {
+		var changed bool
+		busy, err := jobs.WithExecutionLock(ctx, pool, jobs.LockNamespaceMRF, id, func(ctx context.Context) error {
+			var err error
+			changed, err = unblockOneUnlocked(ctx, pool, client, spec, kind, id)
+			return err
+		})
+		if err != nil {
+			return false, err
+		}
+		if busy {
+			return false, nil
+		}
+		return changed, nil
+	}
+	return unblockOneUnlocked(ctx, pool, client, spec, kind, id)
+}
+
+func unblockOneUnlocked(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], spec jobs.StageSpec, kind string, id int64) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, dbFail(ctx.Err())
@@ -297,6 +277,22 @@ SELECT EXISTS (
 }
 
 func scheduleSourceSnapshots(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], sourceID int64) (int, error) {
+	inserted := 0
+	busy, err := jobs.WithExecutionLock(ctx, pool, jobs.LockNamespaceMRF, sourceID, func(ctx context.Context) error {
+		n, err := scheduleSourceSnapshotsUnlocked(ctx, pool, client, sourceID)
+		inserted = n
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	if busy {
+		return 0, nil
+	}
+	return inserted, nil
+}
+
+func scheduleSourceSnapshotsUnlocked(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], sourceID int64) (int, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return 0, dbFail(ctx.Err())
@@ -321,6 +317,12 @@ SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1 FOR UPDATE`, sour
 SELECT id, consume_status, consume_river_job_id
 FROM mrfpipeline.mrf_snapshots
 WHERE mrf_source_id = $1
+  AND EXISTS (
+      SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+      WHERE a.payer_id = mrf_snapshots.payer_id
+        AND a.collection_month = mrf_snapshots.collection_month
+        AND a.mrf_source_id = mrf_snapshots.mrf_source_id
+  )
 ORDER BY id
 FOR UPDATE`, sourceID)
 	if err != nil {

@@ -43,6 +43,43 @@ func TestQueues(t *testing.T) {
 	}
 }
 
+func TestQueuesForRole(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		role string
+		want map[string]int
+	}{
+		{role: "control", want: map[string]int{
+			jobs.QueueControl:     1,
+			jobs.QueueDiscovery:   1,
+			jobs.QueueTOCDownload: 4,
+			jobs.QueueTOCParse:    2,
+			jobs.QueueTOCImport:   2,
+		}},
+		{role: "mrf", want: map[string]int{
+			jobs.QueueMRFDownload: 2,
+			jobs.QueueMRFParse:    1,
+		}},
+		{role: "consumer", want: map[string]int{jobs.QueueConsumer: 1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.role, func(t *testing.T) {
+			got := QueuesForRole(tt.role)
+			if len(got) != len(tt.want) {
+				t.Fatalf("queues for %s = %v", tt.role, got)
+			}
+			for queue, maxWorkers := range tt.want {
+				if got[queue].MaxWorkers != maxWorkers {
+					t.Fatalf("%s %s max workers = %d, want %d", tt.role, queue, got[queue].MaxWorkers, maxWorkers)
+				}
+			}
+		})
+	}
+	if got := QueuesForRole("unknown"); got != nil {
+		t.Fatalf("unknown role queues = %v", got)
+	}
+}
+
 func TestWorkerLeaseLossLogIsRuntimeOnly(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
@@ -66,9 +103,20 @@ func TestRunRequiresServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = Runtime{Pool: &pgxpool.Pool{}, Workspace: ws}.Run(context.Background())
+	err = Runtime{Role: "control", Pool: &pgxpool.Pool{}, Workspace: ws}.Run(context.Background())
 	if err == nil {
 		t.Fatal("expected services failure")
+	}
+}
+
+func TestRunRequiresExplicitRole(t *testing.T) {
+	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = Runtime{Pool: &pgxpool.Pool{}, Workspace: ws}.Run(context.Background())
+	if !jobs.IsFailure(err, jobs.FailureInvalidArguments) {
+		t.Fatalf("role error = %v", err)
 	}
 }
 

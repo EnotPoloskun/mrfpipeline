@@ -96,6 +96,18 @@ VALUES ($1, DATE '2026-08-01', 'succeeded', 'pending')
 RETURNING id`, url).Scan(&sourceID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id)
+VALUES ('uhc', DATE '2026-08-01', $1)
+ON CONFLICT DO NOTHING`, sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.mrf_materialization_slots (mrf_source_id)
+VALUES ($1) ON CONFLICT DO NOTHING`, sourceID); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)

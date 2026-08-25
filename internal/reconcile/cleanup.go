@@ -3,9 +3,12 @@ package reconcile
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/mrfparse"
@@ -19,16 +22,16 @@ func cleanArtifacts(ctx context.Context, pool *pgxpool.Pool, ws *artifact.Worksp
 	if err := cleanTOCDownloads(ctx, pool, ws, report); err != nil {
 		return err
 	}
-	if err := cleanMRFDownloads(ctx, pool, ws, servicesPath, report); err != nil {
-		return err
-	}
 	if err := cleanTOCParsed(ctx, pool, ws, report); err != nil {
 		return err
 	}
 	if err := cleanPlanBatches(ctx, pool, ws, report); err != nil {
 		return err
 	}
-	return cleanStaging(ws, report)
+	if err := cleanStaging(ctx, pool, ws, report); err != nil {
+		return err
+	}
+	return cleanMRFDownloads(ctx, pool, ws, servicesPath, report)
 }
 
 func cleanTOCDownloads(ctx context.Context, pool *pgxpool.Pool, ws *artifact.Workspace, report *Report) error {
@@ -109,7 +112,7 @@ ORDER BY id LIMIT $2`, after, pageSize)
 			return nil
 		}
 		for _, id := range ids {
-			n, err := cleanOneMRFDownload(ctx, pool, ws, servicesPath, id)
+			n, err := cleanOneMRFDownload(ctx, pool, ws, servicesPath, id, report.logger)
 			if err != nil {
 				return err
 			}
@@ -119,12 +122,36 @@ ORDER BY id LIMIT $2`, after, pageSize)
 	}
 }
 
-func cleanOneMRFDownload(ctx context.Context, pool *pgxpool.Pool, ws *artifact.Workspace, servicesPath string, id int64) (int, error) {
+func cleanOneMRFDownload(ctx context.Context, pool *pgxpool.Pool, ws *artifact.Workspace, servicesPath string, id int64, loggers ...*slog.Logger) (int, error) {
+	cleaned := 0
+	busy, err := jobs.WithExecutionLock(ctx, pool, jobs.LockNamespaceMRF, id, func(ctx context.Context) error {
+		n, err := cleanOneMRFDownloadUnlocked(ctx, pool, ws, servicesPath, id, loggers...)
+		cleaned = n
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	if busy {
+		return 0, nil
+	}
+	return cleaned, nil
+}
+
+func cleanOneMRFDownloadUnlocked(ctx context.Context, pool *pgxpool.Pool, ws *artifact.Workspace, servicesPath string, id int64, loggers ...*slog.Logger) (int, error) {
 	state, err := ws.InspectDownloadState(artifact.KindMRF, id)
 	if err != nil {
 		return 0, artFail()
 	}
-	if state == artifact.DownloadAbsent {
+	downloadStaging, err := ws.HasDownloadStaging(artifact.KindMRF, id)
+	if err != nil {
+		return 0, artFail()
+	}
+	parserStaging, err := ws.HasMRFParserTemp(id)
+	if err != nil {
+		return 0, artFail()
+	}
+	if state == artifact.DownloadAbsent && !downloadStaging && !parserStaging {
 		return 0, nil
 	}
 	var parse string
@@ -146,8 +173,31 @@ SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1`, id).Scan(&parse
 	if err := mrfparse.ValidateCompletedOutput(parsed, mrfparse.ExpectedSourceURI(data), servicesPath); err != nil {
 		return 0, artFail()
 	}
-	if err := ws.RemoveDownload(artifact.KindMRF, id); err != nil {
+	if state != artifact.DownloadAbsent {
+		if err := ws.RemoveDownload(artifact.KindMRF, id); err != nil {
+			return 0, artFail()
+		}
+	}
+	if parserStaging {
+		if err := ws.RemoveMRFParserTemp(id); err != nil {
+			return 0, artFail()
+		}
+	}
+	// Download staging is owned by the downloader and is removed by the
+	// source-locked staging sweep. Keep the slot until that cleanup converges.
+	downloadStaging, err = ws.HasDownloadStaging(artifact.KindMRF, id)
+	if err != nil {
 		return 0, artFail()
+	}
+	parserStaging, err = ws.HasMRFParserTemp(id)
+	if err != nil {
+		return 0, artFail()
+	}
+	if downloadStaging || parserStaging {
+		return 0, nil
+	}
+	if err := admission.ReleaseSlotAndWake(ctx, pool, id, loggers...); err != nil {
+		return 0, err
 	}
 	return 1, nil
 }
@@ -246,7 +296,7 @@ SELECT id, status FROM mrfpipeline.plan_attachment_batches WHERE id = $1 FOR UPD
 	return 1, nil
 }
 
-func cleanStaging(ws *artifact.Workspace, report *Report) error {
+func cleanStaging(ctx context.Context, pool *pgxpool.Pool, ws *artifact.Workspace, report *Report) error {
 	dir := ws.StagingDir()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -257,9 +307,11 @@ func cleanStaging(ws *artifact.Workspace, report *Report) error {
 	}
 	cutoff := time.Now().Add(-stagingAge)
 	for _, e := range entries {
-		info, err := e.Info()
-		if err != nil {
-			return artFail()
+		// Parser temp parents are source-owned. Their anonymous children must
+		// never be removed by the generic age-based orphan sweep; the parser
+		// worker removes its own parent after completion.
+		if strings.HasPrefix(e.Name(), "mrf-source-") {
+			continue
 		}
 		full := dir + string(os.PathSeparator) + e.Name()
 		st, err := os.Lstat(full)
@@ -278,9 +330,26 @@ func cleanStaging(ws *artifact.Workspace, report *Report) error {
 		if st.ModTime().After(cutoff) {
 			continue
 		}
-		_ = info
-		if err := ws.RemoveStagingEntry(e.Name(), st); err != nil {
-			return artFail()
+		remove := func(context.Context) error {
+			if err := ws.RemoveStagingEntry(e.Name(), st); err != nil {
+				return artFail()
+			}
+			return nil
+		}
+		kind, id, owned := artifact.ParseStagingName(e.Name())
+		if owned && kind == artifact.KindMRF {
+			if pool == nil {
+				return jobs.Failure(jobs.FailureInvalidArguments)
+			}
+			busy, err := jobs.WithExecutionLock(ctx, pool, jobs.LockNamespaceMRF, id, remove)
+			if err != nil {
+				return err
+			}
+			if busy {
+				continue
+			}
+		} else if err := remove(ctx); err != nil {
+			return err
 		}
 		report.CleanedArtifactCount++
 	}

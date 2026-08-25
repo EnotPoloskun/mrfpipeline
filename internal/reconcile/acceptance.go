@@ -12,13 +12,16 @@ import (
 )
 
 const (
-	EnvRealAcceptance      = "MRFPIPELINE_REAL_ACCEPTANCE"
-	EnvTestDatabase        = "MRFPIPELINE_TEST_DATABASE_URL"
-	EnvRealTOCLimit        = "MRFPIPELINE_REAL_TOC_LIMIT"
-	EnvRealCollectionMonth = "MRFPIPELINE_REAL_COLLECTION_MONTH"
-	EnvRealTimeout         = "MRFPIPELINE_REAL_ACCEPTANCE_TIMEOUT"
-	EnvRealReport          = "MRFPIPELINE_REAL_ACCEPTANCE_REPORT"
-	DefaultAcceptanceWait  = 2 * time.Hour
+	EnvRealAcceptance       = "MRFPIPELINE_REAL_ACCEPTANCE"
+	EnvTestDatabase         = "MRFPIPELINE_TEST_DATABASE_URL"
+	EnvRealTOCLimit         = "MRFPIPELINE_REAL_TOC_LIMIT"
+	EnvRealCollectionMonth  = "MRFPIPELINE_REAL_COLLECTION_MONTH"
+	EnvRealTimeout          = "MRFPIPELINE_REAL_ACCEPTANCE_TIMEOUT"
+	EnvRealReport           = "MRFPIPELINE_REAL_ACCEPTANCE_REPORT"
+	EnvRealResidentCapacity = "MRFPIPELINE_REAL_RESIDENT_CAPACITY"
+	EnvRealBounded          = "MRFPIPELINE_REAL_BOUNDED"
+	EnvRealMRFSourceLimit   = "MRFPIPELINE_REAL_MRF_SOURCE_LIMIT"
+	DefaultAcceptanceWait   = 2 * time.Hour
 )
 
 // AcceptanceGuardError is a safe refusal before network or deletion.
@@ -90,6 +93,20 @@ func CheckAcceptanceGuards(getenv func(string) string) (int64, error) {
 		d, err := time.ParseDuration(raw)
 		if err != nil || d <= 0 {
 			return 0, AcceptanceGuardError{Reason: "timeout"}
+		}
+	}
+	if raw := getenv(EnvRealResidentCapacity); raw != "" {
+		if _, err := config.ValidateResidentCapacity(raw); err != nil {
+			return 0, AcceptanceGuardError{Reason: "resident capacity"}
+		}
+	}
+	if getenv(EnvRealBounded) == "1" {
+		raw := getenv(EnvRealMRFSourceLimit)
+		if raw == "" {
+			raw = "1"
+		}
+		if _, _, err := config.ValidateSourceTarget(raw); err != nil || raw == "all" {
+			return 0, AcceptanceGuardError{Reason: "bounded source limit"}
 		}
 	}
 	if report := getenv(EnvRealReport); report != "" {

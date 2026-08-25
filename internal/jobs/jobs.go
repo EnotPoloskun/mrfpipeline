@@ -62,6 +62,14 @@ const (
 	FailureReleaseNotReady               = "release_not_ready"
 	FailureSealedReleaseInconsistent     = "sealed_release_inconsistent"
 	FailureSealedReleaseRetryForbidden   = "sealed_release_retry_forbidden"
+	FailureWorkerBusy                    = "worker_busy"
+	FailureStageExecutionBusy            = "stage_execution_busy"
+	FailureStageExecutionInterrupted     = "stage_execution_interrupted"
+	FailureCapacityBelowHeld             = "capacity_below_held_slots"
+	FailureRuntimeRootMismatch           = "runtime_artifact_root_mismatch"
+	FailureSourceTargetDecrease          = "source_target_decrease"
+	FailureSourceTargetConflict          = "source_target_conflict"
+	FailureSourceTargetUnset             = "source_target_unset"
 	// FailureJobBookkeeping is emitted only in logs when retry or terminal
 	// bookkeeping cannot be persisted. It is not a domain failure code.
 	FailureJobBookkeeping = "job_bookkeeping_failed"
@@ -119,7 +127,10 @@ func allowedFailureCode(code string) bool {
 		FailureReconciliationDatabaseFailed, FailureArtifactReconciliationFailed,
 		FailureRetryStageNotFailed, FailureRetryStageInvariant,
 		FailureReleaseNotFound, FailureReleaseNotReady,
-		FailureSealedReleaseInconsistent, FailureSealedReleaseRetryForbidden:
+		FailureSealedReleaseInconsistent, FailureSealedReleaseRetryForbidden,
+		FailureWorkerBusy, FailureStageExecutionBusy, FailureStageExecutionInterrupted, FailureCapacityBelowHeld,
+		FailureRuntimeRootMismatch, FailureSourceTargetDecrease, FailureSourceTargetConflict, FailureSourceTargetUnset:
+
 		return true
 	default:
 		return false

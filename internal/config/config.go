@@ -18,12 +18,16 @@ const (
 	EnvWarehousePath       = "MRFPIPELINE_WAREHOUSE_PATH"
 	EnvProviderCatalogPath = "MRFPIPELINE_PROVIDER_CATALOG_PATH"
 	EnvServicesPath        = "MRFPIPELINE_SERVICES_PATH"
+	EnvMRFResidentCapacity = "MRFPIPELINE_MRF_RESIDENT_CAPACITY"
 
 	FieldPayer           = "payer"
 	FieldCollectionMonth = "collection_month"
 	FieldLimit           = "limit"
 	FieldStage           = "stage"
 	FieldID              = "id"
+	FieldMRFSourceLimit  = "mrf_source_limit"
+	FieldResidentCapacity = "mrf_resident_capacity"
+	FieldWorkerRole      = "worker_role"
 )
 
 // ValidateDatabaseURL accepts a nonempty opaque secret. It does not parse,
@@ -95,6 +99,37 @@ func ValidateCollectionMonth(raw string) error {
 // ordinary decimal meaning. A leading plus sign is invalid.
 func ValidateLimit(raw string) (int64, error) {
 	return ValidatePositiveID(FieldLimit, raw)
+}
+
+// ValidateSourceTarget accepts a positive cumulative source count or all.
+// An empty value is reserved for callers that intentionally omit the option.
+func ValidateSourceTarget(raw string) (kind string, count int64, err error) {
+	if raw == "all" {
+		return "all", 0, nil
+	}
+	if raw == "" {
+		return "", 0, wrap(FieldMRFSourceLimit, "must be a positive integer or all")
+	}
+	n, err := ValidatePositiveID(FieldMRFSourceLimit, raw)
+	if err != nil {
+		return "", 0, err
+	}
+	return "numeric", n, nil
+}
+
+// ValidateResidentCapacity parses the positive process-independent slot cap.
+func ValidateResidentCapacity(raw string) (int64, error) {
+	return ValidatePositiveID(FieldResidentCapacity, raw)
+}
+
+// ValidateWorkerRole accepts the three explicit long-lived worker roles.
+func ValidateWorkerRole(raw string) error {
+	switch raw {
+	case "control", "mrf", "consumer":
+		return nil
+	default:
+		return wrap(FieldWorkerRole, "must be control, mrf, or consumer")
+	}
 }
 
 // ValidatePositiveID parses a required positive base-10 int64 with the same

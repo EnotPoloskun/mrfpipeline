@@ -10,6 +10,7 @@ import (
 // environment variables or CLI flags.
 func ProductionQueues() map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
+		QueueControl:     {MaxWorkers: 1},
 		QueueDiscovery:   {MaxWorkers: 1},
 		QueueTOCDownload: {MaxWorkers: 4},
 		QueueTOCParse:    {MaxWorkers: 2},

@@ -117,6 +117,18 @@ func TestJobArgsRejectInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestControlScheduleArgsCarriesDurableEvent(t *testing.T) {
+	t.Parallel()
+	var args ControlScheduleArgs
+	if err := json.Unmarshal([]byte(`{"control_schedule_event_id":17}`), &args); err != nil || args.EventID != 17 {
+		t.Fatalf("args=%+v err=%v", args, err)
+	}
+	var old ControlScheduleArgs
+	if err := json.Unmarshal([]byte(`{}`), &old); err != nil || old.EventID != 0 {
+		t.Fatalf("old args=%+v err=%v", old, err)
+	}
+}
+
 func TestParserMutexRecordedWithoutImport(t *testing.T) {
 	t.Parallel()
 	if !ParserMutexRequired {

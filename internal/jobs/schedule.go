@@ -67,6 +67,16 @@ func Schedule(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], spec
 	return ScheduleResult{JobID: jobID, Outcome: ScheduleInserted}, nil
 }
 
+// Unblock makes a blocked stage eligible for Schedule in the same transaction.
+// It is intentionally small so admission can transition a source to a real
+// River job only after it owns a durable materialization slot.
+func Unblock(ctx context.Context, tx pgx.Tx, spec StageSpec, domainID int64) error {
+	if tx == nil || domainID <= 0 {
+		return jobErr(FailureInvalidArguments)
+	}
+	return unblockIfNeeded(ctx, tx, spec, domainID)
+}
+
 func lockStage(ctx context.Context, tx pgx.Tx, spec StageSpec, domainID int64) (stageRow, error) {
 	return queryStage(ctx, tx, spec, domainID, true)
 }

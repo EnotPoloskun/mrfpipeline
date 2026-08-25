@@ -2,21 +2,30 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"strconv"
 	"time"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/release"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Enqueue inserts one discovery run and its discovery.run job in one
 // transaction, then returns the compact enqueue report.
 func Enqueue(ctx context.Context, pool *pgxpool.Pool, payer, month string, limit int64) (string, error) {
+	return EnqueueWithTarget(ctx, pool, payer, month, limit, admission.Target{Kind: admission.TargetAll})
+}
+
+// EnqueueWithTarget creates a discovery run and initializes or reuses the
+// durable cumulative MRF source target in the same transaction.
+func EnqueueWithTarget(ctx context.Context, pool *pgxpool.Pool, payer, month string, limit int64, target admission.Target) (string, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -39,7 +48,27 @@ func Enqueue(ctx context.Context, pool *pgxpool.Pool, payer, month string, limit
 		return "", dbFail(ctx, "begin", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if target.Kind == admission.TargetUnset {
+		var kind string
+		if err := tx.QueryRow(ctx, `
+SELECT mrf_source_target_kind
+FROM mrfpipeline.monthly_releases
+WHERE payer_id = $1 AND collection_month = $2`, payer, monthDate).Scan(&kind); errors.Is(err, pgx.ErrNoRows) {
+			return "", jobs.Failure(jobs.FailureSourceTargetUnset)
+		} else if err != nil {
+			return "", dbFail(ctx, "read target", err)
+		}
+	}
 	if err := release.EnsureBuilding(ctx, tx, payer, monthDate); err != nil {
+		return "", err
+	}
+	if err := admission.PrepareDiscoverTarget(ctx, tx, payer, monthDate, target); err != nil {
+		return "", err
+	}
+	// Target initialization/selection and the control wake share this
+	// transaction. This also covers an existing target selecting already
+	// materialized snapshots during a later discovery enqueue.
+	if err := admission.WakeTx(ctx, tx, client); err != nil {
 		return "", err
 	}
 

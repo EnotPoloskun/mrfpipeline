@@ -79,6 +79,49 @@ func workspace(t *testing.T) *artifact.Workspace {
 	return ws
 }
 
+func TestIntegrationMRFStagingCleanupRespectsSourceLock(t *testing.T) {
+	pool := testDB(t)
+	ws := workspace(t)
+	entry := filepath.Join(ws.StagingDir(), "mrf-download-42-old")
+	if err := os.Mkdir(entry, 0700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-25 * time.Hour)
+	if err := os.Chtimes(entry, old, old); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := jobs.WithExecutionLock(context.Background(), pool, jobs.LockNamespaceMRF, 42, func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		})
+		done <- err
+	}()
+	<-started
+	var report Report
+	if err := cleanStaging(context.Background(), pool, ws, &report); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(entry); err != nil {
+		t.Fatalf("locked staging entry was removed: %v", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	report = Report{}
+	if err := cleanStaging(context.Background(), pool, ws, &report); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(entry); !os.IsNotExist(err) {
+		t.Fatalf("unlocked staging entry remained: %v", err)
+	}
+}
+
 func runPass(t *testing.T, pool *pgxpool.Pool, ws *artifact.Workspace) Report {
 	t.Helper()
 	svc := filepath.Join(t.TempDir(), "services.csv")
@@ -350,6 +393,113 @@ SELECT download_status, failure_code, download_river_job_id FROM mrfpipeline.toc
 	_, err = Retry(context.Background(), pool, jobs.KindTOCDownload, toc)
 	if !jobs.IsFailure(err, jobs.FailureRetryStageNotFailed) {
 		t.Fatalf("retry pending: %v", err)
+	}
+}
+
+func TestIntegrationRetryDownloadWaitsForResidentCapacity(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	month := "2026-08-01"
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', $1)`, month); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_sources
+    (source_url, collection_month, download_status, parse_status, failure_code)
+VALUES ('https://files.test/capacity-retry', $1, 'failed', 'blocked', $2)
+RETURNING id`, month, jobs.FailureMRFDownload).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
+VALUES ($1, 'uhc', $2);
+INSERT INTO mrfpipeline.monthly_release_mrf_sources (payer_id, collection_month, mrf_source_id)
+VALUES ('uhc', $2, $1)`, sourceID, month); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Retry(ctx, pool, jobs.KindMRFDownload, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RiverJobID != 0 || result.DomainID != sourceID {
+		t.Fatalf("capacity retry inserted executable job: %+v", result)
+	}
+	var status string
+	var jobID *int64
+	if err := pool.QueryRow(ctx, `
+SELECT download_status, download_river_job_id
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&status, &jobID); err != nil {
+		t.Fatal(err)
+	}
+	if status != jobs.StatusBlocked || jobID != nil {
+		t.Fatalf("retry did not leave source waiting: %s %v", status, jobID)
+	}
+	var downloadJobs, wakeJobs, events int64
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload).Scan(&downloadJobs); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindControlSchedule).Scan(&wakeJobs); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM mrfpipeline.control_schedule_events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if downloadJobs != 0 || wakeJobs != 1 || events != 1 {
+		t.Fatalf("waiting retry jobs=%d wake=%d events=%d", downloadJobs, wakeJobs, events)
+	}
+}
+
+func TestIntegrationReconcileReleasesTerminalSlotAfterStagingCleanup(t *testing.T) {
+	pool := testDB(t)
+	ctx := context.Background()
+	month := "2026-08-01"
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', $1)`, month); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_sources
+    (source_url, collection_month, download_status, parse_status, failure_code)
+VALUES ('https://files.test/terminal-staging', $1, 'failed', 'blocked', $2)
+RETURNING id`, month, jobs.FailureMRFDownload).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month)
+VALUES ($1, 'uhc', $2);
+INSERT INTO mrfpipeline.monthly_release_mrf_sources (payer_id, collection_month, mrf_source_id)
+VALUES ('uhc', $2, $1);
+INSERT INTO mrfpipeline.mrf_materialization_slots (mrf_source_id) VALUES ($1)`, sourceID, month); err != nil {
+		t.Fatal(err)
+	}
+	ws := workspace(t)
+	// Use the downloader-owned name; parser parents are intentionally skipped
+	// by the generic staging sweep.
+	staging := filepath.Join(ws.StagingDir(), "mrf-download-"+strconv.FormatInt(sourceID, 10)+"-old")
+	if err := os.Mkdir(staging, 0700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-25 * time.Hour)
+	if err := os.Chtimes(staging, old, old); err != nil {
+		t.Fatal(err)
+	}
+	_ = runPass(t, pool, ws)
+	var held, events int64
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM mrfpipeline.mrf_materialization_slots`).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM mrfpipeline.control_schedule_events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 || events != 1 {
+		t.Fatalf("post-cleanup terminal repair held=%d events=%d", held, events)
 	}
 }
 

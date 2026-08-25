@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/jackc/pgx/v5"
@@ -23,7 +24,11 @@ type Worker struct {
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.MRFDownloadArgs]) error {
 	var sourceURL string
 	client := river.ClientFromContext[pgx.Tx](ctx)
-	return jobs.Run(ctx, jobs.RunParams{
+	var ws *artifact.Workspace
+	if w != nil && w.Downloader != nil {
+		ws = w.Downloader.Workspace()
+	}
+	return jobs.RunWithExecutionLock(ctx, jobs.RunParams{
 		Pool:        w.Pool,
 		Client:      client,
 		Spec:        jobs.MRFDownloadStage,
@@ -47,7 +52,45 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.MRFDownloadArgs])
 			DomainID: job.Args.MRFSourceID,
 			Args:     &jobs.MRFParseArgs{MRFSourceID: job.Args.MRFSourceID},
 		},
-	})
+		Terminal: func(ctx context.Context) error {
+			return releaseEmptyDownloadSlot(ctx, w.Pool, client, ws, job.Args.MRFSourceID, w.Logger)
+		},
+	}, jobs.LockNamespaceMRF, job.Args.MRFSourceID)
+}
+
+func releaseEmptyDownloadSlot(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], ws *artifact.Workspace, sourceID int64, loggers ...*slog.Logger) error {
+	if pool == nil || client == nil || ws == nil {
+		return jobs.Failure(jobs.FailureInvalidArguments)
+	}
+	raw, err := ws.InspectDownloadState(artifact.KindMRF, sourceID)
+	if err != nil {
+		return jobs.Failure(jobs.FailureArtifactReconciliationFailed)
+	}
+	staging, err := ws.HasDownloadStaging(artifact.KindMRF, sourceID)
+	if err != nil {
+		return jobs.Failure(jobs.FailureArtifactReconciliationFailed)
+	}
+	if raw != artifact.DownloadAbsent || staging {
+		return nil
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return jobs.Failure(jobs.FailureMRFDownload)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := admission.ReleaseSlotTx(ctx, tx, sourceID); err != nil {
+		return err
+	}
+	if err := admission.WakeTx(ctx, tx, client); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return jobs.Failure(jobs.FailureMRFDownload)
+	}
+	if len(loggers) > 0 && loggers[0] != nil {
+		loggers[0].LogAttrs(ctx, slog.LevelInfo, "mrf_slot_released", slog.Int64("source_id", sourceID))
+	}
+	return nil
 }
 
 func (w *Worker) download(ctx context.Context, job *river.Job[jobs.MRFDownloadArgs], sourceURL string) error {

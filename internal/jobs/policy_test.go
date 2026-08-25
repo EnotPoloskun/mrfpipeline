@@ -39,6 +39,7 @@ func TestProductionPolicy(t *testing.T) {
 		t.Fatal("no periodic jobs")
 	}
 	want := map[string]int{
+		QueueControl:   1,
 		QueueDiscovery: 1, QueueTOCDownload: 4, QueueTOCParse: 2, QueueTOCImport: 2,
 		QueueMRFDownload: 2, QueueMRFParse: 1, QueueConsumer: 1,
 	}

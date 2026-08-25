@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/config"
-	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 )
 
@@ -47,16 +46,10 @@ VALUES ('uhc', $1)`, month); err != nil {
 		config.EnvServicesPath:        services,
 	})
 
-	lease, err := database.AcquireWorkerLease(ctx, pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = lease.Release(context.Background()) }()
-
 	code, stdout, stderr := runCLI(ctx, []string{
 		"month", "activate", "--payer", "uhc", "--collection-month", "2026-08",
 	}, env)
-	if code != 4 || stdout != "" || !strings.Contains(stderr, jobs.FailureWorkerLeaseUnavailable) {
+	if code != 4 || stdout != "" || !strings.Contains(stderr, jobs.FailureReleaseNotReady) {
 		t.Fatalf("exit %d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 
@@ -70,5 +63,28 @@ WHERE payer_id = 'uhc' AND collection_month = $1`, month).Scan(&status, &sealedA
 	}
 	if status != "building" || sealedAt != nil || lastActivatedAt != nil {
 		t.Fatalf("lease contention mutated release: status=%q sealed_at=%v last_activated_at=%v", status, sealedAt, lastActivatedAt)
+	}
+}
+
+func TestIntegrationMonthSetTotalMissingReleaseDoesNotMutate(t *testing.T) {
+	env, pool := testDiscoverEnv(t)
+	code, stdout, stderr := runCLI(context.Background(), []string{
+		"month", "sources", "set-total", "--payer", "uhc", "--collection-month", "2026-10", "--total", "1",
+	}, env)
+	if code != 4 || stdout != "" || !strings.Contains(stderr, jobs.FailureReleaseNotFound) {
+		t.Fatalf("exit %d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var releases, events, jobsCount int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.monthly_releases`).Scan(&releases); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.control_schedule_events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindControlSchedule).Scan(&jobsCount); err != nil {
+		t.Fatal(err)
+	}
+	if releases != 0 || events != 0 || jobsCount != 0 {
+		t.Fatalf("missing release mutated state: releases=%d events=%d jobs=%d", releases, events, jobsCount)
 	}
 }

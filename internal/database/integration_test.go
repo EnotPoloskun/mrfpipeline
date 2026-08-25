@@ -71,14 +71,14 @@ func mustMigrate(t *testing.T, url string) Result {
 func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 	url, pool := withTestDB(t)
 	first := mustMigrate(t, url)
-	if first.ApplicationVersion != 4 || first.AppliedMigrationCount != 4 {
+	if first.ApplicationVersion != 5 || first.AppliedMigrationCount != 5 {
 		t.Fatalf("first %+v", first)
 	}
 	if first.RiverVersion != ExpectedRiverVersion || first.AppliedRiverMigrationCount != ExpectedRiverVersion {
 		t.Fatalf("first river %+v", first)
 	}
 	second := mustMigrate(t, url)
-	if second.ApplicationVersion != 4 || second.AppliedMigrationCount != 0 {
+	if second.ApplicationVersion != 5 || second.AppliedMigrationCount != 0 {
 		t.Fatalf("second %+v", second)
 	}
 	if second.RiverVersion != ExpectedRiverVersion || second.AppliedRiverMigrationCount != 0 {
@@ -89,7 +89,7 @@ func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal("count ledger")
 	}
-	if n != 4 {
+	if n != 5 {
 		t.Fatalf("ledger rows %d", n)
 	}
 
@@ -105,6 +105,10 @@ func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 		"mrf_plans",
 		"plan_attachment_batches",
 		"plan_attachment_batch_items",
+		"monthly_release_mrf_sources",
+		"mrf_materialization_slots",
+		"pipeline_runtime",
+		"control_schedule_events",
 	}
 	for _, table := range required {
 		var exists bool
@@ -295,7 +299,7 @@ func TestIntegrationConcurrentMigrators(t *testing.T) {
 			t.Fatalf("migrator %d: %v", i, err)
 		}
 	}
-	if results[0].AppliedMigrationCount+results[1].AppliedMigrationCount != 4 {
+	if results[0].AppliedMigrationCount+results[1].AppliedMigrationCount != 5 {
 		t.Fatalf("applied %+v %+v", results[0], results[1])
 	}
 	if results[0].AppliedRiverMigrationCount+results[1].AppliedRiverMigrationCount != ExpectedRiverVersion {
@@ -305,7 +309,7 @@ func TestIntegrationConcurrentMigrators(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal("count ledger")
 	}
-	if n != 4 {
+	if n != 5 {
 		t.Fatalf("ledger rows %d", n)
 	}
 }
@@ -317,8 +321,8 @@ func TestIntegrationFailingMigrationRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	files = append(files, migrationFile{
-		Version: 5,
-		Name:    "0005_fail.sql",
+		Version: 6,
+		Name:    "0006_fail.sql",
 		SQL:     "CREATE TABLE mrfpipeline.should_not_exist (id int);\nSELECT 1 / 0;",
 	})
 	_, err = applyMigrations(context.Background(), url, files)
@@ -343,7 +347,7 @@ SELECT EXISTS (
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 4 {
+	if n != 5 {
 		t.Fatalf("ledger rows %d", n)
 	}
 }
@@ -403,8 +407,8 @@ func TestIntegrationInvalidLedgerRejected(t *testing.T) {
 		sql  string
 	}{
 		{"filename mismatch", `UPDATE mrfpipeline.schema_migrations SET name = 'wrong.sql'`},
-		{"unknown future", `INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (5, '0005_future.sql')`},
-		{"missing", `DELETE FROM mrfpipeline.schema_migrations; INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (4, '0004_future.sql')`},
+		{"unknown future", `INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (6, '0006_future.sql')`},
+		{"missing", `DELETE FROM mrfpipeline.schema_migrations; INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (6, '0006_future.sql')`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -442,14 +446,14 @@ CREATE TABLE mrfpipeline_river.river_migration (broken int)`); err != nil {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 4 {
+	if n != 5 {
 		t.Fatalf("application ledger rewritten: %d", n)
 	}
 	if _, err := pool.Exec(context.Background(), `DROP TABLE mrfpipeline_river.river_migration`); err != nil {
 		t.Fatal(err)
 	}
 	result := mustMigrate(t, url)
-	if result.ApplicationVersion != 4 || result.AppliedMigrationCount != 0 {
+	if result.ApplicationVersion != 5 || result.AppliedMigrationCount != 0 {
 		t.Fatalf("app %+v", result)
 	}
 	if result.RiverVersion != ExpectedRiverVersion || result.AppliedRiverMigrationCount != ExpectedRiverVersion {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/release"
@@ -27,6 +28,42 @@ func classifyClaim(parse, download string, stored *int64, riverJobID int64) (str
 	default:
 		return "", jobs.Failure(jobs.FailureDomainInvariant)
 	}
+}
+
+// normalizeUnadmitted clears a stale parse delivery after its source is no
+// longer admitted. It is serialized with the source row and never changes a
+// newer parse attempt.
+func normalizeUnadmitted(ctx context.Context, tx pgx.Tx, sourceID, riverJobID int64) error {
+	var parse string
+	var stored *int64
+	if err := tx.QueryRow(ctx, `
+SELECT parse_status, parse_river_job_id
+FROM mrfpipeline.mrf_sources
+WHERE id = $1
+FOR UPDATE`, sourceID).Scan(&parse, &stored); err != nil {
+		return classifyClaimDB(ctx, err)
+	}
+	admitted, err := admission.SourceAdmitted(ctx, tx, sourceID)
+	if err != nil {
+		return err
+	}
+	if admitted {
+		return nil
+	}
+	if parse != jobs.StatusPending && parse != jobs.StatusBlocked {
+		return nil
+	}
+	if stored == nil || *stored != riverJobID {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE mrfpipeline.mrf_sources
+SET parse_status = 'blocked', parse_river_job_id = NULL,
+    updated_at = transaction_timestamp()
+WHERE id = $1`, sourceID); err != nil {
+		return classifyClaimDB(ctx, err)
+	}
+	return nil
 }
 
 func claimParse(ctx context.Context, pool *pgxpool.Pool, sourceID, riverJobID int64) (jobs.ClaimResult, error) {
@@ -56,6 +93,19 @@ WHERE id = $1`, sourceID).Scan(&parse, &stored, &download)
 	}
 	if err != nil {
 		return jobs.ClaimResult{}, classifyClaimDB(ctx, err)
+	}
+	admitted, err := admission.SourceAdmitted(ctx, tx, sourceID)
+	if err != nil {
+		return jobs.ClaimResult{}, err
+	}
+	if !admitted {
+		if err := normalizeUnadmitted(ctx, tx, sourceID, riverJobID); err != nil {
+			return jobs.ClaimResult{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return jobs.ClaimResult{}, classifyClaimDB(ctx, err)
+		}
+		return jobs.ClaimResult{Action: jobs.ClaimNoop}, nil
 	}
 	action, err := classifyClaim(parse, download, stored, riverJobID)
 	if err != nil {

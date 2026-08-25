@@ -3,6 +3,7 @@ package mrfparse
 import (
 	"context"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
@@ -30,6 +31,12 @@ SELECT download_status FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Sc
 SELECT id, consume_status, consume_river_job_id
 FROM mrfpipeline.mrf_snapshots
 WHERE mrf_source_id = $1
+  AND EXISTS (
+      SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+      WHERE a.payer_id = mrf_snapshots.payer_id
+        AND a.collection_month = mrf_snapshots.collection_month
+        AND a.mrf_source_id = mrf_snapshots.mrf_source_id
+  )
 ORDER BY id
 FOR UPDATE`, sourceID)
 	if err != nil {
@@ -81,6 +88,12 @@ WHERE id = $1`, s.id, jobID); err != nil {
 		default:
 			return jobs.Failure(jobs.FailureDomainInvariant)
 		}
+	}
+	if err := admission.ReleaseSlotTx(ctx, tx, sourceID); err != nil {
+		return err
+	}
+	if err := admission.WakeTx(ctx, tx, client); err != nil {
+		return err
 	}
 	return nil
 }

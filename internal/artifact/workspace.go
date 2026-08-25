@@ -61,6 +61,52 @@ func Init(ctx context.Context, artifactRoot string) (*Workspace, error) {
 	return &Workspace{Root: phys}, nil
 }
 
+// Open validates an already initialized workspace without creating, deleting,
+// or repairing any filesystem entry. Replicated workers use it after control
+// has initialized the shared root.
+func Open(ctx context.Context, artifactRoot string) (*Workspace, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	root := filepath.Clean(artifactRoot)
+	if root == "" || !filepath.IsAbs(root) {
+		return nil, artErr("root")
+	}
+	info, err := os.Lstat(root)
+	if err != nil || isSymlink(info) || !info.IsDir() {
+		return nil, artErr("root")
+	}
+	phys, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, artErr("root")
+	}
+	if err := requireRealDir(phys); err != nil {
+		return nil, err
+	}
+	if err := requireValidMarker(phys); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(phys)
+	if err != nil {
+		return nil, artErr("read")
+	}
+	for _, e := range entries {
+		if !allowedRootNames[e.Name()] {
+			return nil, artErr("unrecognized")
+		}
+	}
+	for _, name := range fixedDirs {
+		entry, err := os.Lstat(filepath.Join(phys, name))
+		if err != nil || isSymlink(entry) || !entry.IsDir() {
+			return nil, artErr("directory")
+		}
+	}
+	return &Workspace{Root: phys}, nil
+}
+
 func ensureRoot(ctx context.Context, root string) error {
 	if err := ctx.Err(); err != nil {
 		return err

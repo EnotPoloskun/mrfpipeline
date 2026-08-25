@@ -30,8 +30,17 @@ type Worker struct {
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ConsumerAttachPlansArgs]) error {
 	var ident claimIdentity
 	var added int64
+	var snapshotID int64
+	if w == nil || w.Pool == nil || job == nil {
+		return jobs.Failure(jobs.FailureInvalidArguments)
+	}
+	if err := w.Pool.QueryRow(ctx, `
+SELECT mrf_snapshot_id FROM mrfpipeline.plan_attachment_batches
+WHERE id = $1`, job.Args.PlanAttachmentBatchID).Scan(&snapshotID); err != nil {
+		return jobs.Failure(jobs.FailureMissingRecord)
+	}
 	client := river.ClientFromContext[pgx.Tx](ctx)
-	return jobs.Run(ctx, jobs.RunParams{
+	return jobs.RunWithExecutionLock(ctx, jobs.RunParams{
 		Pool:        w.Pool,
 		Client:      client,
 		Spec:        jobs.ConsumerAttachPlansStage,
@@ -58,7 +67,7 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ConsumerAttachPla
 		PreLock: func(ctx context.Context, tx pgx.Tx) error {
 			return lockSnapshotForSucceed(ctx, tx, ident.SnapshotID)
 		},
-	})
+	}, jobs.LockNamespaceConsumer, snapshotID)
 }
 
 func (w *Worker) attach(ctx context.Context, ident claimIdentity) (int64, error) {

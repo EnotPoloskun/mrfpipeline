@@ -125,7 +125,7 @@ func TestIntegrationWorkOrderlyShutdown(t *testing.T) {
 	done := make(chan int, 1)
 	var stdout, stderr bytes.Buffer
 	go func() {
-		done <- Run(ctx, []string{"work"}, getenv, &stdout, &stderr)
+		done <- Run(ctx, []string{"work", "--role", "control"}, getenv, &stdout, &stderr)
 	}()
 	deadline := time.Now().Add(10 * time.Second)
 	started := false

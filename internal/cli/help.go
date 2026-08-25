@@ -9,11 +9,12 @@ started by the pipeline.
 
 Usage:
   mrfpipeline migrate
-  mrfpipeline work
-  mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
+  mrfpipeline work --role <control|mrf|consumer>
+  mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count> [--mrf-source-limit <N|all>]
   mrfpipeline reconcile
   mrfpipeline retry --stage <job-kind> --id <domain-id>
   mrfpipeline month status [--payer <payer> --collection-month <YYYY-MM>]
+  mrfpipeline month sources set-total --payer <payer> --collection-month <YYYY-MM> --total <N|all>
   mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
   mrfpipeline --help
   mrfpipeline --version
@@ -39,25 +40,29 @@ Required environment:
 `
 
 const workHelp = `Usage:
-  mrfpipeline work
+  mrfpipeline work --role <control|mrf|consumer>
   mrfpipeline work --help
 
-Run background workers. This command validates the complete worker
-configuration, acquires the exclusive worker lease, runs the same safe
-reconciliation as reconcile, then starts the discovery, TOC download, TOC
-parse, TOC import, MRF download, MRF parse, and consumer ingest and attach
-queues, and runs until canceled.
+Run one explicit worker role until canceled. The control role owns discovery,
+TOC work, reconciliation, and the shared resident-slot scheduler. The mrf
+role owns MRF download/parse, and consumer owns consumer writes.
 
 Required environment:
   MRFPIPELINE_DATABASE_URL
   MRFPIPELINE_ARTIFACT_ROOT
-  MRFPIPELINE_WAREHOUSE_PATH
-  MRFPIPELINE_PROVIDER_CATALOG_PATH
+  MRFPIPELINE_MRF_RESIDENT_CAPACITY (control only)
+  MRFPIPELINE_WAREHOUSE_PATH (control and consumer)
+  MRFPIPELINE_PROVIDER_CATALOG_PATH (control and consumer)
   MRFPIPELINE_SERVICES_PATH
+
+The control role must be the only control process. The consumer role is
+serialized because the current warehouse writer is serialized. MRF download
+has two workers and MRF parse has one worker per process; the database-owned
+resident capacity is the shared download-plus-parse disk bound.
 `
 
 const discoverHelp = `Usage:
-  mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
+  mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count> [--mrf-source-limit <N|all>]
   mrfpipeline discover --help
 
 Enqueue one background discovery run. Success reports the durable run and
@@ -68,6 +73,11 @@ owns discovered TOC captures. It is not inferred from URLs or payer contents.
 
 --limit is required and must be a positive integer. Unlimited discovery is
 out of version 1 scope.
+
+--mrf-source-limit is required for a new or unset release. Omit it only when
+an existing release already has an initialized target; omission then reuses
+that durable target. It accepts a positive integer or all. The target is
+cumulative and can later be increased with month sources set-total.
 
 Required flags:
   --payer              Exact payer adapter identifier (only uhc)
@@ -135,7 +145,15 @@ const monthActivateHelp = `Usage:
   mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
   mrfpipeline month activate --help
 
-Activation requires the complete worker environment and the worker lease.
+Activation validates the complete consumer environment and coordinates by
+locking the payer's release rows; it does not require the control worker lease.
+`
+
+const monthSourcesSetTotalHelp = `Usage:
+  mrfpipeline month sources set-total --payer <payer> --collection-month <YYYY-MM> --total <N|all>
+
+Increase the cumulative MRF source admission target for a building release.
+The target cannot be decreased and all cannot be changed back to a number.
 `
 
 func helpFor(command string) string {

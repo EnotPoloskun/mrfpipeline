@@ -44,9 +44,16 @@ type RunParams struct {
 	ClaimGate   func(context.Context, pgx.Tx) error
 	Confirm     func(context.Context, pgx.Tx) error
 	PreLock     func(context.Context, pgx.Tx) error
-	Kind        string
-	Queue       string
-	Logger      *slog.Logger
+	// LeaseHealth is checked immediately before success confirmation when a
+	// delivery is protected by a cross-process execution lease.
+	LeaseHealth func(context.Context) error
+	// Terminal runs after a failed stage has been durably marked failed. It is
+	// used only for stage-specific cleanup such as releasing an empty download
+	// slot; returning an error keeps the failure visible to River.
+	Terminal func(context.Context) error
+	Kind     string
+	Queue    string
+	Logger   *slog.Logger
 }
 
 // Run executes claim, external work, success/successor, retry bookkeeping,
@@ -85,6 +92,11 @@ func Run(ctx context.Context, p RunParams) error {
 	}
 	workErr := p.Work(ctx)
 	if workErr == nil {
+		if p.LeaseHealth != nil {
+			if err := p.LeaseHealth(ctx); err != nil {
+				return Failure(FailureStageExecutionInterrupted)
+			}
+		}
 		if err := Succeed(ctx, p.Pool, p.Client, p.Spec, p.DomainID, p.RiverJobID, p.Successor, p.Confirm, p.PreLock); err != nil {
 			p.logLifecycle(ctx, slog.LevelInfo, "job_lifecycle_failure", "success", err, "")
 			return err
@@ -100,6 +112,12 @@ func Run(ctx context.Context, p RunParams) error {
 			p.logBookkeeping(ctx, "terminal_bookkeeping")
 			return ferr
 		}
+		if p.Terminal != nil {
+			if ferr := p.Terminal(ctx); ferr != nil {
+				p.logBookkeeping(ctx, "terminal_cleanup")
+				return ferr
+			}
+		}
 		p.logLifecycle(ctx, slog.LevelInfo, "job_attempt_failed", "", workErr, "terminal")
 		return river.JobCancel(jobErr(code))
 	}
@@ -112,6 +130,12 @@ func Run(ctx context.Context, p RunParams) error {
 		if ferr := MarkFailed(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID, code); ferr != nil {
 			p.logBookkeeping(ctx, "terminal_bookkeeping")
 			return ferr
+		}
+		if p.Terminal != nil {
+			if ferr := p.Terminal(ctx); ferr != nil {
+				p.logBookkeeping(ctx, "terminal_cleanup")
+				return ferr
+			}
 		}
 		p.logLifecycle(ctx, slog.LevelInfo, "job_attempt_failed", "", workErr, "terminal")
 		return river.JobCancel(jobErr(code))

@@ -2,25 +2,45 @@ package database
 
 import (
 	"context"
+	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Worker lease keys. Distinct from MigrationLockObject. Never print these.
 const (
-	WorkerLeaseClass  = 7319
-	WorkerLeaseObject = 1
+	WorkerLeaseClass    = 7319
+	ControlLeaseObject  = 1
+	ConsumerLeaseObject = 3
+	WorkerLeaseObject   = ControlLeaseObject
 )
 
 // Lease is one dedicated pool connection that holds the worker advisory lock.
 type Lease struct {
-	conn *pgxpool.Conn
+	mu     sync.Mutex
+	conn   *pgxpool.Conn
+	object int32
 }
 
 // AcquireWorkerLease checks out one pool connection and takes the nonwaiting
 // session lock. A false try-lock result is returned as errUnavailable so the
 // caller can map it without logging the keys.
 func AcquireWorkerLease(ctx context.Context, pool *pgxpool.Pool) (*Lease, error) {
+	return AcquireRoleLease(ctx, pool, WorkerLeaseObject)
+}
+
+func AcquireControlLease(ctx context.Context, pool *pgxpool.Pool) (*Lease, error) {
+	return AcquireRoleLease(ctx, pool, ControlLeaseObject)
+}
+
+func AcquireConsumerLease(ctx context.Context, pool *pgxpool.Pool) (*Lease, error) {
+	return AcquireRoleLease(ctx, pool, ConsumerLeaseObject)
+}
+
+// AcquireRoleLease takes the dedicated role lease. Control is singleton;
+// consumer remains singleton only while the pinned consumer contract requires
+// serialized writers. MRF workers do not acquire a role lease.
+func AcquireRoleLease(ctx context.Context, pool *pgxpool.Pool, object int32) (*Lease, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -35,7 +55,7 @@ func AcquireWorkerLease(ctx context.Context, pool *pgxpool.Pool) (*Lease, error)
 		return nil, classify(ctx, "acquire", err)
 	}
 	var locked bool
-	err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1, $2)`, WorkerLeaseClass, WorkerLeaseObject).Scan(&locked)
+	err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1, $2)`, WorkerLeaseClass, object).Scan(&locked)
 	if err != nil {
 		conn.Release()
 		return nil, classify(ctx, "lock", err)
@@ -44,13 +64,13 @@ func AcquireWorkerLease(ctx context.Context, pool *pgxpool.Pool) (*Lease, error)
 		conn.Release()
 		return nil, errLeaseUnavailable
 	}
-	return &Lease{conn: conn}, nil
+	return &Lease{conn: conn, object: object}, nil
 }
 
 // Check confirms this backend still holds the granted lock and can ping.
 // It must not call pg_try_advisory_lock again.
 func (l *Lease) Check(ctx context.Context) error {
-	if l == nil || l.conn == nil {
+	if l == nil {
 		return dbErr("lease")
 	}
 	if ctx == nil {
@@ -58,6 +78,11 @@ func (l *Lease) Check(ctx context.Context) error {
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.conn == nil {
+		return dbErr("lease")
 	}
 	var held bool
 	err := l.conn.QueryRow(ctx, `
@@ -69,7 +94,7 @@ SELECT EXISTS (
       AND objid = $2
       AND granted
       AND pid = pg_backend_pid()
-)`, WorkerLeaseClass, WorkerLeaseObject).Scan(&held)
+)`, WorkerLeaseClass, l.object).Scan(&held)
 	if err != nil {
 		return classify(ctx, "lease", err)
 	}
@@ -85,13 +110,18 @@ SELECT EXISTS (
 
 // Release unlocks then returns the connection to the pool.
 func (l *Lease) Release(ctx context.Context) error {
-	if l == nil || l.conn == nil {
+	if l == nil {
 		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_, err := l.conn.Exec(ctx, `SELECT pg_advisory_unlock($1, $2)`, WorkerLeaseClass, WorkerLeaseObject)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.conn == nil {
+		return nil
+	}
+	_, err := l.conn.Exec(ctx, `SELECT pg_advisory_unlock($1, $2)`, WorkerLeaseClass, l.object)
 	if err != nil {
 		raw := l.conn.Hijack()
 		l.conn = nil

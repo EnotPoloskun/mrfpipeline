@@ -28,7 +28,8 @@ type Worker struct {
 
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.MRFParseArgs]) error {
 	client := river.ClientFromContext[pgx.Tx](ctx)
-	return jobs.Run(ctx, jobs.RunParams{
+	released := false
+	err := jobs.RunWithExecutionLock(ctx, jobs.RunParams{
 		Pool:        w.Pool,
 		Client:      client,
 		Spec:        jobs.MRFParseStage,
@@ -46,12 +47,20 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.MRFParseArgs]) er
 			return w.parse(ctx, job)
 		},
 		Confirm: func(ctx context.Context, tx pgx.Tx) error {
-			return confirmParseSuccess(ctx, tx, client, job.Args.MRFSourceID)
+			err := confirmParseSuccess(ctx, tx, client, job.Args.MRFSourceID)
+			if err == nil {
+				released = true
+			}
+			return err
 		},
 		PreLock: func(ctx context.Context, tx pgx.Tx) error {
 			return release.RequireBuildingForStage(ctx, tx, jobs.KindMRFParse, job.Args.MRFSourceID)
 		},
-	})
+	}, jobs.LockNamespaceMRF, job.Args.MRFSourceID)
+	if err == nil && released && w.Logger != nil {
+		w.Logger.LogAttrs(ctx, slog.LevelInfo, "mrf_slot_released", slog.Int64("source_id", job.Args.MRFSourceID))
+	}
+	return err
 }
 
 func (w *Worker) parse(ctx context.Context, job *river.Job[jobs.MRFParseArgs]) error {
@@ -96,7 +105,10 @@ func (w *Worker) parse(ctx context.Context, job *river.Job[jobs.MRFParseArgs]) e
 		cfg.Input = input
 		cfg.Output = output
 		cfg.Services = w.Services.Path
-		cfg.TempDir = w.Workspace.StagingDir()
+		cfg.TempDir, err = w.Workspace.PrepareMRFParserTemp(id)
+		if err != nil {
+			return jobs.Failure(jobs.FailureMRFParseExecutionFailed)
+		}
 		cfg.OnProgress = func(p mrfparser.Progress) error {
 			params := jobs.ProgressParams{
 				JobID: job.ID, Kind: jobs.KindMRFParse, Queue: jobs.QueueMRFParse, Phase: "mrf_parse",
@@ -128,6 +140,17 @@ func (w *Worker) parse(ctx context.Context, job *river.Job[jobs.MRFParseArgs]) e
 		if errors.Is(err, context.DeadlineExceeded) {
 			return context.DeadlineExceeded
 		}
+		return jobs.Failure(jobs.FailureMRFParseCleanupFailed)
+	}
+	if err := w.Workspace.RemoveMRFParserTemp(id); err != nil {
+		return jobs.Failure(jobs.FailureMRFParseCleanupFailed)
+	}
+	state, err = w.Workspace.InspectDownloadState(artifact.KindMRF, id)
+	if err != nil || state != artifact.DownloadAbsent {
+		return jobs.Failure(jobs.FailureMRFParseCleanupFailed)
+	}
+	staging, err := w.Workspace.HasDownloadStaging(artifact.KindMRF, id)
+	if err != nil || staging {
 		return jobs.Failure(jobs.FailureMRFParseCleanupFailed)
 	}
 	return nil

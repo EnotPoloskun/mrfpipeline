@@ -33,7 +33,7 @@ type Worker struct {
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ConsumerIngestArgs]) error {
 	var ident claimIdentity
 	client := river.ClientFromContext[pgx.Tx](ctx)
-	return jobs.Run(ctx, jobs.RunParams{
+	return jobs.RunWithExecutionLock(ctx, jobs.RunParams{
 		Pool:        w.Pool,
 		Client:      client,
 		Spec:        jobs.ConsumerIngestStage,
@@ -58,7 +58,7 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ConsumerIngestArg
 		PreLock: func(ctx context.Context, tx pgx.Tx) error {
 			return release.RequireBuildingForSnapshot(ctx, tx, job.Args.MRFSnapshotID)
 		},
-	})
+	}, jobs.LockNamespaceConsumer, job.Args.MRFSnapshotID)
 }
 
 func (w *Worker) ingest(ctx context.Context, job *river.Job[jobs.ConsumerIngestArgs], ident claimIdentity) error {

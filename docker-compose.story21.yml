@@ -1,0 +1,82 @@
+x-pipeline-env: &pipeline-env
+  MRFPIPELINE_DATABASE_URL: postgres://mrfpipeline:local-only@postgres/mrfpipeline?sslmode=disable
+  MRFPIPELINE_ARTIFACT_ROOT: /var/lib/mrfpipeline/artifacts
+  MRFPIPELINE_WAREHOUSE_PATH: /var/lib/mrfpipeline/warehouse
+  MRFPIPELINE_PROVIDER_CATALOG_PATH: /etc/mrfpipeline/provider-catalog
+  MRFPIPELINE_SERVICES_PATH: /etc/mrfpipeline/services.csv
+
+x-control-env: &control-env
+  <<: *pipeline-env
+  MRFPIPELINE_MRF_RESIDENT_CAPACITY: "4"
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mrfpipeline
+      POSTGRES_USER: mrfpipeline
+      POSTGRES_PASSWORD: local-only
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mrfpipeline -d mrfpipeline"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    image: mrfpipeline:local
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *pipeline-env
+    volumes:
+      - artifacts:/var/lib/mrfpipeline
+      - ./config:/etc/mrfpipeline:ro
+
+  control:
+    image: mrfpipeline:local
+    restart: unless-stopped
+    command: ["work", "--role", "control"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /var/lib/mrfpipeline/artifacts/workspace.json"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    environment: *control-env
+    volumes:
+      - artifacts:/var/lib/mrfpipeline
+      - ./config:/etc/mrfpipeline:ro
+
+  mrf:
+    image: mrfpipeline:local
+    restart: unless-stopped
+    command: ["work", "--role", "mrf"]
+    depends_on:
+      control:
+        condition: service_healthy
+    environment: *pipeline-env
+    volumes:
+      - artifacts:/var/lib/mrfpipeline
+      - ./config:/etc/mrfpipeline:ro
+
+  consumer:
+    image: mrfpipeline:local
+    restart: unless-stopped
+    command: ["work", "--role", "consumer"]
+    depends_on:
+      control:
+        condition: service_healthy
+    environment: *pipeline-env
+    volumes:
+      - artifacts:/var/lib/mrfpipeline
+      - ./config:/etc/mrfpipeline:ro
+
+volumes:
+  pgdata:
+  artifacts:

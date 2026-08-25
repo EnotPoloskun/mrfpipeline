@@ -123,6 +123,18 @@ INSERT INTO mrfpipeline.mrf_snapshots
 VALUES ($1, 'uhc', DATE '2026-08-01', 'blocked')`, sourceID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id)
+VALUES ('uhc', DATE '2026-08-01', $1)
+ON CONFLICT DO NOTHING`, sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.mrf_materialization_slots (mrf_source_id)
+VALUES ($1) ON CONFLICT DO NOTHING`, sourceID); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -590,6 +602,49 @@ func TestIntegrationStaleJobLeavesArtifact(t *testing.T) {
 	after, err := os.ReadFile(filepath.Join(ws.Root, "mrf", "mrf-source-"+strconv.FormatInt(sourceID, 10), "download", "data"))
 	if err != nil || string(after) != string(before) {
 		t.Fatal("stale job touched artifact")
+	}
+}
+
+func TestIntegrationUnadmittedClaimNormalizesStaleJob(t *testing.T) {
+	pool := testDB(t)
+	client := insertClient(t, pool)
+	var sourceID, jobID int64
+	if err := pool.QueryRow(context.Background(), `
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ('https://files.test/unadmitted', DATE '2026-08-01', 'pending', 'blocked')
+RETURNING id`).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, err = jobs.InsertTx(context.Background(), client, tx, &jobs.MRFDownloadArgs{MRFSourceID: sourceID})
+	if err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `
+UPDATE mrfpipeline.mrf_sources SET download_river_job_id = $2 WHERE id = $1`, sourceID, jobID); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, _, err := claimDownload(context.Background(), pool, sourceID, jobID)
+	if err != nil || result.Action != jobs.ClaimNoop {
+		t.Fatalf("claim result=%+v err=%v", result, err)
+	}
+	var download, parse string
+	var downloadJob, parseJob *int64
+	if err := pool.QueryRow(context.Background(), `
+SELECT download_status, download_river_job_id, parse_status, parse_river_job_id
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&download, &downloadJob, &parse, &parseJob); err != nil {
+		t.Fatal(err)
+	}
+	if download != jobs.StatusBlocked || parse != jobs.StatusBlocked || downloadJob != nil || parseJob != nil {
+		t.Fatalf("stale job not normalized: download=%s/%v parse=%s/%v", download, downloadJob, parse, parseJob)
 	}
 }
 

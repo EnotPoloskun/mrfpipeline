@@ -208,7 +208,8 @@ func TestIncompleteResetThenParse(t *testing.T) {
 			if _, err := os.Lstat(partial); !os.IsNotExist(err) {
 				t.Fatal("partial survived reset")
 			}
-			if cfg.TempDir != ws.StagingDir() || cfg.Services != svc.Path {
+			wantTemp, _ := ws.MRFParserTempDir(id)
+			if cfg.TempDir != wantTemp || cfg.Services != svc.Path {
 				t.Fatalf("cfg %+v", cfg)
 			}
 			if cfg.MemoryLimit != 1<<30 || cfg.OnProgress == nil {
@@ -349,7 +350,8 @@ func TestTMPDIRNotMutatedAroundParse(t *testing.T) {
 			if os.Getenv("TMPDIR") != want {
 				t.Fatalf("TMPDIR mutated to %q", os.Getenv("TMPDIR"))
 			}
-			if cfg.TempDir != ws.StagingDir() {
+			wantTemp, _ := ws.MRFParserTempDir(id)
+			if cfg.TempDir != wantTemp {
 				t.Fatalf("temp %s", cfg.TempDir)
 			}
 			input, _, _ := generatedPaths(ws, id)

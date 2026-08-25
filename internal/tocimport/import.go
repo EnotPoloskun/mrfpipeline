@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5"
@@ -163,18 +164,6 @@ WHERE id = $1`, src.id, info.filename); err != nil {
 				return classifyImportDB(ctx, err)
 			}
 		}
-		if info.inserted {
-			jobID, err := jobs.InsertTx(ctx, client, tx, &jobs.MRFDownloadArgs{MRFSourceID: src.id})
-			if err != nil {
-				return classifyImportDB(ctx, err)
-			}
-			if _, err := tx.Exec(ctx, `
-UPDATE mrfpipeline.mrf_sources
-SET download_river_job_id = $2, updated_at = transaction_timestamp()
-WHERE id = $1`, src.id, jobID); err != nil {
-				return classifyImportDB(ctx, err)
-			}
-		}
 		snapID, err := upsertSnapshot(ctx, tx, client, src, meta)
 		if err != nil {
 			return err
@@ -194,6 +183,15 @@ WHERE id = $1`, src.id, jobID); err != nil {
 		if err := insertPlan(ctx, tx, snapID, row); err != nil {
 			return err
 		}
+	}
+	if _, err := admission.SelectSourcesTx(ctx, tx, meta.payer, meta.monthDate); err != nil {
+		return err
+	}
+	if err := admission.ScheduleSelectedConsumersTx(ctx, tx, client, meta.payer, meta.monthDate); err != nil {
+		return err
+	}
+	if err := admission.ScheduleWaitingTx(ctx, tx, client); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return classifyImportDB(ctx, err)
@@ -243,7 +241,7 @@ func upsertSource(ctx context.Context, tx pgx.Tx, location string, month time.Ti
 	var id int64
 	err := tx.QueryRow(ctx, `
 INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, first_mrf_filename, download_status, parse_status)
-VALUES ($1, $2, $3, 'pending', 'blocked')
+VALUES ($1, $2, $3, 'blocked', 'blocked')
 ON CONFLICT ON CONSTRAINT mrf_sources_source_url_collection_month_key DO NOTHING
 RETURNING id`, location, month, filename).Scan(&id)
 	if err == nil {
@@ -292,7 +290,15 @@ FOR UPDATE`, ids)
 }
 
 func upsertSnapshot(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], src lockedSource, meta importMeta) (int64, error) {
-	parsed := src.parsed == jobs.StatusSucceeded
+	var selected bool
+	if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources
+  WHERE payer_id = $1 AND collection_month = $2 AND mrf_source_id = $3
+)`, meta.payer, meta.monthDate, src.id).Scan(&selected); err != nil {
+		return 0, classifyImportDB(ctx, err)
+	}
+	parsed := src.parsed == jobs.StatusSucceeded && selected
 	consume := jobs.StatusBlocked
 	if parsed {
 		consume = jobs.StatusPending

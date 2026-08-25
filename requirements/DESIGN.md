@@ -2,7 +2,7 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–19 architecture. The
+This document describes the implemented Stories 01–21 architecture. The
 numbered requirement stories remain authoritative where they are more
 specific. Sections below the approved contract that are explicitly labeled
 historical version 1 are retained as background only; they are not current
@@ -116,7 +116,7 @@ The target keeps these version 1 invariants:
 - one independent consumer output per source/payer/month;
 - plan-independent parse/ingest and additive output-scoped plan attachment;
 - PostgreSQL domain truth plus River at-least-once execution;
-- one leased worker and serialized consumer writers;
+- one control lease, role-specific River workers, and serialized consumer writers until the pinned consumer contract permits more;
 - immutable parser/consumer publication boundaries; and
 - explicit retry, conservative reconciliation, redaction, and local-only
   storage.
@@ -124,6 +124,26 @@ The target keeps these version 1 invariants:
 The target remains UHC-only for production discovery. Generic payer columns
 and per-payer release state prepare the domain/query boundary for later payer
 adapters without claiming they exist now.
+
+## Current Story 21 worker addendum
+
+Story 21 supersedes the single-process deployment guidance below for current
+operation. The control role is the only singleton and holds the database
+control lease. MRF roles own only download and parse queues; each process runs
+at most one parser, and multiple ordinary River processes may be started.
+Consumer roles own ingest and plan-attachment queues and remain one process
+until the pinned consumer writer contract permits distinct-output concurrency.
+All roles share the initialized artifact root, while one durable PostgreSQL
+resident-capacity limit bounds raw and in-progress MRF materializations.
+
+```text
+mrfpipeline work --role control
+mrfpipeline work --role mrf
+mrfpipeline work --role consumer
+```
+
+The older one-worker and serialized-topology statements below are historical
+version-1 context; they do not override this addendum.
 
 ## Historical version 1 implementation reference
 
@@ -1238,6 +1258,7 @@ Stories 14–20 are the approved rebuild-only next sequence:
 | 18 | Add building/active/inactive monthly releases, readiness, atomic per-payer activation, and rollback. |
 | 19 | Make reconciliation/acceptance/documentation release-aware and hand off the complete active-output query contract. |
 | 20 | Gate every worker claim on release mutability, validate frozen publication inventory, expose redacted lifecycle/stalled-work diagnostics, and verify active publication durability. |
+| 21 | Bound cumulative MRF admission and shared resident capacity, add role-specific local workers, durable refill/recovery, and bounded acceptance. |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC

@@ -3,6 +3,7 @@ package artifact
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -219,6 +220,91 @@ func (w *Workspace) InspectDownloadState(kind string, id int64) (string, error) 
 		return "", artErr("symlink")
 	}
 	return DownloadIncomplete, nil
+}
+
+// HasDownloadStaging reports whether an owned download staging directory is
+// present for a record. It does not remove or modify the entry.
+func (w *Workspace) HasDownloadStaging(kind string, id int64) (bool, error) {
+	if w == nil || id <= 0 {
+		return false, artErr("staging")
+	}
+	prefix, err := stagingPrefix(kind, id)
+	if err != nil {
+		return false, err
+	}
+	entries, err := os.ReadDir(w.StagingDir())
+	if err != nil {
+		return false, artErr("read")
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(w.StagingDir(), entry.Name()))
+		if err != nil {
+			return false, artErr("stat")
+		}
+		if isSymlink(info) || !info.IsDir() {
+			return false, artErr("staging")
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// PrepareMRFParserTemp resets the source-owned parser parent. The parser can
+// leave anonymous children after a crash; resetting the exact, numeric-owned
+// parent makes the next attempt converge without touching another source.
+func (w *Workspace) PrepareMRFParserTemp(id int64) (string, error) {
+	dir, err := w.MRFParserTempDir(id)
+	if err != nil {
+		return "", err
+	}
+	if err := w.verifyChain(dir, false); err != nil {
+		return "", err
+	}
+	if err := removeExactDir(dir); err != nil {
+		return "", err
+	}
+	if err := mkdirReal(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// RemoveMRFParserTemp removes the complete source-owned parser parent. It is
+// safe for cleanup-only retries and rejects a replaced parent symlink.
+func (w *Workspace) RemoveMRFParserTemp(id int64) error {
+	dir, err := w.MRFParserTempDir(id)
+	if err != nil {
+		return err
+	}
+	if err := w.verifyChain(dir, false); err != nil {
+		return err
+	}
+	return removeExactDir(dir)
+}
+
+// HasMRFParserTemp reports whether the source-owned parser parent exists.
+func (w *Workspace) HasMRFParserTemp(id int64) (bool, error) {
+	dir, err := w.MRFParserTempDir(id)
+	if err != nil {
+		return false, err
+	}
+	if err := w.verifyChain(dir, false); err != nil {
+		return false, err
+	}
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, artErr("stat")
+	}
+	if isSymlink(info) || !info.IsDir() {
+		return false, artErr("staging")
+	}
+	return true, nil
 }
 
 // RemoveParsed removes one exact parsed leaf. Absent is success. It does not

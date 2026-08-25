@@ -209,3 +209,35 @@ func TestSymlinkRejectedOnInspect(t *testing.T) {
 		t.Fatal("followed symlink")
 	}
 }
+
+func TestMRFParserTempResetsChildrenAndRejectsSymlink(t *testing.T) {
+	t.Parallel()
+	ws := mustInit(t, filepath.Join(t.TempDir(), "ws"))
+	dir, err := ws.PrepareMRFParserTemp(17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "mrfparser-crashed"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mrfparser-crashed", "partial"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dir2, err := ws.PrepareMRFParserTemp(17)
+	if err != nil || dir2 != dir {
+		t.Fatalf("reset %s %v", dir2, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("leftover children: %v", err)
+	}
+	if err := ws.RemoveMRFParserTemp(17); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.PrepareMRFParserTemp(17); err == nil {
+		t.Fatal("accepted parser temp symlink")
+	}
+}

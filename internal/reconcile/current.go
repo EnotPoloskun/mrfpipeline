@@ -78,6 +78,40 @@ LIMIT $2`, b.Spec.IDColumn, b.Spec.Table, b.Spec.StatusColumn, b.Spec.IDColumn, 
 }
 
 func repairOneCurrent(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], b jobs.KindBinding, domainID int64) (int, error) {
+	if b.Kind == jobs.KindMRFDownload || b.Kind == jobs.KindMRFParse || b.Kind == jobs.KindConsumerIngest || b.Kind == jobs.KindConsumerAttachPlans {
+		namespace := jobs.LockNamespaceMRF
+		lockID := domainID
+		if b.Kind == jobs.KindConsumerIngest {
+			namespace = jobs.LockNamespaceConsumer
+		} else if b.Kind == jobs.KindConsumerAttachPlans {
+			namespace = jobs.LockNamespaceConsumer
+			if err := pool.QueryRow(ctx, `SELECT mrf_snapshot_id FROM mrfpipeline.plan_attachment_batches WHERE id = $1`, domainID).Scan(&lockID); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return 0, jobs.Failure(jobs.FailureMissingRecord)
+				}
+				return 0, dbFail(ctx.Err())
+			}
+		}
+		inserted := 0
+		busy, err := jobs.WithExecutionLock(ctx, pool, namespace, lockID, func(ctx context.Context) error {
+			n, err := repairOneCurrentUnlocked(ctx, pool, client, b, domainID)
+			if err == nil {
+				inserted = n
+			}
+			return err
+		})
+		if err != nil {
+			return 0, err
+		}
+		if busy {
+			return 0, nil
+		}
+		return inserted, nil
+	}
+	return repairOneCurrentUnlocked(ctx, pool, client, b, domainID)
+}
+
+func repairOneCurrentUnlocked(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], b jobs.KindBinding, domainID int64) (int, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return 0, dbFail(ctx.Err())
@@ -96,6 +130,22 @@ func repairOneCurrent(ctx context.Context, pool *pgxpool.Pool, client *river.Cli
 			return 0, dbFail(ctx.Err())
 		}
 		return 0, nil
+	}
+	if b.Kind == jobs.KindMRFDownload || b.Kind == jobs.KindMRFParse {
+		var hasSlot bool
+		if err := tx.QueryRow(ctx, `
+SELECT EXISTS (SELECT 1 FROM mrfpipeline.mrf_materialization_slots WHERE mrf_source_id = $1)`, domainID).Scan(&hasSlot); err != nil {
+			return 0, dbFail(ctx.Err())
+		}
+		if !hasSlot {
+			if err := setStatus(ctx, tx, b.Spec, domainID, jobs.StatusBlocked, nil); err != nil {
+				return 0, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return 0, dbFail(ctx.Err())
+			}
+			return 0, nil
+		}
 	}
 
 	found := false

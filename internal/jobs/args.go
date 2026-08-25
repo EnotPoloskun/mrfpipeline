@@ -15,6 +15,7 @@ const (
 	KindMRFParse            = "mrf.parse"
 	KindConsumerIngest      = "consumer.ingest"
 	KindConsumerAttachPlans = "consumer.attach_plans"
+	KindControlSchedule     = "control.schedule"
 
 	QueueDiscovery   = "discovery"
 	QueueTOCDownload = "toc_download"
@@ -23,13 +24,53 @@ const (
 	QueueMRFDownload = "mrf_download"
 	QueueMRFParse    = "mrf_parse"
 	QueueConsumer    = "consumer"
+	QueueControl     = "control"
 
-	FieldDiscoveryRunID        = "discovery_run_id"
-	FieldTOCFileID             = "toc_file_id"
-	FieldMRFSourceID           = "mrf_source_id"
-	FieldMRFSnapshotID         = "mrf_snapshot_id"
-	FieldPlanAttachmentBatchID = "plan_attachment_batch_id"
+	FieldDiscoveryRunID         = "discovery_run_id"
+	FieldTOCFileID              = "toc_file_id"
+	FieldMRFSourceID            = "mrf_source_id"
+	FieldMRFSnapshotID          = "mrf_snapshot_id"
+	FieldPlanAttachmentBatchID  = "plan_attachment_batch_id"
+	FieldControlScheduleEventID = "control_schedule_event_id"
 )
+
+// ControlScheduleArgs carries a durable control event.  The event identity is
+// intentionally unique per wake so a wake committed during an active scan is
+// not lost to River's ByArgs uniqueness.
+type ControlScheduleArgs struct {
+	EventID int64 `json:"control_schedule_event_id"`
+}
+
+func (ControlScheduleArgs) Kind() string { return KindControlSchedule }
+func (ControlScheduleArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{Queue: QueueControl, UniqueOpts: river.UniqueOpts{ByArgs: true}}
+}
+func (a *ControlScheduleArgs) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
+		return jobErr("control schedule args")
+	}
+	// Accept the pre-Story-21 empty wake for upgrade compatibility. New wakes
+	// always carry an event identity and therefore cannot be lost to ByArgs.
+	if len(fields) == 0 {
+		a.EventID = 0
+		return nil
+	}
+	if len(fields) != 1 {
+		return jobErr("control schedule args")
+	}
+	var decoded struct {
+		EventID int64 `json:"control_schedule_event_id"`
+	}
+	if _, ok := fields[FieldControlScheduleEventID]; !ok {
+		return jobErr("control schedule args")
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil || decoded.EventID <= 0 {
+		return jobErr("control schedule args")
+	}
+	a.EventID = decoded.EventID
+	return nil
+}
 
 // DiscoveryRunArgs is the durable payload for discovery.run.
 type DiscoveryRunArgs struct {
@@ -169,6 +210,9 @@ func ProductionBindings() []KindBinding {
 
 // ArgsFor constructs typed River args for one production kind and domain ID.
 func ArgsFor(kind string, domainID int64) (river.JobArgs, error) {
+	if kind == KindControlSchedule {
+		return &ControlScheduleArgs{EventID: domainID}, nil
+	}
 	if domainID <= 0 {
 		return nil, Failure(FailureInvalidArguments)
 	}
@@ -241,6 +285,11 @@ func DomainIDFromEncodedArgs(kind string, raw []byte) (int64, error) {
 			return 0, err
 		}
 		return a.PlanAttachmentBatchID, nil
+	case *ControlScheduleArgs:
+		if err := a.UnmarshalJSON(raw); err != nil {
+			return 0, err
+		}
+		return a.EventID, nil
 	default:
 		return 0, Failure(FailureInvalidArguments)
 	}

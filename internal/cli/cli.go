@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/config"
 	"github.com/enotpoloskun/mrfpipeline/internal/consumeringest"
@@ -30,14 +31,16 @@ import (
 var version = "dev"
 
 const (
-	cmdMigrate    = "migrate"
-	cmdWork       = "work"
-	cmdDiscover   = "discover"
-	cmdReconcile  = "reconcile"
-	cmdRetry      = "retry"
-	cmdMonth      = "month"
-	monthStatus   = "status"
-	monthActivate = "activate"
+	cmdMigrate           = "migrate"
+	cmdWork              = "work"
+	cmdDiscover          = "discover"
+	cmdReconcile         = "reconcile"
+	cmdRetry             = "retry"
+	cmdMonth             = "month"
+	monthStatus          = "status"
+	monthActivate        = "activate"
+	monthSources         = "sources"
+	monthSourcesSetTotal = "set-total"
 )
 
 // Main is the process entry: signals, os.Args, and standard streams.
@@ -80,9 +83,9 @@ func execute(ctx context.Context, args []string, getenv func(string) string) (st
 	case cmdMigrate:
 		text, opErr = runMigrate(ctx, getenv)
 	case cmdWork:
-		opErr = runWork(ctx, getenv)
+		opErr = runWork(ctx, getenv, parsed.role)
 	case cmdDiscover:
-		text, opErr = runDiscover(ctx, getenv, parsed.payer, parsed.month, parsed.limit)
+		text, opErr = runDiscover(ctx, getenv, parsed.payer, parsed.month, parsed.limit, parsed.mrfLimit)
 	case cmdReconcile:
 		text, opErr = runReconcile(ctx, getenv)
 	case cmdRetry:
@@ -93,6 +96,8 @@ func execute(ctx context.Context, args []string, getenv func(string) string) (st
 			text, opErr = runMonthStatus(ctx, getenv, parsed.payer, parsed.month)
 		case monthActivate:
 			text, opErr = runMonthActivate(ctx, getenv, parsed.payer, parsed.month)
+		case monthSourcesSetTotal:
+			text, opErr = runMonthSetTotal(ctx, getenv, parsed.payer, parsed.month, parsed.total)
 		default:
 			return "", &usageError{command: cmdMonth, reason: "missing subcommand"}
 		}
@@ -126,7 +131,7 @@ func runMigrate(ctx context.Context, getenv func(string) string) (string, error)
 	return database.FormatResult(result)
 }
 
-func runWork(ctx context.Context, getenv func(string) string) error {
+func runWork(ctx context.Context, getenv func(string) string, roles ...string) error {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -136,21 +141,41 @@ func runWork(ctx context.Context, getenv func(string) string) error {
 	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
 		return err
 	}
+	role := ""
+	if len(roles) > 0 {
+		role = roles[0]
+	}
+	if err := config.ValidateWorkerRole(role); err != nil {
+		return err
+	}
 	art, err := config.NormalizeLocalPath(config.EnvArtifactRoot, getenv(config.EnvArtifactRoot))
-	if err != nil {
-		return err
-	}
-	warehouse, err := config.NormalizeLocalPath(config.EnvWarehousePath, getenv(config.EnvWarehousePath))
-	if err != nil {
-		return err
-	}
-	catalog, err := config.NormalizeLocalPath(config.EnvProviderCatalogPath, getenv(config.EnvProviderCatalogPath))
 	if err != nil {
 		return err
 	}
 	services, err := config.NormalizeLocalPath(config.EnvServicesPath, getenv(config.EnvServicesPath))
 	if err != nil {
 		return err
+	}
+	var warehouse, catalog string
+	if role == "control" || role == "consumer" {
+		warehouse, err = config.NormalizeLocalPath(config.EnvWarehousePath, getenv(config.EnvWarehousePath))
+		if err != nil {
+			return err
+		}
+		catalog, err = config.NormalizeLocalPath(config.EnvProviderCatalogPath, getenv(config.EnvProviderCatalogPath))
+		if err != nil {
+			return err
+		}
+	}
+	capacity := int64(0)
+	if role == "control" {
+		capacity, err = config.ValidateResidentCapacity(getenv(config.EnvMRFResidentCapacity))
+		if err != nil {
+			return err
+		}
+		if capacity > math.MaxInt32 {
+			return fmt.Errorf("%w: %s: must fit in a PostgreSQL integer", config.ErrInvalidConfig, config.FieldResidentCapacity)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -163,17 +188,40 @@ func runWork(ctx context.Context, getenv func(string) string) error {
 	if err := database.ValidateCurrent(ctx, pool); err != nil {
 		return err
 	}
-	if err := artifact.CheckOverlap(art, warehouse, catalog, services); err != nil {
+	if role == "control" || role == "consumer" {
+		if err := artifact.CheckOverlap(art, warehouse, catalog, services); err != nil {
+			return err
+		}
+	} else if err := artifact.CheckPairOverlap(art, services); err != nil {
 		return err
 	}
-	ws, err := artifact.Init(ctx, art)
+	var lease *database.Lease
+	if role == "control" {
+		lease, err = database.AcquireControlLease(ctx, pool)
+		if err != nil {
+			if database.IsLeaseUnavailable(err) {
+				return jobs.Failure(jobs.FailureWorkerBusy)
+			}
+			return err
+		}
+		defer func() { _ = lease.Release(context.Background()) }()
+	}
+	var ws *artifact.Workspace
+	if role == "control" {
+		ws, err = artifact.Init(ctx, art)
+	} else {
+		ws, err = artifact.Open(ctx, art)
+	}
 	if err != nil {
 		return err
 	}
-	if err := os.Setenv("TMPDIR", ws.StagingDir()); err != nil {
-		return err
+	if role == "control" {
+		if err := os.Setenv("TMPDIR", ws.StagingDir()); err != nil {
+			return err
+		}
 	}
 	return work.Runtime{
+		Role: role, ResidentCapacity: capacity, Lease: lease,
 		Pool:                pool,
 		Workspace:           ws,
 		Logger:              jobs.NewLogger(os.Stderr),
@@ -183,7 +231,7 @@ func runWork(ctx context.Context, getenv func(string) string) error {
 	}.Run(ctx)
 }
 
-func runDiscover(ctx context.Context, getenv func(string) string, payer, month, limit string) (string, error) {
+func runDiscover(ctx context.Context, getenv func(string) string, payer, month, limit string, mrfLimits ...string) (string, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
@@ -206,6 +254,23 @@ func runDiscover(ctx context.Context, getenv func(string) string, payer, month, 
 	if n > math.MaxInt32 {
 		return "", fmt.Errorf("%w: %s: must fit in a PostgreSQL integer", config.ErrInvalidConfig, config.FieldLimit)
 	}
+	mrfLimit := ""
+	if len(mrfLimits) > 0 {
+		mrfLimit = mrfLimits[0]
+		if mrfLimit == "" {
+			return "", fmt.Errorf("%w: %s", config.ErrInvalidConfig, config.FieldMRFSourceLimit)
+		}
+	}
+	var target admission.Target
+	if mrfLimit == "" {
+		target = admission.Target{Kind: admission.TargetUnset}
+	} else {
+		kind, count, err := config.ValidateSourceTarget(mrfLimit)
+		if err != nil {
+			return "", err
+		}
+		target = admission.Target{Kind: kind, Count: count}
+	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -214,7 +279,40 @@ func runDiscover(ctx context.Context, getenv func(string) string, payer, month, 
 		return "", err
 	}
 	defer pool.Close()
-	return discovery.Enqueue(ctx, pool, payer, month, n)
+	return discovery.EnqueueWithTarget(ctx, pool, payer, month, n, target)
+}
+
+func runMonthSetTotal(ctx context.Context, getenv func(string) string, payer, month, total string) (string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
+		return "", err
+	}
+	if err := config.ValidatePayerIdentifier(payer); err != nil {
+		return "", err
+	}
+	monthDate, err := parseMonthDate(month)
+	if err != nil {
+		return "", err
+	}
+	kind, count, err := config.ValidateSourceTarget(total)
+	if err != nil {
+		return "", err
+	}
+	p, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.DiscoverMaxConns)
+	if err != nil {
+		return "", err
+	}
+	defer p.Close()
+	if err := database.ValidateCurrent(ctx, p); err != nil {
+		return "", err
+	}
+	result, err := admission.SetTarget(ctx, p, payer, monthDate, admission.Target{Kind: kind, Count: count})
+	if err != nil {
+		return "", err
+	}
+	return encodeJSON(result)
 }
 
 func runReconcile(ctx context.Context, getenv func(string) string) (string, error) {
@@ -257,7 +355,7 @@ func runReconcile(ctx context.Context, getenv func(string) string) (string, erro
 	if err := artifact.CheckOverlap(art, warehouse, catalog, services); err != nil {
 		return "", err
 	}
-	ws, err := artifact.Init(ctx, art)
+	ws, err := artifact.Open(ctx, art)
 	if err != nil {
 		return "", err
 	}
@@ -433,14 +531,6 @@ func runMonthActivate(ctx context.Context, getenv func(string) string, payer, mo
 	if err := database.ValidateCurrent(ctx, pool); err != nil {
 		return "", err
 	}
-	lease, err := database.AcquireWorkerLease(ctx, pool)
-	if err != nil {
-		if database.IsLeaseUnavailable(err) {
-			return "", jobs.Failure(jobs.FailureWorkerLeaseUnavailable)
-		}
-		return "", err
-	}
-	defer func() { _ = lease.Release(context.Background()) }()
 	result, err := release.Activate(ctx, pool, payer, monthDate, func(targets []release.Target) error {
 		return reconcile.ValidateActivationTargets(ctx, pool, warehouse, payer, monthDate, targets)
 	})
@@ -477,6 +567,9 @@ type parsed struct {
 	payer       string
 	month       string
 	limit       string
+	mrfLimit    string
+	total       string
+	role        string
 	stage       string
 	id          string
 	monthAction string
@@ -511,17 +604,23 @@ func parseCommand(command string, rest []string) (parsed, error) {
 		return parsed{command: command, help: true, helpText: helpFor(command)}, nil
 	}
 	switch command {
-	case cmdMigrate, cmdWork, cmdReconcile:
+	case cmdMigrate, cmdReconcile:
 		if err := rejectExtra(command, rest); err != nil {
 			return parsed{}, err
 		}
 		return parsed{command: command}, nil
-	case cmdDiscover:
-		payer, month, limit, err := parseDiscoverFlags(rest)
+	case cmdWork:
+		role, err := parseWorkFlags(rest)
 		if err != nil {
 			return parsed{}, err
 		}
-		return parsed{command: command, payer: payer, month: month, limit: limit}, nil
+		return parsed{command: command, role: role}, nil
+	case cmdDiscover:
+		payer, month, limit, mrfLimit, err := parseDiscoverFlags(rest)
+		if err != nil {
+			return parsed{}, err
+		}
+		return parsed{command: command, payer: payer, month: month, limit: limit, mrfLimit: mrfLimit}, nil
 	case cmdRetry:
 		stage, id, err := parseRetryFlags(rest)
 		if err != nil {
@@ -551,6 +650,9 @@ func parseMonthCommand(rest []string) (parsed, error) {
 			return parsed{command: cmdMonth, monthAction: action, help: true, helpText: monthActivateHelp}, nil
 		}
 	}
+	if len(rest) == 3 && rest[0] == monthSources && rest[1] == monthSourcesSetTotal && rest[2] == "--help" {
+		return parsed{command: cmdMonth, monthAction: monthSourcesSetTotal, help: true, helpText: monthSourcesSetTotalHelp}, nil
+	}
 	switch action {
 	case monthStatus:
 		payer, month, err := parseMonthFlags("month status", rest[1:], false)
@@ -564,9 +666,47 @@ func parseMonthCommand(rest []string) (parsed, error) {
 			return parsed{}, err
 		}
 		return parsed{command: cmdMonth, monthAction: action, payer: payer, month: month}, nil
+	case monthSources:
+		if len(rest) < 2 || rest[1] != monthSourcesSetTotal {
+			return parsed{}, &usageError{command: "month sources", reason: "unknown subcommand"}
+		}
+		payer, month, total, err := parseMonthTotalFlags(rest[2:])
+		if err != nil {
+			return parsed{}, err
+		}
+		return parsed{command: cmdMonth, monthAction: monthSourcesSetTotal, payer: payer, month: month, total: total}, nil
 	default:
 		return parsed{}, &usageError{command: cmdMonth, reason: "unknown subcommand"}
 	}
+}
+
+func parseWorkFlags(rest []string) (string, error) {
+	var role string
+	have := false
+	for i := 0; i < len(rest); {
+		if rest[i] == "--help" {
+			return "", &usageError{command: cmdWork, reason: "invalid help invocation"}
+		}
+		name, value, next, err := takeFlag(cmdWork, rest, i)
+		if err != nil {
+			return "", err
+		}
+		if name != "role" {
+			return "", &usageError{command: cmdWork, reason: "unsupported flag"}
+		}
+		if have {
+			return "", &usageError{command: cmdWork, reason: "duplicate flag --role"}
+		}
+		role, have = value, true
+		i = next
+	}
+	if !have {
+		return "", &usageError{command: cmdWork, reason: "missing required flag --role"}
+	}
+	if err := config.ValidateWorkerRole(role); err != nil {
+		return "", err
+	}
+	return role, nil
 }
 
 func parseMonthFlags(command string, rest []string, required bool) (payer, month string, err error) {
@@ -611,22 +751,22 @@ func rejectExtra(command string, rest []string) error {
 	return nil
 }
 
-func parseDiscoverFlags(rest []string) (payer, month, limit string, err error) {
+func parseDiscoverFlags(rest []string) (payer, month, limit, mrfLimit string, err error) {
 	var havePayer, haveMonth, haveLimit bool
 	for i := 0; i < len(rest); {
 		arg := rest[i]
 		if arg == "--" {
-			return "", "", "", &usageError{command: cmdDiscover, reason: "unsupported flag"}
+			return "", "", "", "", &usageError{command: cmdDiscover, reason: "unsupported flag"}
 		}
 		if isSingleDash(arg) {
-			return "", "", "", &usageError{command: cmdDiscover, reason: "unsupported flag"}
+			return "", "", "", "", &usageError{command: cmdDiscover, reason: "unsupported flag"}
 		}
 		if !strings.HasPrefix(arg, "--") {
-			return "", "", "", &usageError{command: cmdDiscover, reason: "unexpected argument"}
+			return "", "", "", "", &usageError{command: cmdDiscover, reason: "unexpected argument"}
 		}
 		name, value, next, ferr := takeFlag(cmdDiscover, rest, i)
 		if ferr != nil {
-			return "", "", "", ferr
+			return "", "", "", "", ferr
 		}
 		switch name {
 		case "payer":
@@ -638,20 +778,47 @@ func parseDiscoverFlags(rest []string) (payer, month, limit string, err error) {
 		case "limit":
 			limit = value
 			haveLimit = true
+		case "mrf-source-limit":
+			mrfLimit = value
 		default:
-			return "", "", "", &usageError{command: cmdDiscover, reason: "unsupported flag"}
+			return "", "", "", "", &usageError{command: cmdDiscover, reason: "unsupported flag"}
 		}
 		i = next
 	}
 	switch {
 	case !havePayer:
-		return "", "", "", &usageError{command: cmdDiscover, reason: "missing required flag --payer"}
+		return "", "", "", "", &usageError{command: cmdDiscover, reason: "missing required flag --payer"}
 	case !haveMonth:
-		return "", "", "", &usageError{command: cmdDiscover, reason: "missing required flag --collection-month"}
+		return "", "", "", "", &usageError{command: cmdDiscover, reason: "missing required flag --collection-month"}
 	case !haveLimit:
-		return "", "", "", &usageError{command: cmdDiscover, reason: "missing required flag --limit"}
+		return "", "", "", "", &usageError{command: cmdDiscover, reason: "missing required flag --limit"}
 	}
-	return payer, month, limit, nil
+	return payer, month, limit, mrfLimit, nil
+}
+
+func parseMonthTotalFlags(rest []string) (payer, month, total string, err error) {
+	var havePayer, haveMonth, haveTotal bool
+	for i := 0; i < len(rest); {
+		name, value, next, ferr := takeFlag("month sources set-total", rest, i)
+		if ferr != nil {
+			return "", "", "", ferr
+		}
+		switch name {
+		case "payer":
+			payer, havePayer = value, true
+		case "collection-month":
+			month, haveMonth = value, true
+		case "total":
+			total, haveTotal = value, true
+		default:
+			return "", "", "", &usageError{command: "month sources set-total", reason: "unsupported flag"}
+		}
+		i = next
+	}
+	if !havePayer || !haveMonth || !haveTotal {
+		return "", "", "", &usageError{command: "month sources set-total", reason: "missing required flag"}
+	}
+	return payer, month, total, nil
 }
 
 func parseRetryFlags(rest []string) (stage, id string, err error) {

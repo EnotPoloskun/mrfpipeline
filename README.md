@@ -3,17 +3,17 @@
 Operator executable for CMS Transparency in Coverage discovery, TOC and MRF
 processing, warehouse ingestion, and additive plan attachment.
 
-Version 1 is specified by Stories 01–13 in [`requirements/`](requirements/).
+Version 1 is specified by Stories 01–21 in [`requirements/`](requirements/).
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
 ## Feed-free monthly-release contract
 
 Stories [14](requirements/14-feed-free-domain-schema.md) through
-[20](requirements/20-production-hardening-and-test-readiness.md)
-define the current rebuild-only contract. Stories 14–19 are implemented;
-Story 20 hardening is pending its bounded live acceptance. Stories 14–20
-do not upgrade an old populated database or warehouse in place.
+[21](requirements/21-bounded-local-worker-scaling.md) define the current
+rebuild-only contract. Story 21 adds bounded MRF admission, resident slots,
+and ordinary role-specific River workers. These stories do not upgrade an old
+populated warehouse in place.
 
 The target removes `mrf_feeds` and `feed_id`, identifies an MRF source capture
 by exact URL + collection month, identifies a consumer snapshot by source +
@@ -80,8 +80,9 @@ read those repositories) before `go build` or `go test`. An existing
 
 ```text
 mrfpipeline migrate
-mrfpipeline work
-mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
+mrfpipeline work --role <control|mrf|consumer>
+mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count> [--mrf-source-limit <N|all>]
+mrfpipeline month sources set-total --payer <payer> --collection-month <YYYY-MM> --total <N|all>
 mrfpipeline month status --payer <payer> --collection-month <YYYY-MM>
 mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
 mrfpipeline month status
@@ -91,13 +92,17 @@ mrfpipeline retry --stage <job-kind> --id <domain-id>
 
 `migrate` applies application and River schemas. No other command migrates.
 
-`work` validates the complete worker environment, acquires the exclusive
-worker lease, runs safe reconciliation, then consumes discovery, TOC
-download, TOC parse, TOC import, MRF download, MRF parse, and consumer
-ingest and attach queues until canceled.
+`work` requires an explicit role. The control role validates the complete
+environment, holds the singleton control lease, initializes the artifact root,
+reconciles, and consumes discovery/TOC/admission queues. The `mrf` role owns
+only MRF download and parse. The `consumer` role owns consumer ingest and plan
+attachment and remains singleton while the pinned warehouse writer requires
+serialized writes.
 
 `discover` enqueues one bounded UHC discovery run for a building monthly
-release and reports identifiers without waiting for downloads.
+release and reports identifiers without waiting for downloads. `--limit` is a
+TOC limit. `--mrf-source-limit` is the cumulative MRF target; it is required
+when a release is still `unset`, and can be increased later with `set-total`.
 
 `month status` reports targeted readiness blockers, or the complete active
 `(payer_id, collection_month, output_id)` handoff relation with no selector.
@@ -106,11 +111,14 @@ that payer's active month. Repeating activation is idempotent; activation and
 rollback do not rewrite warehouse files.
 
 `reconcile` performs only safe nonterminal repairs. Terminal failed stages
-require `retry`.
+require `retry`; stop control first before running reconcile because it holds
+the control lease. Reconciliation skips busy MRF/consumer domains.
 
 `retry` reopens one exact failed stage and inserts a replacement River job.
-It does not run the job. The worker must be stopped. An attachment retry
-reuses the frozen plan batch.
+It does not run the job. It coordinates through the release and exact
+source/output execution locks, so workers may remain running. An attachment
+retry reuses the frozen plan batch; a terminal download without a resident
+slot is returned to blocked waiting state until control can refill it.
 
 ## Environment
 
@@ -121,17 +129,38 @@ reuses the frozen plan batch.
 | `MRFPIPELINE_WAREHOUSE_PATH` | `work`, `reconcile` |
 | `MRFPIPELINE_PROVIDER_CATALOG_PATH` | `work`, `reconcile` |
 | `MRFPIPELINE_SERVICES_PATH` | `work`, `reconcile` |
+| `MRFPIPELINE_MRF_RESIDENT_CAPACITY` | control `work` |
 
 `retry` needs only the database URL so a remote operator can enqueue work for
 the correctly configured worker host.
 
-## One-worker deployment
+## Local worker topology
 
-One database and warehouse has at most one supported `work` process. The
-process holds a PostgreSQL session advisory lease on a dedicated connection.
-A second `work`, `reconcile`, or `retry` fails without mutation.
+Use [`docker-compose.story21.yml`](docker-compose.story21.yml) as a starting
+point for a local Docker Desktop run. The control, MRF, and consumer services
+share PostgreSQL and one named artifact volume. Start control first, then run
+multiple ordinary MRF processes if desired:
 
-Lease loss cancels River and prevents beginning another warehouse write.
+```text
+docker compose -f docker-compose.story21.yml up -d postgres control
+docker compose -f docker-compose.story21.yml up -d --scale mrf=4 mrf consumer
+```
+
+Four MRF containers provide up to four concurrent parser calls because each
+container has one parse worker; each container may set its own `GOMAXPROCS` or
+Docker CPU allowance. The parser memory limit is per process. Docker memory
+limits are hard termination limits, not soft backpressure. The shared
+PostgreSQL resident capacity bounds selected raw/in-progress MRF files across
+all MRF containers, not parsed output, temporary peak expansion, PostgreSQL,
+or the consumer warehouse. The current consumer process lease intentionally
+allows one consumer container until a concurrent-safe mrfconsumer revision is
+pinned.
+
+On Windows Docker Desktop, prefer the Linux named volume shown in the compose
+file over a cloud-synchronized host directory for the first run.
+
+Control lease loss cancels control work; per-source and per-output execution
+locks defer rescued or duplicate deliveries without mutating domain attempts.
 
 ## Stage flow
 
@@ -229,13 +258,24 @@ relation without inferring membership from other warehouse outputs.
 ## First live run
 
 `--limit` bounds newly admitted TOCs, not MRF count or bytes. Start with
-`--limit 1`, then 2, then 5. Use 10 only after measuring fan-out and disk.
+`--limit 1` and an explicit `--mrf-source-limit 3`, then increase the
+cumulative target with `month sources set-total` after inspecting the sample.
+Resident capacity is a shared count of raw/in-progress sources; it is not a
+byte quota.
 
 Before a bounded run, record free space on the artifact and warehouse
 filesystems. During the run, monitor download and parsed bytes, warehouse
 bytes, free space, database size, and pending/running MRF download/parse
 counts. Version 1 does not guess required disk from HTTP headers. Stop the
 worker if capacity approaches the operator safety threshold.
+
+An interrupted or failed download keeps its selected source and slot; the
+existing staging directory is used for cleanup/resume. A parse failure keeps
+the raw file and slot, so retrying parse does not redownload. On successful
+parse the worker validates output, deletes raw and parser staging, then
+releases the slot and wakes control to admit the next source. A terminal
+download with no raw or staging artifact releases its slot; a terminal parse
+does not.
 
 ## Crash, retry, and reconciliation
 
@@ -507,8 +547,12 @@ Optional: `MRFPIPELINE_REAL_TOC_LIMIT` (`1`–`10`, default `1`),
 warehouse roots). Raise the test timeout to cover the wait, for example
 `go test -timeout 3h ./internal/reconcile -run TestRealUHCAcceptance`.
 
-The harness builds `./cmd/mrfpipeline`, runs `migrate`, starts one
-`work` process, runs bounded UHC `discover`, waits until domain stages are
-idle, checks readiness, activates the month, stops and restarts the worker,
-then reconciles twice. It verifies the active relation survives restart and
-converged reconciliation and that domain and warehouse counts do not increase.
+The harness builds `./cmd/mrfpipeline`, runs `migrate`, starts control, MRF,
+and consumer role processes, runs bounded UHC `discover`, and waits until
+domain stages are idle. The default full path checks readiness, activates the
+month, stops and restarts all roles, then reconciles twice. Set
+`MRFPIPELINE_REAL_BOUNDED=1` with a numeric
+`MRFPIPELINE_REAL_MRF_SOURCE_LIMIT` to run the partial-sample path instead;
+it verifies selected work drains, resident slots and raw files are released,
+and activation remains blocked. The harness records safe counts and verifies
+restart/reconciliation do not duplicate domain or warehouse results.

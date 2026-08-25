@@ -40,6 +40,27 @@ FROM (
           AND d.status <> 'succeeded'
     )
     UNION ALL
+    SELECT r.payer_id, r.collection_month, 'mrf_source_target_unset'
+    FROM releases r
+    WHERE EXISTS (
+        SELECT 1 FROM mrfpipeline.monthly_releases x
+        WHERE x.payer_id = r.payer_id AND x.collection_month = r.collection_month
+          AND x.mrf_source_target_kind = 'unset'
+    )
+    UNION ALL
+    SELECT r.payer_id, r.collection_month, 'mrf_source_target_partial'
+    FROM releases r
+    WHERE EXISTS (
+        SELECT 1 FROM mrfpipeline.monthly_releases x
+        WHERE x.payer_id = r.payer_id AND x.collection_month = r.collection_month
+          AND x.mrf_source_target_kind = 'numeric'
+          AND EXISTS (SELECT 1 FROM mrfpipeline.mrf_snapshots s
+                      WHERE s.payer_id = r.payer_id AND s.collection_month = r.collection_month
+                        AND NOT EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+                                        WHERE a.payer_id = s.payer_id AND a.collection_month = s.collection_month
+                                          AND a.mrf_source_id = s.mrf_source_id))
+    )
+    UNION ALL
     SELECT r.payer_id, r.collection_month, 'toc_missing'
     FROM releases r
     WHERE NOT EXISTS (
@@ -59,18 +80,18 @@ FROM (
     FROM releases r
     WHERE EXISTS (
         SELECT 1 FROM mrfpipeline.mrf_sources m
-        WHERE (m.download_status <> 'succeeded' OR m.parse_status <> 'succeeded')
-          AND EXISTS (
-              SELECT 1 FROM mrfpipeline.mrf_snapshots s
-              WHERE s.mrf_source_id = m.id
-                AND s.payer_id = r.payer_id AND s.collection_month = r.collection_month
-          )
+        JOIN mrfpipeline.monthly_release_mrf_sources a ON a.mrf_source_id = m.id
+        WHERE a.payer_id = r.payer_id AND a.collection_month = r.collection_month
+          AND (m.download_status <> 'succeeded' OR m.parse_status <> 'succeeded')
     )
     UNION ALL
     SELECT r.payer_id, r.collection_month, 'snapshot_missing'
     FROM releases r
     WHERE NOT EXISTS (
         SELECT 1 FROM mrfpipeline.mrf_snapshots s
+        JOIN mrfpipeline.monthly_release_mrf_sources a
+          ON a.payer_id = s.payer_id AND a.collection_month = s.collection_month
+         AND a.mrf_source_id = s.mrf_source_id
         WHERE s.payer_id = r.payer_id AND s.collection_month = r.collection_month
     )
     UNION ALL
@@ -79,6 +100,9 @@ FROM (
     WHERE EXISTS (
         SELECT 1 FROM mrfpipeline.mrf_snapshots s
         WHERE s.payer_id = r.payer_id AND s.collection_month = r.collection_month
+          AND EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+                      WHERE a.payer_id = s.payer_id AND a.collection_month = s.collection_month
+                        AND a.mrf_source_id = s.mrf_source_id)
           AND s.consume_status <> 'succeeded'
     )
     UNION ALL
@@ -87,6 +111,9 @@ FROM (
     WHERE EXISTS (
         SELECT 1 FROM mrfpipeline.mrf_snapshots s
         WHERE s.payer_id = r.payer_id AND s.collection_month = r.collection_month
+          AND EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+                      WHERE a.payer_id = s.payer_id AND a.collection_month = s.collection_month
+                        AND a.mrf_source_id = s.mrf_source_id)
           AND NOT EXISTS (
               SELECT 1 FROM mrfpipeline.plan_attachment_batches b
               WHERE b.mrf_snapshot_id = s.id AND b.status = 'succeeded'
@@ -99,6 +126,9 @@ FROM (
         SELECT 1 FROM mrfpipeline.plan_attachment_batches b
         JOIN mrfpipeline.mrf_snapshots s ON s.id = b.mrf_snapshot_id
         WHERE s.payer_id = r.payer_id AND s.collection_month = r.collection_month
+          AND EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+                      WHERE a.payer_id = s.payer_id AND a.collection_month = s.collection_month
+                        AND a.mrf_source_id = s.mrf_source_id)
           AND b.status IN ('pending', 'running', 'failed')
     )
     UNION ALL
@@ -109,6 +139,9 @@ FROM (
         FROM mrfpipeline.mrf_plans p
         JOIN mrfpipeline.mrf_snapshots s ON s.id = p.mrf_snapshot_id
         WHERE s.payer_id = r.payer_id AND s.collection_month = r.collection_month
+          AND EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+                      WHERE a.payer_id = s.payer_id AND a.collection_month = s.collection_month
+                        AND a.mrf_source_id = s.mrf_source_id)
           AND NOT EXISTS (
               SELECT 1
               FROM mrfpipeline.plan_attachment_batch_items i
@@ -152,6 +185,10 @@ FROM (
             JOIN (
                 SELECT DISTINCT mrf_source_id, payer_id, collection_month
                 FROM mrfpipeline.mrf_snapshots
+                WHERE EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+                              WHERE a.payer_id = mrf_snapshots.payer_id
+                                AND a.collection_month = mrf_snapshots.collection_month
+                                AND a.mrf_source_id = mrf_snapshots.mrf_source_id)
             ) x ON x.mrf_source_id = m.id
             UNION ALL
             SELECT x.payer_id, x.collection_month, m.parse_river_job_id,
@@ -161,6 +198,10 @@ FROM (
             JOIN (
                 SELECT DISTINCT mrf_source_id, payer_id, collection_month
                 FROM mrfpipeline.mrf_snapshots
+                WHERE EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
+                              WHERE a.payer_id = mrf_snapshots.payer_id
+                                AND a.collection_month = mrf_snapshots.collection_month
+                                AND a.mrf_source_id = mrf_snapshots.mrf_source_id)
             ) x ON x.mrf_source_id = m.id
             UNION ALL
             SELECT s.payer_id, s.collection_month, s.consume_river_job_id,

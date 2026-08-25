@@ -41,11 +41,12 @@ func validWorkEnv(t *testing.T) map[string]string {
 		config.EnvWarehousePath:       filepath.Join(base, "warehouse"),
 		config.EnvProviderCatalogPath: filepath.Join(base, "catalog"),
 		config.EnvServicesPath:        filepath.Join(base, "services.csv"),
+		config.EnvMRFResidentCapacity: "4",
 	}
 }
 
 func discoverArgs(limit string) []string {
-	return []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", limit}
+	return []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", limit, "--mrf-source-limit", "all"}
 }
 
 func runCLI(ctx context.Context, args []string, getenv func(string) string) (int, string, string) {
@@ -165,7 +166,7 @@ func TestUsageErrors(t *testing.T) {
 func TestRepeatedFlagsUseFinalOccurrence(t *testing.T) {
 	t.Parallel()
 	env := envMap(validDB())
-	ok := []string{"discover", "--payer", "UHC", "--payer", "uhc", "--collection-month", "1999-01", "--collection-month", "2026-08", "--limit", "0", "--limit", "5"}
+	ok := []string{"discover", "--payer", "UHC", "--payer", "uhc", "--collection-month", "1999-01", "--collection-month", "2026-08", "--limit", "0", "--limit", "5", "--mrf-source-limit", "all"}
 	code, stdout, _ := runCLI(context.Background(), ok, env)
 	if code != 3 || stdout != "" {
 		t.Fatalf("final valid values: exit %d stdout=%q", code, stdout)
@@ -188,7 +189,7 @@ func TestRepeatedFlagsUseFinalOccurrence(t *testing.T) {
 func TestEqualsAndSpaceFlagForms(t *testing.T) {
 	t.Parallel()
 	env := envMap(validDB())
-	args := []string{"discover", "--payer=uhc", "--collection-month=2026-08", "--limit=2"}
+	args := []string{"discover", "--payer=uhc", "--collection-month=2026-08", "--limit=2", "--mrf-source-limit=all"}
 	_, err := execute(context.Background(), args, env)
 	if !errors.Is(err, database.ErrDatabase) {
 		t.Fatalf("got %v", err)
@@ -267,7 +268,7 @@ func TestCommandEnvironmentRequirements(t *testing.T) {
 		t.Parallel()
 		env := validWorkEnv(t)
 		delete(env, config.EnvServicesPath)
-		code, stdout, stderr := runCLI(context.Background(), []string{"work"}, envMap(env))
+		code, stdout, stderr := runCLI(context.Background(), []string{"work", "--role", "control"}, envMap(env))
 		if code != 2 || stdout != "" {
 			t.Fatalf("exit %d", code)
 		}
@@ -284,7 +285,7 @@ func TestCommandEnvironmentRequirements(t *testing.T) {
 		env := validWorkEnv(t)
 		env[config.EnvArtifactRoot] = "s3://nope"
 		env[config.EnvWarehousePath] = "s3://also"
-		_, err := execute(context.Background(), []string{"work"}, envMap(env))
+		_, err := execute(context.Background(), []string{"work", "--role", "control"}, envMap(env))
 		if !errors.Is(err, config.ErrInvalidConfig) {
 			t.Fatalf("got %v", err)
 		}
@@ -462,7 +463,7 @@ func TestCancellationPrecedence(t *testing.T) {
 func TestErrorClassification(t *testing.T) {
 	t.Parallel()
 	env := envMap(validWorkEnv(t))
-	_, err := execute(context.Background(), []string{"work"}, env)
+	_, err := execute(context.Background(), []string{"work", "--role", "control"}, env)
 	if !errors.Is(err, database.ErrDatabase) || errors.Is(err, config.ErrInvalidConfig) {
 		t.Fatalf("work database failure: %v", err)
 	}
@@ -491,7 +492,7 @@ func TestErrorClassification(t *testing.T) {
 		t.Fatalf("cancel exit %d stdout=%q", code, stdout)
 	}
 
-	code, stdout, _ = runCLI(context.Background(), []string{"work"}, env)
+	code, stdout, _ = runCLI(context.Background(), []string{"work", "--role", "control"}, env)
 	if code != 3 || stdout != "" {
 		t.Fatalf("work database exit %d", code)
 	}
@@ -515,7 +516,7 @@ func TestErrorClassification(t *testing.T) {
 func TestWorkUnreachableDatabaseLeavesPathsUntouched(t *testing.T) {
 	t.Parallel()
 	env := validWorkEnv(t)
-	code, stdout, _ := runCLI(context.Background(), []string{"work"}, envMap(env))
+	code, stdout, _ := runCLI(context.Background(), []string{"work", "--role", "control"}, envMap(env))
 	if code != 3 || stdout != "" {
 		t.Fatalf("exit %d", code)
 	}

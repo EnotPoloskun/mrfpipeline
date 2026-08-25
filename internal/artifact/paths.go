@@ -107,6 +107,16 @@ func (w *Workspace) PlanBatchDir(id int64) (string, error) {
 	return w.recordPath(KindPlanBatch, id)
 }
 
+// MRFParserTempDir is the source-owned parent passed to mrfparser. The
+// parser may create anonymous invocation directories beneath it; ownership is
+// therefore established by the numeric source identity in this path.
+func (w *Workspace) MRFParserTempDir(id int64) (string, error) {
+	if w == nil || id <= 0 {
+		return "", artErr("staging")
+	}
+	return filepath.Join(w.StagingDir(), "mrf-source-"+strconv.FormatInt(id, 10)), nil
+}
+
 func stagingPrefix(kind string, id int64) (string, error) {
 	s, err := formatID(id)
 	if err != nil {
@@ -146,4 +156,11 @@ func parseStagingName(name string) (kind string, id int64, ok bool) {
 		return "", 0, false
 	}
 	return kind, n, true
+}
+
+// ParseStagingName identifies an owned download staging entry using the same
+// naming grammar used by workers. It is exported for reconciliation so that
+// cleanup uses the existing ownership rules rather than a second parser.
+func ParseStagingName(name string) (kind string, id int64, ok bool) {
+	return parseStagingName(name)
 }

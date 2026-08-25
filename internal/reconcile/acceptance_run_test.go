@@ -14,7 +14,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/config"
+	"github.com/enotpoloskun/mrfpipeline/internal/consumeringest"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/release"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -34,6 +36,7 @@ type liveReport struct {
 	WarehouseFiles     int64 `json:"warehouse_file_count"`
 	PeakArtifactBytes  int64 `json:"peak_artifact_bytes"`
 	PeakWarehouseBytes int64 `json:"peak_warehouse_bytes"`
+	PeakResidentHeld   int64 `json:"peak_mrf_resident_held"`
 	ReconcileRepaired  int64 `json:"reconcile_repaired_job_count"`
 	RestartSources     int64 `json:"restart_mrf_source_count"`
 	RestartSnapshots   int64 `json:"restart_snapshot_count"`
@@ -78,6 +81,15 @@ func runLiveAcceptance(ctx context.Context, getenv func(string) string, bin stri
 	}
 	dbURL := getenv(EnvTestDatabase)
 	env := liveEnv(getenv, dbURL)
+	bounded := getenv(EnvRealBounded) == "1"
+	residentCapacity := acceptanceCapacity(getenv)
+	mrfTarget := "all"
+	if bounded {
+		mrfTarget = getenv(EnvRealMRFSourceLimit)
+		if mrfTarget == "" {
+			mrfTarget = "1"
+		}
+	}
 	start := time.Now()
 	if err := runBin(ctx, bin, env, "migrate"); err != nil {
 		return zero, err
@@ -85,33 +97,65 @@ func runLiveAcceptance(ctx context.Context, getenv func(string) string, bin stri
 
 	workCtx, stopWork := context.WithCancel(ctx)
 	defer stopWork()
-	proc, err := startWork(workCtx, bin, env)
+	control, err := startWork(workCtx, bin, env, "control", residentCapacity)
 	if err != nil {
 		return zero, err
 	}
-	defer func() { _ = stopProc(proc, stopWork) }()
+	mrf, err := startWork(workCtx, bin, env, "mrf", residentCapacity)
+	if err != nil {
+		_ = stopProc(control, stopWork)
+		return zero, err
+	}
+	mrfWorkers := []*workProc{mrf}
+	if bounded {
+		mrf2, err := startWork(workCtx, bin, env, "mrf", residentCapacity)
+		if err != nil {
+			_ = stopProc(mrf, stopWork)
+			_ = stopProc(control, stopWork)
+			return zero, err
+		}
+		mrfWorkers = append(mrfWorkers, mrf2)
+	}
+	consumer, err := startWork(workCtx, bin, env, "consumer", residentCapacity)
+	if err != nil {
+		for _, p := range mrfWorkers {
+			_ = stopProc(p, stopWork)
+		}
+		_ = stopProc(control, stopWork)
+		return zero, err
+	}
+	procs := append([]*workProc{control}, mrfWorkers...)
+	procs = append(procs, consumer)
+	defer func() {
+		for _, p := range procs {
+			_ = stopProc(p, stopWork)
+		}
+	}()
 
 	readyWait, cancelReady := context.WithTimeout(ctx, wait)
 	defer cancelReady()
-	if err := waitRiverClient(readyWait, dbURL, proc); err != nil {
+	if err := waitRiverClient(readyWait, dbURL, control); err != nil {
 		return zero, err
 	}
 	if err := runBin(ctx, bin, env, "discover",
 		"--payer", "uhc",
 		"--collection-month", month,
 		"--limit", fmt.Sprintf("%d", limit),
+		"--mrf-source-limit", mrfTarget,
 	); err != nil {
 		return zero, err
 	}
 
 	idleWait, cancelIdle := context.WithTimeout(ctx, wait)
 	defer cancelIdle()
-	peaks, err := waitIdle(idleWait, dbURL, getenv(config.EnvArtifactRoot), getenv(config.EnvWarehousePath), proc)
+	peaks, err := waitIdle(idleWait, dbURL, getenv(config.EnvArtifactRoot), getenv(config.EnvWarehousePath), control)
 	if err != nil {
 		return zero, err
 	}
-	if err := stopProc(proc, stopWork); err != nil {
-		return zero, err
+	for _, p := range procs {
+		if err := stopProc(p, stopWork); err != nil {
+			return zero, err
+		}
 	}
 	goneWait, cancelGone := context.WithTimeout(ctx, wait)
 	defer cancelGone()
@@ -123,7 +167,75 @@ func runLiveAcceptance(ctx context.Context, getenv func(string) string, bin stri
 		return zero, err
 	}
 	var status release.StatusReport
-	if err := json.Unmarshal(bytes.TrimSpace(statusOut), &status); err != nil || !status.DatabaseReady {
+	if err := json.Unmarshal(bytes.TrimSpace(statusOut), &status); err != nil {
+		return zero, jobs.Failure(jobs.FailureReleaseNotReady)
+	}
+	if bounded {
+		if !boundedReleaseStatus(status) || status.DatabaseReady || status.MRFResidentHeld != 0 {
+			return zero, jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		if _, err := runBinOutput(ctx, bin, env, "month", "activate", "--payer", "uhc", "--collection-month", month); err == nil {
+			return zero, jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		pool, err := pgxpool.New(ctx, dbURL)
+		if err != nil {
+			return zero, jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+		}
+		defer pool.Close()
+		var held int64
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM mrfpipeline.mrf_materialization_slots`).Scan(&held); err != nil || held > 0 {
+			return zero, jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		ws, err := artifact.Open(ctx, getenv(config.EnvArtifactRoot))
+		if err != nil {
+			return zero, jobs.Failure(jobs.FailureArtifactReconciliationFailed)
+		}
+		rows, err := pool.Query(ctx, `
+SELECT a.mrf_source_id
+FROM mrfpipeline.monthly_release_mrf_sources a
+WHERE a.payer_id = 'uhc' AND a.collection_month = $1
+ORDER BY a.mrf_source_id`, month+"-01")
+		if err != nil {
+			return zero, jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+		}
+		for rows.Next() {
+			var sourceID int64
+			if err := rows.Scan(&sourceID); err != nil {
+				rows.Close()
+				return zero, jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+			}
+			rawState, rawErr := ws.InspectDownloadState(artifact.KindMRF, sourceID)
+			parsedState, parsedErr := ws.InspectParsed(artifact.KindMRF, sourceID)
+			if rawErr != nil || parsedErr != nil || rawState != artifact.DownloadAbsent || parsedState != artifact.ParsedManifestPresent {
+				rows.Close()
+				return zero, jobs.Failure(jobs.FailureDomainInvariant)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return zero, jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+		}
+		rows.Close()
+		if err := validateBoundedConsumerOutputs(ctx, pool, getenv(config.EnvWarehousePath), month, status); err != nil {
+			return zero, err
+		}
+		rep, err := snapshotLive(ctx, pool, getenv(config.EnvWarehousePath), limit, start)
+		if err != nil {
+			return zero, err
+		}
+		if rep.SnapshotsSucceeded == 0 || rep.WarehouseFiles == 0 {
+			return zero, jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		rep.PeakArtifactBytes = peaks[0]
+		rep.PeakWarehouseBytes = peaks[1]
+		rep.PeakResidentHeld = peaks[2]
+		rep.DurationMS = time.Since(start).Milliseconds()
+		if err := writeLiveReport(getenv, rep); err != nil {
+			return zero, err
+		}
+		return rep, nil
+	}
+	if !status.DatabaseReady {
 		return zero, jobs.Failure(jobs.FailureReleaseNotReady)
 	}
 	activationOut, err := runBinOutput(ctx, bin, env, "month", "activate", "--payer", "uhc", "--collection-month", month)
@@ -157,6 +269,7 @@ func runLiveAcceptance(ctx context.Context, getenv func(string) string, bin stri
 	}
 	rep.PeakArtifactBytes = peaks[0]
 	rep.PeakWarehouseBytes = peaks[1]
+	rep.PeakResidentHeld = peaks[2]
 
 	out, err := runBinOutput(ctx, bin, env, "reconcile")
 	if err != nil {
@@ -173,23 +286,41 @@ func runLiveAcceptance(ctx context.Context, getenv func(string) string, bin stri
 
 	work2Ctx, stop2 := context.WithCancel(ctx)
 	defer stop2()
-	proc2, err := startWork(work2Ctx, bin, env)
+	control2, err := startWork(work2Ctx, bin, env, "control", residentCapacity)
 	if err != nil {
 		return zero, err
 	}
-	defer func() { _ = stopProc(proc2, stop2) }()
+	mrf2, err := startWork(work2Ctx, bin, env, "mrf", residentCapacity)
+	if err != nil {
+		_ = stopProc(control2, stop2)
+		return zero, err
+	}
+	consumer2, err := startWork(work2Ctx, bin, env, "consumer", residentCapacity)
+	if err != nil {
+		_ = stopProc(mrf2, stop2)
+		_ = stopProc(control2, stop2)
+		return zero, err
+	}
+	procs2 := []*workProc{control2, mrf2, consumer2}
+	defer func() {
+		for _, p := range procs2 {
+			_ = stopProc(p, stop2)
+		}
+	}()
 	ready2, cancelReady2 := context.WithTimeout(ctx, wait)
 	defer cancelReady2()
-	if err := waitRiverClient(ready2, dbURL, proc2); err != nil {
+	if err := waitRiverClient(ready2, dbURL, control2); err != nil {
 		return zero, err
 	}
 	idle2, cancelIdle2 := context.WithTimeout(ctx, wait)
 	defer cancelIdle2()
-	if _, err := waitIdle(idle2, dbURL, getenv(config.EnvArtifactRoot), getenv(config.EnvWarehousePath), proc2); err != nil {
+	if _, err := waitIdle(idle2, dbURL, getenv(config.EnvArtifactRoot), getenv(config.EnvWarehousePath), control2); err != nil {
 		return zero, err
 	}
-	if err := stopProc(proc2, stop2); err != nil {
-		return zero, err
+	for _, p := range procs2 {
+		if err := stopProc(p, stop2); err != nil {
+			return zero, err
+		}
 	}
 
 	out, err = runBinOutput(ctx, bin, env, "reconcile")
@@ -235,16 +366,78 @@ func runLiveAcceptance(ctx context.Context, getenv func(string) string, bin stri
 	rep.RestartSnapshots = after.SnapshotsSucceeded
 	rep.RestartWarehouse = after.WarehouseFiles
 	rep.DurationMS = time.Since(start).Milliseconds()
-	if path := getenv(EnvRealReport); path != "" {
-		raw, err := json.Marshal(rep)
-		if err != nil {
-			return zero, err
-		}
-		if err := os.WriteFile(path, append(raw, '\n'), 0600); err != nil {
-			return zero, err
-		}
+	if err := writeLiveReport(getenv, rep); err != nil {
+		return zero, err
 	}
 	return rep, nil
+}
+
+func boundedReleaseStatus(status release.StatusReport) bool {
+	return status.Partial && !status.DatabaseReady && len(status.Blockers) == 1 &&
+		status.Blockers[0] == "mrf_source_target_partial" &&
+		status.MRFSourcesSelected > 0 && status.ConsumerFailed == 0 &&
+		status.ConsumerPending == 0 && status.ConsumerRunning == 0 &&
+		status.ConsumerRetrying == 0 && status.ConsumerSucceeded > 0
+}
+
+func validateBoundedConsumerOutputs(ctx context.Context, pool *pgxpool.Pool, warehouse, month string, status release.StatusReport) error {
+	if status.ConsumerFailed != 0 || status.ConsumerPending != 0 || status.ConsumerRunning != 0 || status.ConsumerRetrying != 0 {
+		return jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	rows, err := pool.Query(ctx, `
+SELECT s.id, s.payer_id, to_char(s.collection_month, 'YYYY-MM'), s.consume_status
+FROM mrfpipeline.mrf_snapshots s
+JOIN mrfpipeline.monthly_release_mrf_sources a
+  ON a.payer_id = s.payer_id AND a.collection_month = s.collection_month
+ AND a.mrf_source_id = s.mrf_source_id
+WHERE a.payer_id = 'uhc' AND a.collection_month = $1::date
+ORDER BY s.id`, month+"-01")
+	if err != nil {
+		return jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+	}
+	defer rows.Close()
+	var total, succeeded int64
+	for rows.Next() {
+		var snapshotID int64
+		var payer, collectionMonth, consumeStatus string
+		if err := rows.Scan(&snapshotID, &payer, &collectionMonth, &consumeStatus); err != nil {
+			return jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+		}
+		total++
+		if consumeStatus != "succeeded" {
+			return jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		if err := consumeringest.InspectCompletedSnapshot(warehouse, payer, collectionMonth, consumeringest.FormatSnapshotOutputID(snapshotID)); err != nil {
+			return jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		batchIDs, err := release.ListPlanBatchIDs(ctx, pool, snapshotID)
+		if err != nil {
+			return jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+		}
+		if err := consumeringest.InspectPlanAssociations(warehouse, consumeringest.FormatSnapshotOutputID(snapshotID), batchIDs); err != nil {
+			return jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		succeeded++
+	}
+	if err := rows.Err(); err != nil {
+		return jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+	}
+	if total == 0 || succeeded != total {
+		return jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	return nil
+}
+
+func writeLiveReport(getenv func(string) string, report liveReport) error {
+	path := getenv(EnvRealReport)
+	if path == "" {
+		return nil
+	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(raw, '\n'), 0600)
 }
 
 func sameActiveRelation(left, right activeRelation) bool {
@@ -277,6 +470,13 @@ func liveEnv(getenv func(string) string, dbURL string) []string {
 	return out
 }
 
+func acceptanceCapacity(getenv func(string) string) string {
+	if raw := getenv(EnvRealResidentCapacity); raw != "" {
+		return raw
+	}
+	return "4"
+}
+
 func runBin(ctx context.Context, bin string, env []string, args ...string) error {
 	_, err := runBinOutput(ctx, bin, env, args...)
 	return err
@@ -298,9 +498,12 @@ func runBinOutput(ctx context.Context, bin string, env []string, args ...string)
 	return stdout.Bytes(), nil
 }
 
-func startWork(ctx context.Context, bin string, env []string) (*workProc, error) {
-	cmd := exec.Command(bin, "work")
+func startWork(ctx context.Context, bin string, env []string, role, residentCapacity string) (*workProc, error) {
+	cmd := exec.Command(bin, "work", "--role", role)
 	cmd.Env = env
+	if role == "control" {
+		cmd.Env = append(append([]string(nil), env...), config.EnvMRFResidentCapacity+"="+residentCapacity)
+	}
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -376,8 +579,8 @@ func waitRiverCount(ctx context.Context, dbURL string, proc *workProc, ready fun
 	}
 }
 
-func waitIdle(ctx context.Context, dbURL, artifactRoot, warehouse string, proc *workProc) ([2]int64, error) {
-	var peaks [2]int64
+func waitIdle(ctx context.Context, dbURL, artifactRoot, warehouse string, proc *workProc) ([3]int64, error) {
+	var peaks [3]int64
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
 		return peaks, jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
@@ -388,6 +591,18 @@ func waitIdle(ctx context.Context, dbURL, artifactRoot, warehouse string, proc *
 	idleStreak := 0
 	for {
 		samplePeaks(&peaks, artifactRoot, warehouse)
+		var held, capacity int64
+		if err := pool.QueryRow(ctx, `
+SELECT (SELECT count(*) FROM mrfpipeline.mrf_materialization_slots),
+       COALESCE((SELECT resident_capacity FROM mrfpipeline.pipeline_runtime WHERE id = true), 0)`).Scan(&held, &capacity); err != nil {
+			return peaks, jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+		}
+		if held > peaks[2] {
+			peaks[2] = held
+		}
+		if capacity <= 0 || held > capacity {
+			return peaks, jobs.Failure(jobs.FailureCapacityBelowHeld)
+		}
 		idle, err := domainIdle(ctx, pool)
 		if err != nil {
 			return peaks, err
@@ -498,7 +713,7 @@ func countWarehouseFiles(root string) (int64, error) {
 	return n, nil
 }
 
-func samplePeaks(peaks *[2]int64, artifactRoot, warehouse string) {
+func samplePeaks(peaks *[3]int64, artifactRoot, warehouse string) {
 	if n := dirBytes(artifactRoot); n > peaks[0] {
 		peaks[0] = n
 	}
