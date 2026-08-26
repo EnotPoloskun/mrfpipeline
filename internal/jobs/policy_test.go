@@ -38,6 +38,9 @@ func TestProductionPolicy(t *testing.T) {
 	if cfg.PeriodicJobs != nil {
 		t.Fatal("no periodic jobs")
 	}
+	if cfg.SkipUnknownJobCheck {
+		t.Fatal("base policy must keep unknown-job checks enabled")
+	}
 	want := map[string]int{
 		QueueControl:   1,
 		QueueDiscovery: 1, QueueTOCDownload: 4, QueueTOCParse: 2, QueueTOCImport: 2,
@@ -50,6 +53,17 @@ func TestProductionPolicy(t *testing.T) {
 		if cfg.Queues[name].MaxWorkers != n {
 			t.Fatalf("%s workers %d", name, cfg.Queues[name].MaxWorkers)
 		}
+	}
+}
+
+func TestInsertClientConfigRemainsStrict(t *testing.T) {
+	t.Parallel()
+	cfg := insertClientConfig(nil)
+	if cfg.SkipUnknownJobCheck {
+		t.Fatal("insert-only client must keep unknown-job checks enabled")
+	}
+	if cfg.Workers != nil || cfg.Queues != nil {
+		t.Fatal("insert-only client must not register runtime workers or queues")
 	}
 }
 

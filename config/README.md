@@ -22,5 +22,5 @@ The sample row is only a format example. Replace it with the operator's real
 service set. The pipeline passes this file directly to `mrfparser`; it does
 not add a header, reinterpret rows, or rewrite the file.
 
-The supplied `services3.csv` from the local test environment must therefore
-include the header above before it is used for a live parser run.
+Any externally supplied selector must include the header above before it is
+used for a live parser run.

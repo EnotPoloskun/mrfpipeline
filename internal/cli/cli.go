@@ -180,7 +180,7 @@ func runWork(ctx context.Context, getenv func(string) string, roles ...string) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.WorkMaxConns)
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.MaxConnsForRole(role))
 	if err != nil {
 		return err
 	}
@@ -274,7 +274,7 @@ func runDiscover(ctx context.Context, getenv func(string) string, payer, month, 
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.DiscoverMaxConns)
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.OperatorMaxConns)
 	if err != nil {
 		return "", err
 	}
@@ -300,7 +300,7 @@ func runMonthSetTotal(ctx context.Context, getenv func(string) string, payer, mo
 	if err != nil {
 		return "", err
 	}
-	p, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.DiscoverMaxConns)
+	p, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.OperatorMaxConns)
 	if err != nil {
 		return "", err
 	}
@@ -344,7 +344,7 @@ func runReconcile(ctx context.Context, getenv func(string) string) (string, erro
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.WorkMaxConns)
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.OperatorMaxConns)
 	if err != nil {
 		return "", err
 	}
@@ -393,7 +393,7 @@ func runRetry(ctx context.Context, getenv func(string) string, stage, id string)
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.WorkMaxConns)
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.OperatorMaxConns)
 	if err != nil {
 		return "", err
 	}
@@ -429,7 +429,7 @@ func runMonthStatus(ctx context.Context, getenv func(string) string, payer, mont
 			return "", err
 		}
 	}
-	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.DiscoverMaxConns)
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.OperatorMaxConns)
 	if err != nil {
 		return "", err
 	}
@@ -523,7 +523,7 @@ func runMonthActivate(ctx context.Context, getenv func(string) string, payer, mo
 	if err := consumeringest.CheckWarehouseCatalog(warehouseState, catalog, art, services.Path); err != nil {
 		return "", err
 	}
-	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.WorkMaxConns)
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.OperatorMaxConns)
 	if err != nil {
 		return "", err
 	}

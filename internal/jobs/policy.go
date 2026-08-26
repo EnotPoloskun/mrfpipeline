@@ -6,9 +6,11 @@ import (
 	"github.com/riverqueue/river"
 )
 
-// ProductionQueues is the fixed version 1 queue map. These values are not
-// environment variables or CLI flags.
-func ProductionQueues() map[string]river.QueueConfig {
+// productionQueues is the default policy map used while constructing a
+// client. Long-lived production workers replace it with QueuesForRole before
+// starting, so callers cannot accidentally start the obsolete all-in-one
+// topology through an exported queue helper.
+func productionQueues() map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
 		QueueControl:     {MaxWorkers: 1},
 		QueueDiscovery:   {MaxWorkers: 1},
@@ -23,14 +25,15 @@ func ProductionQueues() map[string]river.QueueConfig {
 	}
 }
 
-// ProductionPolicy returns the fixed River client policy. Retention, fetch
+// ProductionPolicy returns the fixed base River client policy. Long-lived
+// roles replace its queue map before starting. Retention, fetch
 // cooldown, and retry use River defaults (zero / nil here). JobTimeoutNone is
 // River's infinite timeout (-1); zero would become River's one-minute default.
 func ProductionPolicy() river.Config {
 	return river.Config{
 		JobTimeout:           JobTimeoutNone,
 		MaxAttempts:          MaxAttempts,
-		Queues:               ProductionQueues(),
+		Queues:               productionQueues(),
 		RescueStuckJobsAfter: RescueAfter,
 		Schema:               RiverSchema,
 		SoftStopTimeout:      GracefulStop,

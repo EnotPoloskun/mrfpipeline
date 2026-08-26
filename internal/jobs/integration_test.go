@@ -238,6 +238,10 @@ func TestIntegrationExecutionLocksUseSeparateDomains(t *testing.T) {
 		t.Fatalf("first source lock: lease=%v busy=%v err=%v", first, busy, err)
 	}
 	defer first.release(ctx)
+	if err := first.check(ctx); err != nil {
+		t.Fatalf("small source lock check: %v", err)
+	}
+	assertBigintAdvisoryLock(t, pool, first.key)
 	if _, busy, err := acquireExecutionLease(ctx, pool, LockNamespaceMRF, 41); err != nil || !busy {
 		t.Fatalf("same source lock was not busy: busy=%v err=%v", busy, err)
 	}
@@ -250,6 +254,10 @@ func TestIntegrationExecutionLocksUseSeparateDomains(t *testing.T) {
 	if err != nil || busy || third == nil {
 		t.Fatalf("consumer/output domain collided with MRF: lease=%v busy=%v err=%v", third, busy, err)
 	}
+	if err := third.check(ctx); err != nil {
+		t.Fatalf("small consumer lock check: %v", err)
+	}
+	assertBigintAdvisoryLock(t, pool, third.key)
 	third.release(ctx)
 }
 
@@ -303,7 +311,7 @@ func TestIntegrationExecutionLockLossInterruptsOperation(t *testing.T) {
 	for time.Now().Before(deadline) {
 		err := pool.QueryRow(context.Background(), `
 SELECT pid::int FROM pg_locks
-WHERE locktype = 'advisory' AND classid = $1::oid AND objid = $2::oid
+WHERE locktype = 'advisory' AND objsubid = 1 AND classid = $1::oid AND objid = $2::oid
   AND granted AND pid <> pg_backend_pid()
 
 LIMIT 1`, classID, objectID).Scan(&pid)
@@ -331,13 +339,17 @@ LIMIT 1`, classID, objectID).Scan(&pid)
 func TestIntegrationExecutionLocksSupportBigintIDs(t *testing.T) {
 	url, pool := testDB(t)
 	migrateAndFixtures(t, url, pool)
-	const id = int64(1<<32 + 17)
+	const id = int64(1<<31 + 17)
 	ctx := context.Background()
 	first, busy, err := acquireExecutionLease(ctx, pool, LockNamespaceMRF, id)
 	if err != nil || busy || first == nil {
 		t.Fatalf("large source lock: lease=%v busy=%v err=%v", first, busy, err)
 	}
 	defer first.release(ctx)
+	if err := first.check(ctx); err != nil {
+		t.Fatalf("large source lock check: %v", err)
+	}
+	assertBigintAdvisoryLock(t, pool, first.key)
 	if _, busy, err := acquireExecutionLease(ctx, pool, LockNamespaceMRF, id); err != nil || !busy {
 		t.Fatalf("large source lock was not exclusive: busy=%v err=%v", busy, err)
 	}
@@ -345,7 +357,31 @@ func TestIntegrationExecutionLocksSupportBigintIDs(t *testing.T) {
 	if err != nil || busy || consumer == nil {
 		t.Fatalf("large consumer lock: lease=%v busy=%v err=%v", consumer, busy, err)
 	}
+	if err := consumer.check(ctx); err != nil {
+		t.Fatalf("large consumer lock check: %v", err)
+	}
+	assertBigintAdvisoryLock(t, pool, consumer.key)
 	consumer.release(ctx)
+}
+
+func assertBigintAdvisoryLock(t *testing.T, pool *pgxpool.Pool, key int64) {
+	t.Helper()
+	classID := uint32(uint64(key) >> 32)
+	objectID := uint32(uint64(key))
+	var count int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*)
+FROM pg_locks
+WHERE locktype = 'advisory'
+  AND classid = $1::oid
+  AND objid = $2::oid
+  AND objsubid = 1
+  AND granted`, classID, objectID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("bigint advisory lock (%d,%d,1) count=%d", classID, objectID, count)
+	}
 }
 
 func TestIntegrationInsertTxVisibility(t *testing.T) {

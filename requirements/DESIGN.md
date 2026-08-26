@@ -138,6 +138,11 @@ Consumer roles own ingest and plan-attachment queues and remain one process
 until the pinned consumer writer contract permits distinct-output concurrency.
 All roles share the initialized artifact root, while one durable PostgreSQL
 resident-capacity limit bounds raw and in-progress MRF materializations.
+The local Compose defaults are `./local/provider-catalog` and
+`./local/services.csv`; MRF and consumer services are behind the `workers`
+profile so prerequisites and control can be started before processing. The
+redacted stalled-work query is run against private Compose PostgreSQL with
+`docker compose ... exec -T postgres psql ... < scripts/stalled-work.sql`.
 
 ```text
 mrfpipeline work --role control
@@ -196,7 +201,7 @@ design for migration and incident context. Where they mention feeds, sticky
 months, consumer `1.5.0`, or `current_*` views, the active contract above and
 the numbered requirements supersede them.
 
-### Purpose
+### Historical Purpose (Stories 01–13)
 
 CMS Transparency in Coverage data is published as a large graph rather than a
 single file:
@@ -625,9 +630,11 @@ discover:
 
 Each case schedules only the work that is newly eligible.
 
-## Queue topology
+## Historical queue topology (Stories 01–13; not active)
 
-The one worker process uses these fixed initial bounds:
+The original one-worker process used these fixed initial bounds. Current
+operation uses the role-specific queue table in the active Story 22 section
+above; this table is retained only for provenance:
 
 | Queue | Workers | Work |
 |---|---:|---|

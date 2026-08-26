@@ -101,7 +101,7 @@ func (l *executionLease) check(ctx context.Context) error {
 	if err := l.conn.QueryRow(ctx, `
 SELECT EXISTS (
   SELECT 1 FROM pg_locks
-  WHERE locktype = 'advisory' AND objid = $2::oid
+  WHERE locktype = 'advisory' AND objsubid = 1 AND objid = $2::oid
     AND classid = $1::oid
     AND granted AND pid = pg_backend_pid()
 )`, l.classID, l.objectID).Scan(&held); err != nil {

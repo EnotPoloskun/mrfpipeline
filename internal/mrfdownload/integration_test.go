@@ -42,8 +42,9 @@ func testDB(t *testing.T) *pgxpool.Pool {
 	if !strings.HasPrefix(cfg.ConnConfig.Database, "mrfpipeline_test_") {
 		t.Fatal("test database name must start with mrfpipeline_test_")
 	}
+	cfg.MaxConns = database.MRFMaxConns
 	database.TestDBMu.Lock()
-	pool, err := pgxpool.New(context.Background(), raw)
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		database.TestDBMu.Unlock()
 		t.Fatal("connect test database")

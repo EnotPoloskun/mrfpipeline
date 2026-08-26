@@ -14,8 +14,8 @@ x-pipeline-env: &pipeline-env
 
 x-pipeline-volumes: &pipeline-volumes
   - artifacts:/var/lib/mrfpipeline
-  - ${MRFPIPELINE_PROVIDER_CATALOG_DIR:-./config/provider-catalog}:/etc/mrfpipeline/provider-catalog:ro
-  - ${MRFPIPELINE_SERVICES_FILE:-./config/services.csv}:/etc/mrfpipeline/services.csv:ro
+  - ${MRFPIPELINE_PROVIDER_CATALOG_DIR:-./local/provider-catalog}:/etc/mrfpipeline/provider-catalog:ro
+  - ${MRFPIPELINE_SERVICES_FILE:-./local/services.csv}:/etc/mrfpipeline/services.csv:ro
 
 x-control-env: &control-env
   <<: *pipeline-env
@@ -58,6 +58,7 @@ services:
 
   mrf:
     <<: *pipeline-image
+    profiles: [workers]
     restart: "on-failure:5"
     command: ["work", "--role", "mrf"]
     depends_on:
@@ -68,6 +69,7 @@ services:
 
   consumer:
     <<: *pipeline-image
+    profiles: [workers]
     restart: "on-failure:5"
     command: ["work", "--role", "consumer"]
     depends_on:

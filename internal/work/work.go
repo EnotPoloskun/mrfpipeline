@@ -23,7 +23,7 @@ import (
 	"github.com/riverqueue/river"
 )
 
-// Runtime is the production River process for Stories 06–12.
+// Runtime is one explicit role-specific production River process.
 type Runtime struct {
 	Role             string
 	ResidentCapacity int64

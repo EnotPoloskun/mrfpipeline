@@ -91,9 +91,11 @@ Compose forwards the agent through its `build.ssh: [default]` configuration
 and builds the image used by every service. A direct build is also supported:
 `DOCKER_BUILDKIT=1 docker build --ssh default --tag mrfpipeline:local .`.
 
+The key must be able to read every private sibling module named by `go.mod`.
 If the SSH agent or private-module access is missing, the build fails during
-dependency resolution. No database URL, accepted catalog, host path, or
-credential is a build argument or image layer. The Dockerfile's `CGO_ENABLED=0`
+dependency resolution. The key is forwarded through the SSH agent only; it is
+never a build argument or image layer. No database URL, accepted catalog, or
+host path is a build argument or image layer. The Dockerfile's `CGO_ENABLED=0`
 setting can be compile-checked on the host with `CGO_ENABLED=0 go build ./cmd/mrfpipeline`;
 a host-built
 macOS/Windows binary is not a substitute for the Linux container image.
@@ -114,9 +116,9 @@ cp config/services.csv.example local/services.csv
 Edit `.env` so `MRFPIPELINE_PROVIDER_CATALOG_DIR` points to the operator's
 accepted catalog and `MRFPIPELINE_SERVICES_FILE` points to the compatible
 selector. The selector must keep the exact
-`billing_code_type,billing_code` header. The supplied machine-specific
-`services3.csv` is not modified or reinterpreted; make a compatible copy with
-that header before using it. The catalog must contain a real `manifest.json`
+`billing_code_type,billing_code` header. An externally supplied selector is not
+modified or reinterpreted; make a compatible copy with that header before
+using it. The catalog must contain a real `manifest.json`
 and catalog files accepted by the pinned consumer. Missing or incompatible
 inputs produce the existing sanitized runtime configuration failure.
 
@@ -184,6 +186,10 @@ the correctly configured worker host.
 local topology. It uses PostgreSQL's Compose service name on the private
 Compose network; PostgreSQL is intentionally not published to the host. The
 `cli` service is the preferred one-shot path for database commands.
+The MRF and consumer services use the `workers` profile, so an unqualified
+`docker compose up -d` starts only PostgreSQL, migration, and control
+prerequisites; use the explicit worker-profile command below to start
+processing.
 
 Build and start in stages. Staging makes control initialization visible and
 avoids treating Compose's `service_started` dependency as a readiness signal:
@@ -204,7 +210,7 @@ following logs with Ctrl-C (this does not stop the container), then start the
 MRF and consumer roles:
 
 ```text
-docker compose -f docker-compose.story21.yml up -d --scale mrf=2 mrf consumer
+docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=2 mrf consumer
 ```
 
 The control service has no automatic restart. A permanent capacity or
@@ -253,7 +259,7 @@ docker compose -f docker-compose.story21.yml --profile operator run --rm cli mon
 Stop roles in reverse ownership order after a run:
 
 ```text
-docker compose -f docker-compose.story21.yml stop consumer mrf control
+docker compose -f docker-compose.story21.yml --profile workers stop consumer mrf control
 ```
 
 `docker compose down` removes containers and the network but keeps named
@@ -429,8 +435,14 @@ raw errors, URLs, paths, SQL, and response text are never logged. A runtime
 `worker_lease_lost` record means the process stopped after its lease health
 check failed.
 
-For stalled work, run the repository's redacted copy-paste query on an
-authorized PostgreSQL connection:
+For stalled work in the private Compose PostgreSQL, run the repository's
+redacted query through the database container:
+
+```text
+docker compose -f docker-compose.story21.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql
+```
+
+For an externally reachable PostgreSQL connection, use:
 
 ```text
 psql "$MRFPIPELINE_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/stalled-work.sql

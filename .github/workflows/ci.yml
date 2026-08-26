@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
+    branches: [master]
   pull_request:
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -52,21 +55,24 @@ jobs:
       - name: Prefer SSH for GitHub module fetches
         run: git config --global url."git@github.com:".insteadOf "https://github.com/"
 
-      - name: Test
+      - name: Ordinary non-database tests
         run: go test ./...
 
       - name: Focused race tests
         run: go test -race ./internal/jobs ./internal/mrfparse ./internal/work ./internal/reconcile
 
-      - name: Vet
+      - name: Go vet
         run: go vet ./...
 
       - name: Validate Compose configuration
+        env:
+          COMPOSE_PROFILES: operator,workers
         run: docker compose -f docker-compose.story21.yml config --quiet
 
       - name: Build Compose image
         env:
           DOCKER_BUILDKIT: '1'
+          COMPOSE_PROFILES: operator,workers
         run: docker compose -f docker-compose.story21.yml build
 
       - name: PostgreSQL integration suite

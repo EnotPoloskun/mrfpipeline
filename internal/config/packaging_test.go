@@ -44,6 +44,9 @@ func TestLocalPackagingContract(t *testing.T) {
 		"command: [\"work\", \"--role\", \"mrf\"]",
 		"command: [\"work\", \"--role\", \"consumer\"]",
 		"profiles: [operator]",
+		"profiles: [workers]",
+		"${MRFPIPELINE_PROVIDER_CATALOG_DIR:-./local/provider-catalog}",
+		"${MRFPIPELINE_SERVICES_FILE:-./local/services.csv}",
 		"restart: \"no\"",
 		"restart: \"on-failure:5\"",
 	} {
@@ -69,11 +72,12 @@ func TestLocalPackagingContract(t *testing.T) {
 		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total",
 		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli retry",
 		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli reconcile",
+		"docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=2 mrf consumer",
 		"docker compose -f docker-compose.story21.yml stop control",
 		"worker_started",
 		"CGO_ENABLED=0 go build ./cmd/mrfpipeline",
 		"go test -p 1 ./...",
-		"scripts/stalled-work.sql",
+		"docker compose -f docker-compose.story21.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql",
 		"MRFPIPELINE_PRIVATE_MODULES_SSH_KEY",
 	} {
 		if !strings.Contains(readme, fragment) {
@@ -90,6 +94,9 @@ func TestLocalPackagingContract(t *testing.T) {
 		"go test -race ./internal/jobs ./internal/mrfparse ./internal/work ./internal/reconcile",
 		"docker compose -f docker-compose.story21.yml config --quiet",
 		"docker compose -f docker-compose.story21.yml build",
+		"COMPOSE_PROFILES: operator,workers",
+		"workflow_dispatch:",
+		"branches: [master]",
 		"mrfpipeline_test_ci",
 	} {
 		if !strings.Contains(workflow, fragment) {

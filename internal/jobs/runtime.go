@@ -27,11 +27,8 @@ func NewInsertClient(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logge
 	if err := database.ValidateCurrent(ctx, pool); err != nil {
 		return nil, err
 	}
-	cfg := ProductionPolicy()
-	cfg.Workers = nil
-	cfg.Queues = nil
-	cfg.Logger = logger
-	client, err := river.NewClient(riverpgxv5.New(pool), &cfg)
+	cfg := insertClientConfig(logger)
+	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {
 		return nil, jobErr("client")
 	}
@@ -56,14 +53,24 @@ func NewRuntime(ctx context.Context, pool *pgxpool.Pool, workers *river.Workers,
 	cfg := ClientConfig(workers, queues, handler, logger)
 	// Role-specific clients produce successor work owned by another role (for
 	// example control schedules MRF downloads). Registration is intentionally
-	// limited to the current role's workers, so River must allow those durable
-	// inserts without requiring placeholder workers in the producer process.
+	// limited to the current role's workers, so only this runtime path allows
+	// those durable inserts without requiring placeholder workers in the
+	// producer process. Insert-only clients remain strict.
 	cfg.SkipUnknownJobCheck = true
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {
 		return nil, jobErr("client")
 	}
 	return client, nil
+}
+
+func insertClientConfig(logger *slog.Logger) *river.Config {
+	cfg := ProductionPolicy()
+	cfg.Workers = nil
+	cfg.Queues = nil
+	cfg.SkipUnknownJobCheck = false
+	cfg.Logger = logger
+	return &cfg
 }
 
 // Shutdown stops fetching, waits GracefulStop for cooperative jobs, then
