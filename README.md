@@ -3,18 +3,20 @@
 Operator executable for CMS Transparency in Coverage discovery, TOC and MRF
 processing, warehouse ingestion, and additive plan attachment.
 
-Version 1 is specified by Stories 01–22 in [`requirements/`](requirements/).
+Version 1 is specified by Stories 01–23 in [`requirements/`](requirements/).
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
 ## Feed-free monthly-release contract
 
 Stories [14](requirements/14-feed-free-domain-schema.md) through
-[22](requirements/22-runnable-local-acceptance-and-test-convergence.md) define
-the current rebuild-only contract. Story 21 adds bounded MRF admission,
-resident slots, and ordinary role-specific River workers. Story 22 makes the
-local image, Compose recipe, and verification contract runnable. These stories
-do not upgrade an old populated warehouse in place.
+[22](requirements/22-runnable-local-acceptance-and-test-convergence.md) and
+[23](requirements/23-terminal-parse-slot-release.md) define the current
+rebuild-only contract. Story 21 adds bounded MRF admission, resident slots,
+and ordinary role-specific River workers. Story 22 makes the local image,
+Compose recipe, and verification contract runnable. Story 23 releases a slot
+after terminal parse cleanup. These stories do not upgrade an old populated
+warehouse in place.
 
 The target removes `mrf_feeds` and `feed_id`, identifies an MRF source capture
 by exact URL + collection month, identifies a consumer snapshot by source +
@@ -113,14 +115,50 @@ mkdir -p local/provider-catalog
 cp config/services.csv.example local/services.csv
 ```
 
+Copy those files **before** any Compose command that mounts them. A missing
+`local/services.csv` is created as a directory, and control then fails as a
+runtime configuration error.
+
 Edit `.env` so `MRFPIPELINE_PROVIDER_CATALOG_DIR` points to the operator's
 accepted catalog and `MRFPIPELINE_SERVICES_FILE` points to the compatible
-selector. The selector must keep the exact
-`billing_code_type,billing_code` header. An externally supplied selector is not
-modified or reinterpreted; make a compatible copy with that header before
-using it. The catalog must contain a real `manifest.json`
-and catalog files accepted by the pinned consumer. Missing or incompatible
-inputs produce the existing sanitized runtime configuration failure.
+selector.
+
+The selector is the CPT (and other billing-code) list. It is not the provider
+catalog. It must keep the exact header `billing_code_type,billing_code`. An
+externally supplied selector is not modified or reinterpreted; make a
+compatible copy with that header before using it:
+
+```csv
+billing_code_type,billing_code
+CPT,99213
+```
+
+The catalog is the `mrfenricher` Parquet export (NPIs and taxonomies), not a
+CPT list. The pipeline never starts enricher. Produce it against a **separate**
+enricher database, then export into the mounted directory:
+
+```text
+export MRFENRICHER_DATABASE_URL=<enricher postgres URL>
+mrfenricher migrate
+mrfenricher refresh --nppes <NPPES_Data_Dissemination_<Month>_<Year>_V2.zip> --taxonomies <taxonomy.csv>
+mrfenricher export --output ./local/provider-catalog
+```
+
+The taxonomy CSV is one column with header `taxonomy_code`. The NPPES ZIP must
+keep the monthly Version 2 basename; weekly, V1, and renamed files are
+rejected. The catalog must contain a real `manifest.json` plus `providers/` and
+`provider_taxonomies/` files accepted by the pinned consumer. Confirm:
+
+```text
+test -f local/provider-catalog/manifest.json && echo catalog_ok
+test -f local/services.csv && echo services_ok
+```
+
+Missing or incompatible inputs produce the existing sanitized runtime
+configuration failure. The first successful ingest pins the catalog under the
+warehouse. Changing taxonomies, NPPES month, or catalog files while that
+warehouse exists fails closed (`consumer_ingest_provider_changed`); start a
+new warehouse instead of refreshing in place.
 
 ## Commands
 
@@ -190,6 +228,33 @@ The MRF and consumer services use the `workers` profile, so an unqualified
 `docker compose up -d` starts only PostgreSQL, migration, and control
 prerequisites; use the explicit worker-profile command below to start
 processing.
+
+All operator commands below run from the repository root. Repeat
+`-f docker-compose.story21.yml`, or export `COMPOSE_FILE=docker-compose.story21.yml`.
+Compose does not take a host pipeline database URL; workers use the unpublished
+Compose PostgreSQL. Do not `--scale consumer=2`: the extra replica exits
+`worker_busy`.
+
+| Goal | Command |
+|---|---|
+| Build image | `DOCKER_BUILDKIT=1 docker compose -f docker-compose.story21.yml build` |
+| Direct image build | `DOCKER_BUILDKIT=1 docker build --ssh default --tag mrfpipeline:local .` |
+| Migrate | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli migrate` |
+| Start control | `docker compose -f docker-compose.story21.yml up -d control` |
+| Follow control | `docker compose -f docker-compose.story21.yml logs -f --tail=50 control` |
+| Start MRF + consumer | `docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=2 mrf consumer` |
+| Bounded discover | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 1 --mrf-source-limit 3` |
+| Month status | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>` |
+| Raise MRF target | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total <N\|all>` |
+| Retry one stage | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli retry --stage <kind> --id <domain-id>` |
+| Reconcile | stop control, then `docker compose -f docker-compose.story21.yml --profile operator run --rm cli reconcile` |
+| Stalled-work query | `docker compose -f docker-compose.story21.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql` |
+| Worker logs | `docker compose -f docker-compose.story21.yml logs -f --tail=50 control mrf consumer` |
+| Stop roles | `docker compose -f docker-compose.story21.yml --profile workers stop consumer mrf control` |
+
+If Compose build exits immediately with a Buildx context error (common when the
+Docker context is Colima rather than Docker Desktop), build the same tag with
+the direct command above, or `docker buildx build --ssh default --progress=plain --load --tag mrfpipeline:local .`. Continue at migrate once `docker images mrfpipeline:local` shows a real image.
 
 Build and start in stages. Staging makes control initialization visible and
 avoids treating Compose's `service_started` dependency as a readiness signal:
@@ -373,32 +438,62 @@ mrfpipeline month status > active-output-relation.json
 The service refreshes on startup/control-plane change, then serves the captured
 relation without inferring membership from other warehouse outputs.
 
-## First live run
+## Local runbook
 
-`--limit` bounds newly admitted TOCs, not MRF count or bytes. Start with
-`--limit 1` and an explicit `--mrf-source-limit 3`, then increase the
-cumulative target with `month sources set-total` after inspecting the sample.
-Resident capacity is a shared count of raw/in-progress sources; it is not a
-byte quota.
+Compose is the preferred local path. Host `mrfpipeline` uses the same verbs
+with `MRFPIPELINE_*` set. Replace `<YYYY-MM>` with the collection month you
+intend (CMS listing month, exactly `YYYY-MM`).
 
-The numeric target is cumulative even when PostgreSQL already contains many
-pending sources: only the stable selected prefix up to the target can acquire
-resident slots and executable MRF jobs. After those selected sources drain,
-status remains partial with the `mrf_source_target_partial` blocker and
-activation is rejected without mutation. Increase the target in another
-bounded step, or set it to `all` only when you intentionally accept processing
-every known source for the payer/month:
+`--limit` is newly admitted **TOC files**, required, and always a positive
+integer. Unlimited TOC discovery is out of version 1 scope. `--mrf-source-limit`
+is the cumulative **MRF source** target (`N` or `all`). Resident capacity
+(`MRFPIPELINE_MRF_RESIDENT_CAPACITY`, default `2`) is how many selected raw
+sources may occupy disk at once. It is not a byte quota and not a cap on how
+many sources you can eventually process.
+
+You do not drop MRF files into the repo. UHC listing/CDN supplies them. Raising
+the target, or admitting more TOCs, is how a test processes more MRF sources.
+
+### First run (bounded sample)
+
+1. Prepare `.env`, a real catalog with `manifest.json`, and a selector with the
+   `billing_code_type,billing_code` header. See [External local inputs](#external-local-inputs).
+2. Load an SSH agent that can read the private sibling modules, then build
+   `mrfpipeline:local` (Compose build or the direct `docker build --ssh default`
+   command).
+3. Migrate, start control, and wait for `worker_started`:
 
 ```text
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month 2026-09 --total 6
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month 2026-09
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli migrate
+docker compose -f docker-compose.story21.yml up -d control
+docker compose -f docker-compose.story21.yml logs -f --tail=50 control
 ```
 
-Do not use activation as a sample check. Activation requires target `all`, all
-known sources and release gates to drain, and complete consumer/plan output.
-The active `(payer, collection_month, output_id)` relation is a handoff for a
-future serving process; this repository creates no query HTTP service or SQL
-query facade.
+4. After a JSON line with `msg=worker_started`, `kind=runtime`, and
+   `role=control`, stop following logs (Ctrl-C does not stop the container) and
+   start workers:
+
+```text
+docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=2 mrf consumer
+```
+
+5. Enqueue one TOC and three MRF sources. Discover returns identifiers and does
+   not wait for downloads:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 1 --mrf-source-limit 3
+```
+
+6. Watch until selected work drains:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.story21.yml logs -f --tail=50 control mrf consumer
+```
+
+Success for this sample: selected sources download, parse, and ingest; status
+stays not activatable; blockers include `mrf_source_target_partial`. Do **not**
+run `month activate` on a numeric sample.
 
 Before a bounded run, record free space on the artifact and warehouse
 filesystems. During the run, monitor download and parsed bytes, warehouse
@@ -407,12 +502,107 @@ counts. Version 1 does not guess required disk from HTTP headers. Stop the
 worker if capacity approaches the operator safety threshold.
 
 An interrupted or failed download keeps its selected source and slot; the
-existing staging directory is used for cleanup/resume. A parse failure keeps
-the raw file and slot, so retrying parse does not redownload. On successful
-parse the worker validates output, deletes raw and parser staging, then
-releases the slot and wakes control to admit the next source. A terminal
-download with no raw or staging artifact releases its slot; a terminal parse
-does not.
+existing staging directory is used for cleanup/resume. Automatic parse retries
+keep the raw file and slot, so they do not redownload. When parse reaches a
+terminal failure, the worker removes unpublished parsed output, parser staging,
+and raw bytes, marks download blocked, then releases the slot and wakes control.
+The source remains selected and failed, and `retry --stage mrf.parse` is the
+only way to reopen it: it reuses valid raw bytes when present and rematerializes
+the download when they are gone. `mrf.parse` has four attempts including the
+first; other stages retain eight. After deploy, reconcile repairs already
+terminal parses that still hold slots; do not delete slot rows from SQL or
+River UI.
+
+### Subsequent runs (same Compose volumes)
+
+Named volumes keep PostgreSQL, artifacts, and the warehouse across container
+restarts. Do not `docker compose down -v` unless you intend to delete that
+state.
+
+If roles were stopped:
+
+```text
+docker compose -f docker-compose.story21.yml up -d control
+# wait for worker_started, then:
+docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=2 mrf consumer
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
+```
+
+`migrate` is repeatable and a no-op when schemas are current. Do not enqueue
+another `discover` just to resume: control already wakes eligible work.
+
+Same payer/month, still `building`: use status, `retry`, or `set-total` as
+below. A later `discover` with `--mrf-source-limit` must match the durable
+target or it fails `source_target_conflict`; omit `--mrf-source-limit` to reuse
+it.
+
+New collection month: keep the same catalog/selector/warehouse only if the
+pinned catalog is unchanged. Enqueue a new `discover` with that month and an
+explicit `--mrf-source-limit` (required while the new release is unset).
+
+### Admit more MRF sources (same test month)
+
+The numeric target is cumulative even when PostgreSQL already contains many
+pending sources: only the stable selected prefix up to the target can acquire
+resident slots and executable MRF jobs. After those selected sources drain,
+status remains partial with the `mrf_source_target_partial` blocker and
+activation is rejected without mutation.
+
+To process more **already imported** MRF URLs, raise the target. It cannot
+decrease, and `all` cannot be changed back to a number:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month 2026-09 --total 6
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month 2026-09
+```
+
+`--total` must be greater than the current numeric target. Control then selects
+the next stable prefix and fills free resident slots. Leave workers running.
+
+If `known_sources` is still below the new target, import more TOC files so more
+MRF URLs exist, then raise the target if needed:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 2
+```
+
+`--limit 2` admits two **additional** TOCs. Omit `--mrf-source-limit` so the
+existing target is reused.
+
+### Run without an MRF cap
+
+There is no unlimited TOC flag; pick a `--limit` large enough for the listing
+you want. To select every known MRF source for the month, use `all`.
+
+On a **new** unset release:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 1 --mrf-source-limit all
+```
+
+On an existing numeric building release:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total all
+```
+
+`all` still processes only sources discovered from admitted TOCs. Raise
+`--limit` (new TOCs) if the listing has more TOC files you have not admitted.
+Disk, warehouse, and River history remain operator-bounded; raise
+`MRFPIPELINE_MRF_RESIDENT_CAPACITY` only if you want more concurrent raw
+sources, not as a substitute for `all`.
+
+Do not use activation as a sample check. Activation requires target `all`, all
+known sources and release gates to drain, and complete consumer/plan output.
+Use it only after targeted status reports `database_ready:true`:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli month activate --payer uhc --collection-month <YYYY-MM>
+```
+
+The active `(payer, collection_month, output_id)` relation is a handoff for a
+future serving process; this repository creates no query HTTP service or SQL
+query facade.
 
 ## Crash, retry, and reconciliation
 
@@ -654,8 +844,22 @@ export RIVER_SCHEMA=mrfpipeline_river
 riverui
 ```
 
+Against unpublished Compose PostgreSQL, run the UI on the Compose network
+instead (`<project>` is usually `mrfpipeline`):
+
+```text
+docker run --rm -p 8080:8080 --network <project>_default \
+  -e DATABASE_URL=<same URL as the worker> \
+  -e RIVER_SCHEMA=mrfpipeline_river \
+  ghcr.io/riverqueue/riverui:latest
+```
+
+Then open http://localhost:8080. The UI shows River queues and jobs, not domain
+readiness; keep using `month status` for that.
+
 Pause and resume only. Pause stops fetching new jobs and does not cancel
-in-flight work. Do not cancel, retry, or delete jobs from the UI.
+in-flight work. Do not cancel, retry, or delete jobs from the UI. Use
+`retry` / `reconcile` for those.
 
 ## Limitations
 

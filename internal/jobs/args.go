@@ -148,7 +148,7 @@ type MRFParseArgs struct {
 
 func (MRFParseArgs) Kind() string { return KindMRFParse }
 func (MRFParseArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{Queue: QueueMRFParse}
+	return river.InsertOpts{Queue: QueueMRFParse, MaxAttempts: 4}
 }
 func (a *MRFParseArgs) UnmarshalJSON(data []byte) error {
 	return unmarshalOnePositiveInt64(data, FieldMRFSourceID, &a.MRFSourceID)

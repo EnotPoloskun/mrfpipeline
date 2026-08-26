@@ -9,7 +9,7 @@ import (
 
 // InsertTx inserts a typed River job on a caller-owned transaction. It never
 // opens or commits a transaction. Insert options are taken only from the job
-// args (queue). UniqueOpts, tags, and metadata are never set.
+// args. UniqueOpts, tags, and metadata are never set.
 func InsertTx(ctx context.Context, client *river.Client[pgx.Tx], tx pgx.Tx, args river.JobArgs) (int64, error) {
 	if ctx == nil {
 		panic("nil context")

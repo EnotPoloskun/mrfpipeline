@@ -62,6 +62,13 @@ func TestProductionJobContracts(t *testing.T) {
 		if opts.Queue != tc.queue {
 			t.Fatalf("%s queue %q", tc.kind, opts.Queue)
 		}
+		if tc.kind == KindMRFParse {
+			if opts.MaxAttempts != 4 {
+				t.Fatalf("%s max attempts %d", tc.kind, opts.MaxAttempts)
+			}
+		} else if opts.MaxAttempts != 0 {
+			t.Fatalf("%s max attempts %d", tc.kind, opts.MaxAttempts)
+		}
 		if opts.UniqueOpts.ByArgs || opts.UniqueOpts.ByPeriod != 0 || opts.UniqueOpts.ByQueue || opts.UniqueOpts.ExcludeKind || len(opts.UniqueOpts.ByState) != 0 || len(opts.Tags) != 0 || len(opts.Metadata) != 0 {
 			t.Fatalf("%s insert opts %+v", tc.kind, opts)
 		}

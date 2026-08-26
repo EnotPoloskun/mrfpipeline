@@ -128,6 +128,9 @@ func Run(ctx context.Context, p Params) (Report, error) {
 	if err := repairCurrentJobs(ctx, p.Pool, client, &report); err != nil {
 		return report, err
 	}
+	if err := releaseTerminalParses(ctx, p.Pool, client, p.Workspace, p.ServicesPath, logger); err != nil {
+		return report, err
+	}
 	if err := releaseEmptyTerminalDownloads(ctx, p.Pool, p.Workspace, logger); err != nil {
 		return report, err
 	}
@@ -153,6 +156,9 @@ func Run(ctx context.Context, p Params) (Report, error) {
 	// Staging cleanup can make a previously terminal, empty download eligible
 	// for slot release. Re-run the repair after that cleanup so the refill wake
 	// is published in this same reconciliation pass.
+	if err := releaseTerminalParses(ctx, p.Pool, client, p.Workspace, p.ServicesPath, logger); err != nil {
+		return report, err
+	}
 	if err := releaseEmptyTerminalDownloads(ctx, p.Pool, p.Workspace, logger); err != nil {
 		return report, err
 	}

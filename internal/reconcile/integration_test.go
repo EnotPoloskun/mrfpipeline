@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
@@ -77,6 +78,64 @@ func workspace(t *testing.T) *artifact.Workspace {
 		t.Fatal(err)
 	}
 	return ws
+}
+
+func insertTerminalParseSource(t *testing.T, pool *pgxpool.Pool, download string, slot bool) int64 {
+	t.Helper()
+	ctx := context.Background()
+	month := "2026-08-01"
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', $1) ON CONFLICT DO NOTHING`, month); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_sources
+    (source_url, collection_month, download_status, parse_status, failure_code)
+VALUES ($1, $2, $3, 'failed', $4)
+RETURNING id`, uniqueURL("terminal-parse"), month, download, jobs.FailureMRFParseExecutionFailed).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots
+    (mrf_source_id, payer_id, collection_month, consume_status)
+VALUES ($1, 'uhc', $2, 'blocked')`, sourceID, month); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id)
+VALUES ('uhc', $2, $1)`, sourceID, month); err != nil {
+		t.Fatal(err)
+	}
+	if slot {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_materialization_slots (mrf_source_id)
+VALUES ($1)`, sourceID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return sourceID
+}
+
+func writeRawDownload(t *testing.T, ws *artifact.Workspace, sourceID int64) {
+	t.Helper()
+	data, err := ws.DownloadDataPath(artifact.KindMRF, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(data)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("raw")
+	if err := os.WriteFile(data, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), []byte(`{"schema_version":"1.0.0","byte_count":3}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestIntegrationMRFStagingCleanupRespectsSourceLock(t *testing.T) {
@@ -457,9 +516,139 @@ SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindCont
 	}
 }
 
+func TestIntegrationRetryParseArtifactTable(t *testing.T) {
+	t.Run("valid raw with held slot inserts parse", func(t *testing.T) {
+		pool := testDB(t)
+		ws := workspace(t)
+		sourceID := insertTerminalParseSource(t, pool, jobs.StatusSucceeded, true)
+		writeRawDownload(t, ws, sourceID)
+		result, err := Retry(context.Background(), pool, jobs.KindMRFParse, sourceID, ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Stage != jobs.KindMRFParse || result.RiverJobID <= 0 {
+			t.Fatalf("result %+v", result)
+		}
+		var parseStatus string
+		var parseJob int64
+		if err := pool.QueryRow(context.Background(), `
+SELECT parse_status, parse_river_job_id
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&parseStatus, &parseJob); err != nil {
+			t.Fatal(err)
+		}
+		if parseStatus != jobs.StatusPending || parseJob != result.RiverJobID {
+			t.Fatalf("parse state %s %d", parseStatus, parseJob)
+		}
+		var maxAttempts int
+		if err := pool.QueryRow(context.Background(), `
+SELECT max_attempts FROM mrfpipeline_river.river_job WHERE id = $1`, result.RiverJobID).Scan(&maxAttempts); err != nil {
+			t.Fatal(err)
+		}
+		if maxAttempts != 4 {
+			t.Fatalf("max attempts %d", maxAttempts)
+		}
+		var downloads int
+		if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload).Scan(&downloads); err != nil {
+			t.Fatal(err)
+		}
+		if downloads != 0 {
+			t.Fatalf("download jobs %d", downloads)
+		}
+	})
+	t.Run("no raw with held slot inserts download", func(t *testing.T) {
+		pool := testDB(t)
+		ws := workspace(t)
+		sourceID := insertTerminalParseSource(t, pool, jobs.StatusBlocked, true)
+		result, err := Retry(context.Background(), pool, jobs.KindMRFParse, sourceID, ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Stage != jobs.KindMRFDownload || result.RiverJobID <= 0 {
+			t.Fatalf("result %+v", result)
+		}
+		var download, parse string
+		var downloadJob, parseJob *int64
+		if err := pool.QueryRow(context.Background(), `
+SELECT download_status, parse_status, download_river_job_id, parse_river_job_id
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&download, &parse, &downloadJob, &parseJob); err != nil {
+			t.Fatal(err)
+		}
+		if download != jobs.StatusPending || parse != jobs.StatusBlocked || downloadJob == nil || parseJob != nil {
+			t.Fatalf("state download=%s parse=%s download_job=%v parse_job=%v", download, parse, downloadJob, parseJob)
+		}
+	})
+	t.Run("no raw and no slot waits for admission", func(t *testing.T) {
+		pool := testDB(t)
+		ws := workspace(t)
+		sourceID := insertTerminalParseSource(t, pool, jobs.StatusBlocked, false)
+		if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.pipeline_runtime (artifact_root, resident_capacity)
+VALUES ($1, 1)`, ws.Root); err != nil {
+			t.Fatal(err)
+		}
+		client, err := jobs.NewInsertClient(context.Background(), pool, jobs.NewLogger(io.Discard))
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := Retry(context.Background(), pool, jobs.KindMRFParse, sourceID, ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Stage != jobs.KindMRFParse || result.RiverJobID != 0 {
+			t.Fatalf("result %+v", result)
+		}
+		var download, parse string
+		var downloadJob, parseJob *int64
+		var failure *string
+		if err := pool.QueryRow(context.Background(), `
+SELECT download_status, parse_status, download_river_job_id, parse_river_job_id, failure_code
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&download, &parse, &downloadJob, &parseJob, &failure); err != nil {
+			t.Fatal(err)
+		}
+		if download != jobs.StatusBlocked || parse != jobs.StatusBlocked || downloadJob != nil || parseJob != nil || failure != nil {
+			t.Fatalf("waiting state download=%s parse=%s download_job=%v parse_job=%v failure=%v", download, parse, downloadJob, parseJob, failure)
+		}
+		if err := admission.ScheduleWaiting(context.Background(), pool, client); err != nil {
+			t.Fatal(err)
+		}
+		var held bool
+		if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (
+    SELECT 1 FROM mrfpipeline.mrf_materialization_slots WHERE mrf_source_id = $1
+)`, sourceID).Scan(&held); err != nil {
+			t.Fatal(err)
+		}
+		if !held {
+			t.Fatal("source was not admitted")
+		}
+		if err := pool.QueryRow(context.Background(), `
+SELECT download_status, download_river_job_id, parse_river_job_id
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&download, &downloadJob, &parseJob); err != nil {
+			t.Fatal(err)
+		}
+		if download != jobs.StatusPending || downloadJob == nil || parseJob != nil {
+			t.Fatalf("scheduled state download=%s download_job=%v parse_job=%v", download, downloadJob, parseJob)
+		}
+		var downloadJobs, parseJobs int
+		if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload).Scan(&downloadJobs); err != nil {
+			t.Fatal(err)
+		}
+		if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFParse).Scan(&parseJobs); err != nil {
+			t.Fatal(err)
+		}
+		if downloadJobs != 1 || parseJobs != 0 {
+			t.Fatalf("scheduled jobs download=%d parse=%d", downloadJobs, parseJobs)
+		}
+	})
+}
+
 func TestIntegrationReconcileReleasesTerminalSlotAfterStagingCleanup(t *testing.T) {
 	pool := testDB(t)
 	ctx := context.Background()
+
 	month := "2026-08-01"
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
@@ -509,6 +698,79 @@ INSERT INTO mrfpipeline.mrf_materialization_slots (mrf_source_id) VALUES ($1)`, 
 	}
 	if held != 0 || events != 1 {
 		t.Fatalf("post-cleanup terminal repair held=%d events=%d", held, events)
+	}
+}
+
+func TestIntegrationReconcileTerminalParseOccupancy(t *testing.T) {
+	t.Run("held slot with raw", func(t *testing.T) {
+		pool := testDB(t)
+		ws := workspace(t)
+		sourceID := insertTerminalParseSource(t, pool, jobs.StatusSucceeded, true)
+		writeRawDownload(t, ws, sourceID)
+		_ = runPass(t, pool, ws)
+		assertTerminalParseReleased(t, pool, ws, sourceID)
+	})
+	t.Run("held slot without raw", func(t *testing.T) {
+		pool := testDB(t)
+		ws := workspace(t)
+		sourceID := insertTerminalParseSource(t, pool, jobs.StatusSucceeded, true)
+		_ = runPass(t, pool, ws)
+		assertTerminalParseReleased(t, pool, ws, sourceID)
+	})
+	t.Run("cleaned terminal parse is not reopened", func(t *testing.T) {
+		pool := testDB(t)
+		ws := workspace(t)
+		sourceID := insertTerminalParseSource(t, pool, jobs.StatusBlocked, false)
+		_ = runPass(t, pool, ws)
+		var status string
+		var jobID *int64
+		if err := pool.QueryRow(context.Background(), `
+SELECT parse_status, parse_river_job_id
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&status, &jobID); err != nil {
+			t.Fatal(err)
+		}
+		if status != jobs.StatusFailed || jobID != nil {
+			t.Fatalf("terminal parse reopened: status=%s job=%v", status, jobID)
+		}
+		var parseJobs int
+		if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`,
+			jobs.KindMRFParse).Scan(&parseJobs); err != nil {
+			t.Fatal(err)
+		}
+		if parseJobs != 0 {
+			t.Fatalf("parse jobs %d", parseJobs)
+		}
+	})
+}
+
+func assertTerminalParseReleased(t *testing.T, pool *pgxpool.Pool, ws *artifact.Workspace, sourceID int64) {
+	t.Helper()
+	var download, parse string
+	var downloadJob *int64
+	if err := pool.QueryRow(context.Background(), `
+SELECT download_status, parse_status, download_river_job_id
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&download, &parse, &downloadJob); err != nil {
+		t.Fatal(err)
+	}
+	if download != jobs.StatusBlocked || parse != jobs.StatusFailed || downloadJob != nil {
+		t.Fatalf("terminal parse state download=%s parse=%s job=%v", download, parse, downloadJob)
+	}
+	var held, events int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline.mrf_materialization_slots`).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline.control_schedule_events`).Scan(&events); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 || events != 1 {
+		t.Fatalf("terminal parse occupancy held=%d events=%d", held, events)
+	}
+	state, err := ws.InspectDownloadState(artifact.KindMRF, sourceID)
+	if err != nil || state != artifact.DownloadAbsent {
+		t.Fatalf("raw state %s %v", state, err)
 	}
 }
 

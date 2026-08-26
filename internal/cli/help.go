@@ -116,6 +116,15 @@ command does not run the job and may run while worker roles are active. It
 coordinates through the release and exact source/output execution locks. The
 same stage identity is retained. An attachment retry reuses the
 frozen plan batch rather than creating a new batch for its items.
+
+For mrf.parse, automatic retries reuse the raw file and resident slot. A
+terminal parse cleanup deletes unpublished parsed output, parser staging, and
+raw bytes, releases the slot, and keeps the source selected and failed. A
+parse retry reuses valid raw bytes when present; when bytes are gone it
+reopens download and waits for admission before redownloading. New
+mrf.parse jobs have four attempts including the first; other production
+stages retain eight.
+
 Retries for active or inactive releases fail with
 sealed_release_retry_forbidden.
 
@@ -124,7 +133,9 @@ Required flags:
   --id      Positive domain row ID
 
 Required environment:
-  MRFPIPELINE_DATABASE_URL  PostgreSQL connection string
+  MRFPIPELINE_DATABASE_URL
+  MRFPIPELINE_ARTIFACT_ROOT (mrf.parse only)
+
 `
 
 const monthHelp = `Usage:

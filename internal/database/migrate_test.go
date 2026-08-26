@@ -64,11 +64,11 @@ func TestCanceledContextIsNotDatabase(t *testing.T) {
 
 func TestResultJSON(t *testing.T) {
 	t.Parallel()
-	got, err := FormatResult(Result{ApplicationVersion: 5, AppliedMigrationCount: 5, RiverVersion: 6, AppliedRiverMigrationCount: 6})
+	got, err := FormatResult(Result{ApplicationVersion: 6, AppliedMigrationCount: 6, RiverVersion: 6, AppliedRiverMigrationCount: 6})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "{\"application_version\":5,\"applied_migration_count\":5,\"river_version\":6,\"applied_river_migration_count\":6}\n" {
+	if got != "{\"application_version\":6,\"applied_migration_count\":6,\"river_version\":6,\"applied_river_migration_count\":6}\n" {
 		t.Fatalf("got %q", got)
 	}
 	var obj map[string]any
@@ -78,11 +78,11 @@ func TestResultJSON(t *testing.T) {
 	if len(obj) != 4 {
 		t.Fatalf("fields %v", obj)
 	}
-	zero, err := FormatResult(Result{ApplicationVersion: 5, AppliedMigrationCount: 0, RiverVersion: 6, AppliedRiverMigrationCount: 0})
+	zero, err := FormatResult(Result{ApplicationVersion: 6, AppliedMigrationCount: 0, RiverVersion: 6, AppliedRiverMigrationCount: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if zero != "{\"application_version\":5,\"applied_migration_count\":0,\"river_version\":6,\"applied_river_migration_count\":0}\n" {
+	if zero != "{\"application_version\":6,\"applied_migration_count\":0,\"river_version\":6,\"applied_river_migration_count\":0}\n" {
 		t.Fatalf("got %q", zero)
 	}
 }
@@ -93,7 +93,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 5 {
+	if len(files) != 6 {
 		t.Fatalf("got %d files", len(files))
 	}
 	if files[0].Version != 1 || files[0].Name != "0001_initial_domain.sql" {
@@ -105,11 +105,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if files[2].Version != 3 || files[2].Name != "0003_monthly_toc_captures.sql" {
 		t.Fatalf("got %+v", files[2])
 	}
-	if files[3].Version != 4 || files[3].Name != "0004_monthly_releases.sql" || files[4].Version != 5 || files[4].Name != "0005_bounded_worker_scaling.sql" {
-		t.Fatalf("got %+v", files[3])
-	}
-	if files[4].Version != 5 || files[4].Name != "0005_bounded_worker_scaling.sql" {
-		t.Fatalf("got %+v", files[4])
+	if files[3].Version != 4 || files[3].Name != "0004_monthly_releases.sql" || files[4].Version != 5 || files[4].Name != "0005_bounded_worker_scaling.sql" || files[5].Version != 6 || files[5].Name != "0006_terminal_mrf_parse_slot_release.sql" {
+		t.Fatalf("got %+v", files[3:])
 	}
 	if files[0].SQL == "" {
 		t.Fatal("empty sql")
@@ -121,7 +118,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 
 func TestValidateLedger(t *testing.T) {
 	t.Parallel()
-	files := []migrationFile{{Version: 1, Name: "0001_initial_domain.sql"}, {Version: 2, Name: "0002_feed_free_domain.sql"}, {Version: 3, Name: "0003_monthly_toc_captures.sql"}, {Version: 4, Name: "0004_monthly_releases.sql"}, {Version: 5, Name: "0005_bounded_worker_scaling.sql"}}
+	files := []migrationFile{{Version: 1, Name: "0001_initial_domain.sql"}, {Version: 2, Name: "0002_feed_free_domain.sql"}, {Version: 3, Name: "0003_monthly_toc_captures.sql"}, {Version: 4, Name: "0004_monthly_releases.sql"}, {Version: 5, Name: "0005_bounded_worker_scaling.sql"}, {Version: 6, Name: "0006_terminal_mrf_parse_slot_release.sql"}}
 	if err := validateLedger(nil, files); err != nil {
 		t.Fatal(err)
 	}

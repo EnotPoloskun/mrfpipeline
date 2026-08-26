@@ -56,6 +56,9 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.MRFParseArgs]) er
 		PreLock: func(ctx context.Context, tx pgx.Tx) error {
 			return release.RequireBuildingForStage(ctx, tx, jobs.KindMRFParse, job.Args.MRFSourceID)
 		},
+		Terminal: func(ctx context.Context) error {
+			return CleanupTerminal(ctx, w.Pool, client, w.Workspace, job.Args.MRFSourceID, w.Services.Path, w.Logger)
+		},
 	}, jobs.LockNamespaceMRF, job.Args.MRFSourceID)
 	if err == nil && released && w.Logger != nil {
 		w.Logger.LogAttrs(ctx, slog.LevelInfo, "mrf_slot_released", slog.Int64("source_id", job.Args.MRFSourceID))

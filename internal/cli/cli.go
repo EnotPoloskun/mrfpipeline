@@ -398,7 +398,18 @@ func runRetry(ctx context.Context, getenv func(string) string, stage, id string)
 		return "", err
 	}
 	defer pool.Close()
-	result, err := reconcile.Retry(ctx, pool, stage, domainID)
+	var ws *artifact.Workspace
+	if stage == jobs.KindMRFParse {
+		art, err := config.NormalizeLocalPath(config.EnvArtifactRoot, getenv(config.EnvArtifactRoot))
+		if err != nil {
+			return "", err
+		}
+		ws, err = artifact.Open(ctx, art)
+		if err != nil {
+			return "", err
+		}
+	}
+	result, err := reconcile.Retry(ctx, pool, stage, domainID, ws)
 	if err != nil {
 		return "", err
 	}

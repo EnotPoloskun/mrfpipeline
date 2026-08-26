@@ -445,8 +445,8 @@ func TestWorkerRegistration(t *testing.T) {
 	if (jobs.MRFParseArgs{}).Kind() != jobs.KindMRFParse {
 		t.Fatal("kind")
 	}
-	if (jobs.MRFParseArgs{}).InsertOpts().Queue != jobs.QueueMRFParse {
-		t.Fatal("queue")
+	if opts := (jobs.MRFParseArgs{}).InsertOpts(); opts.Queue != jobs.QueueMRFParse || opts.MaxAttempts != 4 {
+		t.Fatalf("insert opts %+v", opts)
 	}
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &Worker{})

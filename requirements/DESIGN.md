@@ -2,11 +2,11 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–22 architecture. The
+This document describes the implemented Stories 01–23 architecture. The
 numbered requirement stories remain authoritative where they are more
 specific. Sections below the approved contract that are explicitly labeled
 historical version 1 are retained as background only; they are not current
-runtime guidance. The Stories 14–22 requirements and current README describe
+runtime guidance. The Stories 14–23 requirements and current README describe
 the rebuild-only feed-free contract and runnable local operation.
 
 The design records the implemented version 1 decisions that remain normative
@@ -30,7 +30,7 @@ except where the target addendum explicitly replaces them:
 - Use numeric database identities and exact database uniqueness. Do not add
   hashes as URL, artifact, job, plan, or output identity.
 
-## Active current architecture: Stories 14–22
+## Active current architecture: Stories 14–23
 
 The current contract is defined by:
 
@@ -43,6 +43,7 @@ The current contract is defined by:
 - [Story 20: Production hardening and test readiness](20-production-hardening-and-test-readiness.md)
 - [Story 21: Bounded local worker scaling](21-bounded-local-worker-scaling.md)
 - [Story 22: Runnable local acceptance and test convergence](22-runnable-local-acceptance-and-test-convergence.md)
+- [Story 23: Terminal MRF parse slot release](23-terminal-parse-slot-release.md)
 
 Stories 14–17 were one atomic breaking delivery batch. Consumer `2.0.0` is
 available, and there is no adapter,
@@ -137,7 +138,9 @@ at most one parser, and multiple ordinary River processes may be started.
 Consumer roles own ingest and plan-attachment queues and remain one process
 until the pinned consumer writer contract permits distinct-output concurrency.
 All roles share the initialized artifact root, while one durable PostgreSQL
-resident-capacity limit bounds raw and in-progress MRF materializations.
+resident-capacity limit bounds raw and in-progress MRF materializations. A
+terminal parse is no longer in progress after its raw and parser staging are
+cleaned, so its selected failed source releases the resident slot.
 The local Compose defaults are `./local/provider-catalog` and
 `./local/services.csv`; MRF and consumer services are behind the `workers`
 profile so prerequisites and control can be started before processing. The
@@ -153,7 +156,7 @@ mrfpipeline work --role consumer
 The older one-worker and serialized-topology statements below are historical
 version-1 context; they do not override this addendum.
 
-## Current Story 22 local operation
+## Current Stories 22–23 local operation
 
 The current deployment is one control process, one or more ordinary MRF River
 processes, and exactly one consumer process. Queue ownership is explicit:
@@ -167,8 +170,18 @@ processes, and exactly one consumer process. Queue ownership is explicit:
 Discovery imports feed-free monthly captures. Source admission selects a
 cumulative stable prefix and the shared resident-slot table admits only as
 many raw/in-progress sources as capacity permits. A slot is held across MRF
-download and parse and is released after raw/staging cleanup. The capacity is
-a source count, not a byte quota.
+download and in-flight parse, and is released after successful parse cleanup
+or terminal-parse cleanup (and after terminal empty-download cleanup as today).
+The capacity is a source count, not a byte quota.
+
+Terminal parse failure remains selected and blocks activation, but after
+unpublished parsed output, parser staging, and raw bytes are removed the source
+is no longer resident. Cleanup marks its download blocked, releases the slot,
+and wakes control; it never substitutes another selected URL. Automatic parse
+retries retain raw bytes and the slot. `retry --stage mrf.parse` reuses valid
+raw bytes or rematerializes through admission when bytes are gone. New parse
+jobs have four total attempts; every other production kind has eight. Reconcile
+repairs already-terminal parse rows that still hold slots after deployment.
 
 Every MRF source and consumer output has an exact execution lock. Locks are
 deterministic PostgreSQL advisory keys over positive `bigint` identities; they
@@ -194,7 +207,7 @@ PostgreSQL data, and River history have no automatic retention policy.
 Everything below this heading is retained for migration and incident context
 only. It is not the active deployment or schema contract. Where it mentions
 feeds, sticky months, consumer `1.5.0`, `current_*` views, or a single worker,
-Stories 14–22 and the README supersede it.
+Stories 14–23 and the README supersede it.
 
 The following architecture sections preserve the original Stories 01–13
 design for migration and incident context. Where they mention feeds, sticky
@@ -1298,7 +1311,7 @@ Stories 01–13 are the full version 1 implementation sequence:
 | 12 | Plan batch projection and additive consumer attachment worker. |
 | 13 | Reconciliation, operational acceptance, 1→2→5 TOC live progression, authorized URL-debug queries, retention guidance, and final documentation. |
 
-Stories 14–22 are the approved rebuild-only next sequence:
+Stories 14–23 are the approved rebuild-only next sequence:
 
 | Story | Deliverable |
 |---:|---|
@@ -1311,6 +1324,7 @@ Stories 14–22 are the approved rebuild-only next sequence:
 | 20 | Gate every worker claim on release mutability, validate frozen publication inventory, expose redacted lifecycle/stalled-work diagnostics, and verify active publication durability. |
 | 21 | Bound cumulative MRF admission and shared resident capacity, add role-specific local workers, durable refill/recovery, and bounded acceptance. |
 | 22 | Make the local topology buildable, converge PostgreSQL integration tests, align operator contracts, and validate a reproducible bounded first run. |
+| 23 | Release resident slots after terminal MRF parse cleanup, rematerialize parse retries when raw bytes are gone, and reconcile pre-existing terminal parses. |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC

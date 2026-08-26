@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/EnotPoloskun/mrfparser"
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
@@ -194,6 +195,34 @@ func waitParse(t *testing.T, pool *pgxpool.Pool, sourceID int64, want string) {
 	t.Fatalf("timed out waiting for source %d parse %s", sourceID, want)
 }
 
+func waitDownload(t *testing.T, pool *pgxpool.Pool, sourceID int64, want string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var status string
+		err := pool.QueryRow(context.Background(), `SELECT download_status FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&status)
+		if err == nil && status == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for source %d download %s", sourceID, want)
+}
+
+func waitRiverJob(t *testing.T, pool *pgxpool.Pool, jobID int64, want string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var state string
+		err := pool.QueryRow(context.Background(), `SELECT state FROM mrfpipeline_river.river_job WHERE id = $1`, jobID).Scan(&state)
+		if err == nil && state == want {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for river job %d %s", jobID, want)
+}
+
 func TestIntegrationSuccessUnblocksSnapshots(t *testing.T) {
 	pool := testDB(t)
 	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
@@ -224,6 +253,15 @@ func TestIntegrationSuccessUnblocksSnapshots(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(ws.Root, "mrf", "mrf-source-"+strconv.FormatInt(sourceID, 10), "download")); !os.IsNotExist(err) {
 		t.Fatal("download remained")
+	}
+	var held int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline.mrf_materialization_slots
+WHERE mrf_source_id = $1`, sourceID).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Fatalf("success retained slot %d", held)
 	}
 }
 
@@ -277,7 +315,113 @@ func TestIntegrationSuccessRollbackLeavesBlocked(t *testing.T) {
 	}
 }
 
-func TestIntegrationEighthFailureLeavesSnapshots(t *testing.T) {
+func TestIntegrationFourthFailureReleasesTerminalOccupancy(t *testing.T) {
+	pool := testDB(t)
+	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := mustServices(t)
+	client := insertClient(t, pool)
+	sourceID, parseJobID := insertParseJob(t, pool, client)
+	snapID := insertBlockedSnapshot(t, pool, sourceID, "2026-08-01")
+	var waitingID int64
+	if err := pool.QueryRow(context.Background(), `
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ($1, DATE '2026-08-01', 'blocked', 'blocked')
+RETURNING id`, "https://files.test/mrf/waiting-"+strconv.FormatInt(sourceURLSeq.Add(1), 10)).Scan(&waitingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id)
+VALUES ('uhc', DATE '2026-08-01', $1)`, waitingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.pipeline_runtime (artifact_root, resident_capacity)
+VALUES ($1, 1)`, ws.Root); err != nil {
+		t.Fatal(err)
+	}
+	writeDownload(t, ws, sourceID, []byte("x"))
+	startParseRuntime(t, pool, ws, func(context.Context, mrfparser.Config) error {
+		return errors.New("hostile parser text /tmp/mrf-source-9")
+	}, svc, 8)
+	waitParse(t, pool, sourceID, jobs.StatusFailed)
+	waitDownload(t, pool, sourceID, jobs.StatusBlocked)
+	waitRiverJob(t, pool, parseJobID, "cancelled")
+
+	var fail, download, parse string
+	var downloadJob, parseJob *int64
+	if err := pool.QueryRow(context.Background(), `
+SELECT download_status, download_river_job_id, parse_status, parse_river_job_id
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&download, &downloadJob, &parse, &parseJob); err != nil {
+		t.Fatal(err)
+	}
+	if download != jobs.StatusBlocked || downloadJob != nil || parse != jobs.StatusFailed || parseJob == nil {
+		t.Fatalf("terminal state download=%s download_job=%v parse=%s parse_job=%v", download, downloadJob, parse, parseJob)
+	}
+	if err := pool.QueryRow(context.Background(), `
+SELECT failure_code FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&fail); err != nil {
+		t.Fatal(err)
+	}
+	if fail != jobs.FailureMRFParseExecutionFailed {
+		t.Fatalf("failure code %s", fail)
+	}
+	var consume string
+	if err := pool.QueryRow(context.Background(), `
+SELECT consume_status FROM mrfpipeline.mrf_snapshots WHERE id = $1`, snapID).Scan(&consume); err != nil {
+		t.Fatal(err)
+	}
+	if consume != jobs.StatusBlocked {
+		t.Fatalf("snapshot %s", consume)
+	}
+	var attempt, maxAttempts int
+	var riverState string
+	if err := pool.QueryRow(context.Background(), `
+SELECT attempt, max_attempts, state
+FROM mrfpipeline_river.river_job WHERE id = $1`, parseJobID).Scan(&attempt, &maxAttempts, &riverState); err != nil {
+		t.Fatal(err)
+	}
+	if attempt != 4 || maxAttempts != 4 || riverState != "cancelled" {
+		t.Fatalf("river attempt=%d max_attempts=%d state=%s", attempt, maxAttempts, riverState)
+	}
+	raw, err := ws.InspectDownloadState(artifact.KindMRF, sourceID)
+	if err != nil || raw != artifact.DownloadAbsent {
+		t.Fatalf("raw state %s %v", raw, err)
+	}
+	parserTemp, err := ws.HasMRFParserTemp(sourceID)
+	if err != nil || parserTemp {
+		t.Fatalf("parser temp %v %v", parserTemp, err)
+	}
+	parsed, err := ws.InspectParsed(artifact.KindMRF, sourceID)
+	if err != nil || parsed != artifact.ParsedAbsent {
+		t.Fatalf("parsed state %s %v", parsed, err)
+	}
+	var held int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline.mrf_materialization_slots`).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Fatalf("held slots %d", held)
+	}
+	if err := admission.ScheduleWaiting(context.Background(), pool, client); err != nil {
+		t.Fatal(err)
+	}
+	var admitted bool
+	if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (
+    SELECT 1 FROM mrfpipeline.mrf_materialization_slots WHERE mrf_source_id = $1
+)`, waitingID).Scan(&admitted); err != nil {
+		t.Fatal(err)
+	}
+	if !admitted {
+		t.Fatal("waiting source was not admitted")
+	}
+}
+
+func TestIntegrationFirstThreeParseFailuresRetainOccupancy(t *testing.T) {
 	pool := testDB(t)
 	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
 	if err != nil {
@@ -286,25 +430,160 @@ func TestIntegrationEighthFailureLeavesSnapshots(t *testing.T) {
 	svc := mustServices(t)
 	client := insertClient(t, pool)
 	sourceID, _ := insertParseJob(t, pool, client)
-	snapID := insertBlockedSnapshot(t, pool, sourceID, "2026-08-01")
+	insertBlockedSnapshot(t, pool, sourceID, "2026-08-01")
 	writeDownload(t, ws, sourceID, []byte("x"))
+	started := make(chan int, 4)
+	completed := make(chan int, 4)
+	release := make(chan struct{}, 4)
+	var calls atomic.Int32
+	startParseRuntime(t, pool, ws, func(context.Context, mrfparser.Config) error {
+		n := int(calls.Add(1))
+		started <- n
+		<-release
+		completed <- n
+		return errors.New("parse attempt failed")
+	}, svc, 8)
+	for want := 1; want <= 3; want++ {
+		select {
+		case got := <-started:
+			if got != want {
+				t.Fatalf("attempt order got %d want %d", got, want)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatalf("timed out waiting for attempt %d", want)
+		}
+		release <- struct{}{}
+		select {
+		case got := <-completed:
+			if got != want {
+				t.Fatalf("completed attempt %d want %d", got, want)
+			}
+		case <-time.After(20 * time.Second):
+			t.Fatalf("timed out completing attempt %d", want)
+		}
+		var downloadStatus, parseStatus string
+		if err := pool.QueryRow(context.Background(), `
+SELECT download_status, parse_status
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&downloadStatus, &parseStatus); err != nil {
+			t.Fatal(err)
+		}
+		if downloadStatus != jobs.StatusSucceeded || parseStatus == jobs.StatusFailed {
+			t.Fatalf("attempt %d statuses download=%s parse=%s", want, downloadStatus, parseStatus)
+		}
+		var held int
+		if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline.mrf_materialization_slots
+WHERE mrf_source_id = $1`, sourceID).Scan(&held); err != nil {
+			t.Fatal(err)
+		}
+		if held != 1 {
+			t.Fatalf("attempt %d slot count %d", want, held)
+		}
+		state, err := ws.InspectDownloadState(artifact.KindMRF, sourceID)
+		if err != nil || state != artifact.DownloadComplete {
+			t.Fatalf("attempt %d raw state %s %v", want, state, err)
+		}
+		var downloads int
+		if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`,
+			jobs.KindMRFDownload).Scan(&downloads); err != nil {
+			t.Fatal(err)
+		}
+		if downloads != 0 {
+			t.Fatalf("attempt %d inserted %d download jobs", want, downloads)
+		}
+	}
+	select {
+	case got := <-started:
+		if got != 4 {
+			t.Fatalf("attempt order got %d want 4", got)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("timed out waiting for attempt 4")
+	}
+	release <- struct{}{}
+	select {
+	case got := <-completed:
+		if got != 4 {
+			t.Fatalf("completed attempt %d want 4", got)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("timed out completing attempt 4")
+	}
+	waitParse(t, pool, sourceID, jobs.StatusFailed)
+}
+
+func TestIntegrationTerminalParseCleanupFailureRetainsSlot(t *testing.T) {
+	pool := testDB(t)
+	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := mustServices(t)
+	client := insertClient(t, pool)
+	sourceID, _ := insertParseJob(t, pool, client)
+	insertBlockedSnapshot(t, pool, sourceID, "2026-08-01")
+	var waitingID int64
+	if err := pool.QueryRow(context.Background(), `
+INSERT INTO mrfpipeline.mrf_sources (source_url, collection_month, download_status, parse_status)
+VALUES ($1, DATE '2026-08-01', 'blocked', 'blocked')
+RETURNING id`, "https://files.test/mrf/cleanup-waiting-"+strconv.FormatInt(sourceURLSeq.Add(1), 10)).Scan(&waitingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id)
+VALUES ('uhc', DATE '2026-08-01', $1)`, waitingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO mrfpipeline.pipeline_runtime (artifact_root, resident_capacity)
+VALUES ($1, 1)`, ws.Root); err != nil {
+		t.Fatal(err)
+	}
+	writeDownload(t, ws, sourceID, []byte("x"))
+	staging := filepath.Join(ws.StagingDir(), "mrf-download-"+strconv.FormatInt(sourceID, 10)+"-old")
+	if err := os.Mkdir(staging, 0700); err != nil {
+		t.Fatal(err)
+	}
 	startParseRuntime(t, pool, ws, func(context.Context, mrfparser.Config) error {
 		return errors.New("hostile parser text /tmp/mrf-source-9")
-	}, svc, 1)
+	}, svc, 8)
 	waitParse(t, pool, sourceID, jobs.StatusFailed)
-	var fail *string
-	var consume string
-	if err := pool.QueryRow(context.Background(), `SELECT failure_code FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&fail); err != nil {
+	var parse, failure, download string
+	if err := pool.QueryRow(context.Background(), `
+SELECT parse_status, failure_code, download_status
+FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&parse, &failure, &download); err != nil {
 		t.Fatal(err)
 	}
-	if fail == nil || *fail != jobs.FailureMRFParseExecutionFailed {
-		t.Fatalf("fail %v", fail)
+	if parse != jobs.StatusFailed || failure != jobs.FailureMRFParseExecutionFailed || download != jobs.StatusSucceeded {
+		t.Fatalf("state parse=%s failure=%s download=%s", parse, failure, download)
 	}
-	if err := pool.QueryRow(context.Background(), `SELECT consume_status FROM mrfpipeline.mrf_snapshots WHERE id = $1`, snapID).Scan(&consume); err != nil {
+	var held int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline.mrf_materialization_slots
+WHERE mrf_source_id = $1`, sourceID).Scan(&held); err != nil {
 		t.Fatal(err)
 	}
-	if consume != jobs.StatusBlocked {
-		t.Fatalf("snapshot %s", consume)
+	if held != 1 {
+		t.Fatalf("slot count %d", held)
+	}
+	hasStaging, err := ws.HasDownloadStaging(artifact.KindMRF, sourceID)
+	if err != nil || !hasStaging {
+		t.Fatalf("download staging %v %v", hasStaging, err)
+	}
+	if err := admission.ScheduleWaiting(context.Background(), pool, client); err != nil {
+		t.Fatal(err)
+	}
+	var admitted bool
+	if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (
+    SELECT 1 FROM mrfpipeline.mrf_materialization_slots WHERE mrf_source_id = $1
+)`, waitingID).Scan(&admitted); err != nil {
+		t.Fatal(err)
+	}
+	if admitted {
+		t.Fatal("waiting source admitted while terminal cleanup retained slot")
 	}
 }
 
