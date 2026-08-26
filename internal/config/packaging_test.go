@@ -79,10 +79,34 @@ func TestLocalPackagingContract(t *testing.T) {
 		"go test -p 1 ./...",
 		"docker compose -f docker-compose.story21.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql",
 		"MRFPIPELINE_PRIVATE_MODULES_SSH_KEY",
+		"[`DOCKER.md`](DOCKER.md)",
 	} {
 		if !strings.Contains(readme, fragment) {
 			t.Fatalf("README missing %q", fragment)
 		}
+	}
+
+	dockerGuide := readRepositoryFile(t, "DOCKER.md")
+	for _, fragment := range []string{
+		"DOCKER_BUILDKIT=1 docker compose -f docker-compose.story21.yml build",
+		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli migrate",
+		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover",
+		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status",
+		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total",
+		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli retry",
+		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli reconcile",
+		"docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=2 mrf consumer",
+		"docker compose -f docker-compose.story21.yml stop control",
+		"docker compose -f docker-compose.story21.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql",
+		"RIVER_SCHEMA=mrfpipeline_river",
+		"--scale mrf=3",
+	} {
+		if !strings.Contains(dockerGuide, fragment) {
+			t.Fatalf("DOCKER.md missing %q", fragment)
+		}
+	}
+	if strings.Contains(dockerGuide, "postgres://") {
+		t.Fatal("DOCKER.md must not embed a postgres URL")
 	}
 
 	workflow := readRepositoryFile(t, ".github/workflows/ci.yml")

@@ -174,6 +174,9 @@ mrfpipeline reconcile
 mrfpipeline retry --stage <job-kind> --id <domain-id>
 ```
 
+Compose wrappers for those verbs (build, start, scale, `cli` one-shots) are
+in [`DOCKER.md`](DOCKER.md).
+
 `migrate` applies application and River schemas. No other command migrates.
 
 `work` requires an explicit role. The control role validates the complete
@@ -219,6 +222,9 @@ slot is returned to blocked waiting state until control can refill it.
 the correctly configured worker host.
 
 ## Local Docker topology and operator commands
+
+[`DOCKER.md`](DOCKER.md) is the copy-paste Compose command sheet. This
+section is the topology contract those commands run against.
 
 [`docker-compose.story21.yml`](docker-compose.story21.yml) is the runnable
 local topology. It uses PostgreSQL's Compose service name on the private
@@ -442,7 +448,8 @@ relation without inferring membership from other warehouse outputs.
 
 Compose is the preferred local path. Host `mrfpipeline` uses the same verbs
 with `MRFPIPELINE_*` set. Replace `<YYYY-MM>` with the collection month you
-intend (CMS listing month, exactly `YYYY-MM`).
+intend (CMS listing month, exactly `YYYY-MM`). The Compose-only command list
+is [`DOCKER.md`](DOCKER.md).
 
 `--limit` is newly admitted **TOC files**, required, and always a positive
 integer. Unlimited TOC discovery is out of version 1 scope. `--mrf-source-limit`
