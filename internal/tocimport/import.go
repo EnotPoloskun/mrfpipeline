@@ -392,7 +392,11 @@ INSERT INTO mrfpipeline.mrf_plans (
     mrf_snapshot_id, plan_name, issuer_name, plan_sponsor_name,
     plan_id_type, plan_id, plan_market_type
 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT ON CONSTRAINT mrf_plans_identity_key DO NOTHING`,
+ON CONFLICT ON CONSTRAINT mrf_plans_identity_key DO UPDATE
+SET plan_sponsor_name = COALESCE(mrf_plans.plan_sponsor_name, EXCLUDED.plan_sponsor_name)
+WHERE mrf_plans.plan_id_type = 'ein'
+  AND mrf_plans.plan_sponsor_name IS NULL
+  AND EXCLUDED.plan_sponsor_name IS NOT NULL`,
 		snapshotID, row.PlanName, row.IssuerName, sponsor, row.PlanIDType, row.PlanID, row.PlanMarketType)
 	if err != nil {
 		return classifyImportDB(ctx, err)

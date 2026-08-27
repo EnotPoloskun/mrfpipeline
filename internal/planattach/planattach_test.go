@@ -100,6 +100,26 @@ func TestEncodePlansExactJSON(t *testing.T) {
 	}
 }
 
+func TestEncodePlansNullableEINSponsor(t *testing.T) {
+	t.Parallel()
+	got, err := encodePlans([]planRow{{
+		PlanName: "A", IssuerName: "I", PlanIDType: "ein", PlanID: "1", PlanMarketType: "group",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"plan_name":"A","issuer_name":"I","plan_sponsor_name":null,"plan_id_type":"ein","plan_id":"1","plan_market_type":"group"}]` + "\n"
+	if string(got) != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	empty := ""
+	if _, err := encodePlans([]planRow{{
+		PlanName: "A", IssuerName: "I", PlanSponsorName: &empty, PlanIDType: "ein", PlanID: "1", PlanMarketType: "group",
+	}}); err == nil {
+		t.Fatal("empty ein sponsor")
+	}
+}
+
 func TestPublishReuseAndPreserve(t *testing.T) {
 	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
 	if err != nil {

@@ -2,7 +2,7 @@
 
 ## Status
 
-Specified.
+Implemented.
 
 ## User story
 

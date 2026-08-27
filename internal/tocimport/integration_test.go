@@ -297,6 +297,36 @@ WHERE s.source_url = 'https://example.test/a.json'`).Scan(&sourceID, &payer, &mo
 	}
 }
 
+func TestIntegrationNullableEINImport(t *testing.T) {
+	pool := testDB(t)
+	client := insertClient(t, pool)
+	ws := mustWorkspace(t)
+	tocID, _ := insertImportJob(t, pool, client, time.Time{})
+	writeParsedRows(t, ws, tocID, "2026-08", []assocRow{
+		validAssoc("https://example.test/ein-null.json", "plan", "issuer", nil, "ein", "12-3456789", "group"),
+	})
+	startImportRuntime(t, pool, ws, 8, nil)
+	waitImport(t, pool, tocID, jobs.StatusSucceeded)
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.toc_mrf_plan_associations`) != 1 {
+		t.Fatal("provenance")
+	}
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_sources`) != 1 {
+		t.Fatal("sources")
+	}
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_snapshots`) != 1 {
+		t.Fatal("snapshots")
+	}
+	var sponsor *string
+	if err := pool.QueryRow(context.Background(), `
+SELECT plan_sponsor_name FROM mrfpipeline.mrf_plans
+WHERE plan_id_type = 'ein'`).Scan(&sponsor); err != nil {
+		t.Fatal(err)
+	}
+	if sponsor != nil {
+		t.Fatalf("ein sponsor = %q, want null", *sponsor)
+	}
+}
+
 func TestIntegrationSameMonthlySourceDifferentPayers(t *testing.T) {
 	pool := testDB(t)
 	client := insertClient(t, pool)
@@ -465,14 +495,30 @@ func TestIntegrationSponsorVariantsAndHIOS(t *testing.T) {
 	tocID, _ := insertImportJob(t, pool, client, time.Time{})
 	s1, s2, hios := "First", "Second", "Shown"
 	writeParsedRows(t, ws, tocID, "2026-08", []assocRow{
+		validAssoc("https://example.test/e.json", "plan", "issuer", nil, "ein", "11-1", "group"),
 		validAssoc("https://example.test/e.json", "plan", "issuer", &s1, "ein", "11-1", "group"),
 		validAssoc("https://example.test/e.json", "plan", "issuer", &s2, "ein", "11-1", "group"),
 		validAssoc("https://example.test/h.json", "plan", "issuer", &hios, "hios", "H1", "group"),
 	})
 	startImportRuntime(t, pool, ws, 8, nil)
 	waitImport(t, pool, tocID, jobs.StatusSucceeded)
-	if count(t, pool, `SELECT count(*) FROM mrfpipeline.toc_mrf_plan_associations`) != 3 {
+	laterID, _ := insertImportJob(t, pool, client, time.Time{})
+	writeParsedRows(t, ws, laterID, "2026-08", []assocRow{
+		validAssoc("https://example.test/e.json", "plan", "issuer", nil, "ein", "11-1", "group"),
+	})
+	waitImport(t, pool, laterID, jobs.StatusSucceeded)
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.toc_mrf_plan_associations`) != 5 {
 		t.Fatal("prov")
+	}
+	var nullProvenance, nonemptyProvenance int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FILTER (WHERE plan_sponsor_name IS NULL),
+       count(*) FILTER (WHERE plan_sponsor_name IS NOT NULL)
+FROM mrfpipeline.toc_mrf_plan_associations`).Scan(&nullProvenance, &nonemptyProvenance); err != nil {
+		t.Fatal(err)
+	}
+	if nullProvenance != 2 || nonemptyProvenance != 3 {
+		t.Fatalf("provenance sponsors null=%d nonempty=%d", nullProvenance, nonemptyProvenance)
 	}
 	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_plans`) != 2 {
 		t.Fatal("plans")

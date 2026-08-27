@@ -33,7 +33,7 @@ func encodePlans(rows []planRow) ([]byte, error) {
 			}
 			sponsor = nil
 		}
-		if row.PlanIDType == "ein" && (sponsor == nil || *sponsor == "") {
+		if row.PlanIDType == "ein" && sponsor != nil && *sponsor == "" {
 			return nil, errInvariant
 		}
 		out = append(out, planJSON{

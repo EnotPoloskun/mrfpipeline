@@ -2,11 +2,11 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–23 architecture. The
+This document describes the implemented Stories 01–24 architecture. The
 numbered requirement stories remain authoritative where they are more
 specific. Sections below the approved contract that are explicitly labeled
 historical version 1 are retained as background only; they are not current
-runtime guidance. The Stories 14–23 requirements and current README describe
+runtime guidance. The Stories 14–24 requirements and current README describe
 the rebuild-only feed-free contract and runnable local operation.
 
 The design records the implemented version 1 decisions that remain normative
@@ -30,7 +30,7 @@ except where the target addendum explicitly replaces them:
 - Use numeric database identities and exact database uniqueness. Do not add
   hashes as URL, artifact, job, plan, or output identity.
 
-## Active current architecture: Stories 14–23
+## Active current architecture: Stories 14–24
 
 The current contract is defined by:
 
@@ -44,6 +44,7 @@ The current contract is defined by:
 - [Story 21: Bounded local worker scaling](21-bounded-local-worker-scaling.md)
 - [Story 22: Runnable local acceptance and test convergence](22-runnable-local-acceptance-and-test-convergence.md)
 - [Story 23: Terminal MRF parse slot release](23-terminal-parse-slot-release.md)
+- [Story 24: Nullable plan sponsor on TOC import](24-nullable-plan-sponsor-import.md)
 
 Stories 14–17 were one atomic breaking delivery batch. Consumer `2.0.0` is
 available, and there is no adapter,
@@ -207,7 +208,7 @@ PostgreSQL data, and River history have no automatic retention policy.
 Everything below this heading is retained for migration and incident context
 only. It is not the active deployment or schema contract. Where it mentions
 feeds, sticky months, consumer `1.5.0`, `current_*` views, or a single worker,
-Stories 14–23 and the README supersede it.
+Stories 14–24 and the README supersede it.
 
 The following architecture sections preserve the original Stories 01–13
 design for migration and incident context. Where they mention feeds, sticky
@@ -514,8 +515,10 @@ plan_market_type
 ```
 
 Sponsor is validated and retained for TOC provenance where supplied, but is
-not consumer plan identity. EIN requires a nonempty sponsor. HIOS stores a
-null operational sponsor in the projected canonical row; an empty sponsor is
+not consumer plan identity. EIN canonical rows may retain a null sponsor when
+all accepted provenance sponsors are null; a later nonempty sponsor fills that
+null and never replaces an existing nonempty value. HIOS stores a null
+operational sponsor in the projected canonical row; an empty sponsor is
 invalid.
 
 Plan attachment batch IDs name additive publication attempts. They are not
@@ -962,8 +965,9 @@ consumer report, not an independently reconstructed warehouse total.
 
 `plans.json` is compact JSON from a typed struct in exact field order, with
 `SetEscapeHTML(false)` and one trailing newline. HIOS always emits a JSON null
-sponsor. An existing `plans.json` is reusable only when it equals those
-canonical bytes exactly.
+sponsor, and EIN emits its stored sponsor as either JSON null or a nonempty JSON
+string. An empty sponsor is invalid. An existing `plans.json` is reusable only
+when it equals those canonical bytes exactly.
 
 The consumer publishes a new immutable plan-association Parquet part; it does
 not replace an existing plans file. Its `all_output_plans` DuckDB view reads the
@@ -1311,7 +1315,7 @@ Stories 01–13 are the full version 1 implementation sequence:
 | 12 | Plan batch projection and additive consumer attachment worker. |
 | 13 | Reconciliation, operational acceptance, 1→2→5 TOC live progression, authorized URL-debug queries, retention guidance, and final documentation. |
 
-Stories 14–23 are the approved rebuild-only next sequence:
+Stories 14–24 are the approved rebuild-only next sequence:
 
 | Story | Deliverable |
 |---:|---|
@@ -1325,6 +1329,7 @@ Stories 14–23 are the approved rebuild-only next sequence:
 | 21 | Bound cumulative MRF admission and shared resident capacity, add role-specific local workers, durable refill/recovery, and bounded acceptance. |
 | 22 | Make the local topology buildable, converge PostgreSQL integration tests, align operator contracts, and validate a reproducible bounded first run. |
 | 23 | Release resident slots after terminal MRF parse cleanup, rematerialize parse retries when raw bytes are gone, and reconcile pre-existing terminal parses. |
+| 24 | Allow nullable EIN sponsors through TOC import, preserve sponsor provenance, and emit JSON-null EIN sponsors. |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC

@@ -72,14 +72,14 @@ func mustMigrate(t *testing.T, url string) Result {
 func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 	url, pool := withTestDB(t)
 	first := mustMigrate(t, url)
-	if first.ApplicationVersion != 6 || first.AppliedMigrationCount != 6 {
+	if first.ApplicationVersion != 7 || first.AppliedMigrationCount != 7 {
 		t.Fatalf("first %+v", first)
 	}
 	if first.RiverVersion != ExpectedRiverVersion || first.AppliedRiverMigrationCount != ExpectedRiverVersion {
 		t.Fatalf("first river %+v", first)
 	}
 	second := mustMigrate(t, url)
-	if second.ApplicationVersion != 6 || second.AppliedMigrationCount != 0 {
+	if second.ApplicationVersion != 7 || second.AppliedMigrationCount != 0 {
 		t.Fatalf("second %+v", second)
 	}
 	if second.RiverVersion != ExpectedRiverVersion || second.AppliedRiverMigrationCount != 0 {
@@ -90,7 +90,7 @@ func TestIntegrationMigrateFreshAndRepeat(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal("count ledger")
 	}
-	if n != 6 {
+	if n != 7 {
 		t.Fatalf("ledger rows %d", n)
 	}
 
@@ -343,7 +343,7 @@ func TestIntegrationConcurrentMigrators(t *testing.T) {
 			t.Fatalf("migrator %d: %v", i, err)
 		}
 	}
-	if results[0].AppliedMigrationCount+results[1].AppliedMigrationCount != 6 {
+	if results[0].AppliedMigrationCount+results[1].AppliedMigrationCount != 7 {
 		t.Fatalf("applied %+v %+v", results[0], results[1])
 	}
 	if results[0].AppliedRiverMigrationCount+results[1].AppliedRiverMigrationCount != ExpectedRiverVersion {
@@ -353,7 +353,7 @@ func TestIntegrationConcurrentMigrators(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal("count ledger")
 	}
-	if n != 6 {
+	if n != 7 {
 		t.Fatalf("ledger rows %d", n)
 	}
 }
@@ -365,8 +365,8 @@ func TestIntegrationFailingMigrationRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	files = append(files, migrationFile{
-		Version: 7,
-		Name:    "0007_fail.sql",
+		Version: 8,
+		Name:    "0008_fail.sql",
 		SQL:     "CREATE TABLE mrfpipeline.should_not_exist (id int);\nSELECT 1 / 0;",
 	})
 	_, err = applyMigrations(context.Background(), url, files)
@@ -391,7 +391,7 @@ SELECT EXISTS (
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 6 {
+	if n != 7 {
 		t.Fatalf("ledger rows %d", n)
 	}
 }
@@ -451,7 +451,7 @@ func TestIntegrationInvalidLedgerRejected(t *testing.T) {
 		sql  string
 	}{
 		{"filename mismatch", `UPDATE mrfpipeline.schema_migrations SET name = 'wrong.sql'`},
-		{"unknown future", `INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (7, '0007_future.sql')`},
+		{"unknown future", `INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (8, '0008_future.sql')`},
 		{"missing", `DELETE FROM mrfpipeline.schema_migrations; INSERT INTO mrfpipeline.schema_migrations (version, name) VALUES (6, '0006_future.sql')`},
 	}
 	for _, tc := range cases {
@@ -490,14 +490,14 @@ CREATE TABLE mrfpipeline_river.river_migration (broken int)`); err != nil {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.schema_migrations`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	if n != 6 {
+	if n != 7 {
 		t.Fatalf("application ledger rewritten: %d", n)
 	}
 	if _, err := pool.Exec(context.Background(), `DROP TABLE mrfpipeline_river.river_migration`); err != nil {
 		t.Fatal(err)
 	}
 	result := mustMigrate(t, url)
-	if result.ApplicationVersion != 6 || result.AppliedMigrationCount != 0 {
+	if result.ApplicationVersion != 7 || result.AppliedMigrationCount != 0 {
 		t.Fatalf("app %+v", result)
 	}
 	if result.RiverVersion != ExpectedRiverVersion || result.AppliedRiverMigrationCount != ExpectedRiverVersion {
@@ -780,14 +780,20 @@ VALUES ($1, 'aetna corp', DATE '2026-08-01')`, sourceID); err == nil {
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.toc_mrf_plan_associations (
     toc_file_id, mrf_snapshot_id, mrf_location, plan_name, issuer_name, plan_sponsor_name, plan_id_type, plan_id, plan_market_type
-) VALUES ($1, $2, 'https://example.invalid/mrf.json', 'Gold', 'Issuer', NULL, 'ein', '12-3456789', 'group')`, tocID, snap1); err == nil {
-		t.Fatal("ein without sponsor")
+	) VALUES ($1, $2, 'https://example.invalid/mrf.json', 'Gold', 'Issuer', NULL, 'ein', '12-3456789', 'group')`, tocID, snap1); err != nil {
+		t.Fatalf("ein without sponsor: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.toc_mrf_plan_associations (
     toc_file_id, mrf_snapshot_id, mrf_location, plan_name, issuer_name, plan_sponsor_name, plan_id_type, plan_id, plan_market_type
 ) VALUES ($1, $2, 'https://example.invalid/mrf.json', 'Gold', 'Issuer', '', 'hios', 'H1', 'individual')`, tocID, snap1); err == nil {
 		t.Fatal("empty hios sponsor")
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.toc_mrf_plan_associations (
+    toc_file_id, mrf_snapshot_id, mrf_location, plan_name, issuer_name, plan_sponsor_name, plan_id_type, plan_id, plan_market_type
+) VALUES ($1, $2, 'https://example.invalid/mrf.json', 'Empty EIN', 'Issuer', '', 'ein', '12-empty', 'group')`, tocID, snap1); err == nil {
+		t.Fatal("empty ein sponsor")
 	}
 
 	if _, err := pool.Exec(ctx, `
@@ -817,6 +823,18 @@ INSERT INTO mrfpipeline.mrf_plans (
 RETURNING id`, snap1).Scan(&planID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_plans (
+    mrf_snapshot_id, plan_name, issuer_name, plan_sponsor_name, plan_id_type, plan_id, plan_market_type
+) VALUES ($1, 'Null EIN', 'Issuer', NULL, 'ein', '12-null', 'group')`, snap1); err != nil {
+		t.Fatalf("ein null sponsor: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_plans (
+    mrf_snapshot_id, plan_name, issuer_name, plan_sponsor_name, plan_id_type, plan_id, plan_market_type
+) VALUES ($1, 'Empty EIN', 'Issuer', '', 'ein', '12-empty', 'group')`, snap1); err == nil {
+		t.Fatal("empty ein sponsor")
 	}
 	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.mrf_plans (

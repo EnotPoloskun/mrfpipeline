@@ -67,11 +67,7 @@ func validateAssocRow(row assocRow, tocOutputID, payer, month string) error {
 	if row.PlanMarketType != "group" && row.PlanMarketType != "individual" {
 		return errRow
 	}
-	if row.PlanIDType == "ein" {
-		if row.PlanSponsorName == nil || !requiredString(*row.PlanSponsorName) {
-			return errRow
-		}
-	} else if row.PlanSponsorName != nil && !requiredString(*row.PlanSponsorName) {
+	if row.PlanSponsorName != nil && !requiredString(*row.PlanSponsorName) {
 		return errRow
 	}
 	for _, extra := range []*string{

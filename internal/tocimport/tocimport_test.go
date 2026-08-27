@@ -181,6 +181,10 @@ func TestRowValidationContracts(t *testing.T) {
 	if err := validateAssocRow(good, "toc-1", "uhc", "2026-08"); err != nil {
 		t.Fatal(err)
 	}
+	nilEIN := validAssoc("https://example.test/a.json", "plan", "issuer", nil, "ein", "12-3", "group")
+	if err := validateAssocRow(nilEIN, "toc-1", "uhc", "2026-08"); err != nil {
+		t.Fatal("nil ein sponsor:", err)
+	}
 	wrongFN := good
 	other := "other.json"
 	wrongFN.MRFFilename = &other
@@ -281,6 +285,10 @@ func TestCanonicalSponsorProjection(t *testing.T) {
 	ein := validAssoc("https://example.test/a.json", "plan", "issuer", &sponsor, "ein", "12", "group")
 	if canonicalSponsor(ein) == nil || *canonicalSponsor(ein) != sponsor {
 		t.Fatal("ein sponsor")
+	}
+	einNull := validAssoc("https://example.test/a.json", "plan", "issuer", nil, "ein", "12", "group")
+	if canonicalSponsor(einNull) != nil {
+		t.Fatal("nil ein sponsor")
 	}
 }
 
