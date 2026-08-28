@@ -27,24 +27,27 @@ func auditSealedPlanSets(ctx context.Context, pool *pgxpool.Pool, warehouse stri
 SELECT 'mrf_plans', p.id
 FROM mrfpipeline.mrf_plans p
 JOIN mrfpipeline.mrf_snapshots s ON s.id = p.mrf_snapshot_id
+JOIN mrfpipeline.monthly_release_outputs o ON o.mrf_snapshot_id = s.id
 JOIN mrfpipeline.monthly_releases r
-  ON r.payer_id = s.payer_id AND r.collection_month = s.collection_month
-WHERE r.status IN ('active', 'inactive') AND p.created_at > r.sealed_at
+  ON r.payer_id = o.payer_id AND r.collection_month = o.collection_month
+WHERE r.status IN ('active', 'inactive') AND p.created_at > o.published_at
 UNION ALL
 SELECT 'plan_attachment_batches', b.id
 FROM mrfpipeline.plan_attachment_batches b
 JOIN mrfpipeline.mrf_snapshots s ON s.id = b.mrf_snapshot_id
+JOIN mrfpipeline.monthly_release_outputs o ON o.mrf_snapshot_id = s.id
 JOIN mrfpipeline.monthly_releases r
-  ON r.payer_id = s.payer_id AND r.collection_month = s.collection_month
-WHERE r.status IN ('active', 'inactive') AND b.created_at > r.sealed_at
+  ON r.payer_id = o.payer_id AND r.collection_month = o.collection_month
+WHERE r.status IN ('active', 'inactive') AND b.created_at > o.published_at
 UNION ALL
 SELECT 'plan_attachment_batch_items', i.mrf_plan_id
 FROM mrfpipeline.plan_attachment_batch_items i
 JOIN mrfpipeline.plan_attachment_batches b ON b.id = i.plan_attachment_batch_id
 JOIN mrfpipeline.mrf_snapshots s ON s.id = b.mrf_snapshot_id
+JOIN mrfpipeline.monthly_release_outputs o ON o.mrf_snapshot_id = s.id
 JOIN mrfpipeline.monthly_releases r
-  ON r.payer_id = s.payer_id AND r.collection_month = s.collection_month
-WHERE r.status IN ('active', 'inactive') AND i.created_at > r.sealed_at
+  ON r.payer_id = o.payer_id AND r.collection_month = o.collection_month
+WHERE r.status IN ('active', 'inactive') AND i.created_at > o.published_at
 ORDER BY 1, 2`)
 	if err != nil {
 		return jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
@@ -64,9 +67,10 @@ ORDER BY 1, 2`)
 
 	rows, err = pool.Query(ctx, `
 SELECT s.id
-FROM mrfpipeline.mrf_snapshots s
+FROM mrfpipeline.monthly_release_outputs o
+JOIN mrfpipeline.mrf_snapshots s ON s.id = o.mrf_snapshot_id
 JOIN mrfpipeline.monthly_releases r
-  ON r.payer_id = s.payer_id AND r.collection_month = s.collection_month
+  ON r.payer_id = o.payer_id AND r.collection_month = o.collection_month
 WHERE r.status IN ('active', 'inactive')
 ORDER BY s.id`)
 	if err != nil {
@@ -88,9 +92,9 @@ ORDER BY s.id`)
 	expectedRows, err := pool.Query(ctx, `
 SELECT b.mrf_snapshot_id, b.id
 FROM mrfpipeline.plan_attachment_batches b
-JOIN mrfpipeline.mrf_snapshots s ON s.id = b.mrf_snapshot_id
+JOIN mrfpipeline.monthly_release_outputs o ON o.mrf_snapshot_id = b.mrf_snapshot_id
 JOIN mrfpipeline.monthly_releases r
-  ON r.payer_id = s.payer_id AND r.collection_month = s.collection_month
+  ON r.payer_id = o.payer_id AND r.collection_month = o.collection_month
 WHERE r.status IN ('active', 'inactive')
   AND b.status = 'succeeded'
   AND b.added_plan_count > 0
@@ -172,9 +176,10 @@ ORDER BY b.mrf_snapshot_id, b.id`)
 
 	activeRows, err := pool.Query(ctx, `
 SELECT s.id, s.payer_id, to_char(s.collection_month, 'YYYY-MM')
-FROM mrfpipeline.mrf_snapshots s
+FROM mrfpipeline.monthly_release_outputs o
+JOIN mrfpipeline.mrf_snapshots s ON s.id = o.mrf_snapshot_id
 JOIN mrfpipeline.monthly_releases r
-  ON r.payer_id = s.payer_id AND r.collection_month = s.collection_month
+  ON r.payer_id = o.payer_id AND r.collection_month = o.collection_month
 WHERE r.status = 'active'
 ORDER BY s.id`)
 	if err != nil {

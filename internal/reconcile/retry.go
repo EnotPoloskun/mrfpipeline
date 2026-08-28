@@ -161,7 +161,7 @@ SELECT s.download_status,
            FROM mrfpipeline.monthly_release_mrf_sources a
            JOIN mrfpipeline.monthly_releases r
              ON r.payer_id = a.payer_id AND r.collection_month = a.collection_month
-           WHERE a.mrf_source_id = s.id AND r.status = 'building'
+           WHERE a.mrf_source_id = s.id AND r.status IN ('building', 'active')
        ),
        EXISTS (
            SELECT 1

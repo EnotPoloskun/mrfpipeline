@@ -1178,7 +1178,7 @@ func TestIntegrationSharedSourceSealedRetryAndReconcile(t *testing.T) {
 INSERT INTO mrfpipeline.monthly_releases
     (payer_id, collection_month, status, sealed_at, last_activated_at)
 VALUES
-    ('uhc', $1, 'active', transaction_timestamp(), transaction_timestamp()),
+    ('uhc', $1, 'inactive', transaction_timestamp(), transaction_timestamp()),
     ('aetna', $1, 'building', NULL, NULL)`, month); err != nil {
 		t.Fatal(err)
 	}
@@ -1233,7 +1233,7 @@ WHERE id = $1`, sourceID); err != nil {
 	}
 	buildingTOC := insertTOCFor(t, pool, "cigna", "2026-08", jobs.StatusPending, jobs.StatusBlocked, jobs.StatusBlocked)
 	report := runPass(t, pool, workspace(t))
-	if report.SealedReleaseInconsistencyCount != 2 || report.RepairedJobCount != 1 {
+	if report.SealedReleaseInconsistencyCount != 1 || report.RepairedJobCount != 1 {
 		t.Fatalf("shared source report: %+v", report)
 	}
 	var buildingJob *int64
@@ -1383,6 +1383,14 @@ INSERT INTO mrfpipeline.mrf_snapshots (mrf_source_id, payer_id, collection_month
 VALUES ($1, 'uhc', $2, 'succeeded') RETURNING id`, sourceID, month).Scan(&snapshotID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_outputs
+    (payer_id, collection_month, mrf_snapshot_id, published_generation,
+     published_at)
+VALUES ('uhc', $1, $2, 1, transaction_timestamp() - interval '1 second')`,
+		month, snapshotID); err != nil {
+		t.Fatal(err)
+	}
 	var batchID int64
 	if err := pool.QueryRow(ctx, `
 INSERT INTO mrfpipeline.plan_attachment_batches
@@ -1471,6 +1479,12 @@ VALUES ($1, $2)`, batchID, planID); err != nil {
 UPDATE mrfpipeline.monthly_releases
 SET status = 'active', sealed_at = transaction_timestamp(), last_activated_at = transaction_timestamp()
 WHERE payer_id = 'uhc' AND collection_month = $1`, month); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_outputs
+    (payer_id, collection_month, mrf_snapshot_id, published_generation)
+VALUES ('uhc', $1, $2, 1)`, month, snapshotID); err != nil {
 		t.Fatal(err)
 	}
 	warehouse := t.TempDir()

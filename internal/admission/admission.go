@@ -675,7 +675,7 @@ SELECT r.resident_capacity,
           AND NOT EXISTS (SELECT 1 FROM mrfpipeline.mrf_materialization_slots x WHERE x.mrf_source_id = s.id)
           AND EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a
                       JOIN mrfpipeline.monthly_releases m ON m.payer_id = a.payer_id AND m.collection_month = a.collection_month
-                      WHERE a.mrf_source_id = s.id AND m.status = 'building'))
+                      WHERE a.mrf_source_id = s.id AND m.status IN ('building', 'active')))
 FROM mrfpipeline.pipeline_runtime r WHERE r.id = true`).Scan(&capacity, &held, &waiting)
 	if err != nil {
 		return
@@ -738,7 +738,7 @@ WHERE m.parse_status = 'succeeded'
               JOIN mrfpipeline.monthly_releases r
                 ON r.payer_id = a.payer_id AND r.collection_month = a.collection_month
               WHERE a.payer_id = s.payer_id AND a.collection_month = s.collection_month
-                AND a.mrf_source_id = s.mrf_source_id AND r.status = 'building')
+                AND a.mrf_source_id = s.mrf_source_id AND r.status IN ('building', 'active'))
 ORDER BY s.id
 FOR UPDATE OF s`)
 	if err != nil {
@@ -815,7 +815,7 @@ WHERE s.parse_status <> 'succeeded'
       FROM mrfpipeline.monthly_release_mrf_sources a
       JOIN mrfpipeline.monthly_releases r
         ON r.payer_id = a.payer_id AND r.collection_month = a.collection_month
-      WHERE a.mrf_source_id = s.id AND r.status = 'building'
+      WHERE a.mrf_source_id = s.id AND r.status IN ('building', 'active')
   )
   AND NOT EXISTS (
       SELECT 1 FROM mrfpipeline.mrf_materialization_slots x

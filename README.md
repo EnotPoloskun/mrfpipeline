@@ -3,7 +3,7 @@
 Operator executable for CMS Transparency in Coverage discovery, TOC and MRF
 processing, warehouse ingestion, and additive plan attachment.
 
-Version 1 is specified by Stories 01–26 in [`requirements/`](requirements/).
+Version 1 is specified by Stories 01–27 in [`requirements/`](requirements/).
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
@@ -11,14 +11,14 @@ decisions that stay consistent across those stories.
 
 Stories [14](requirements/14-feed-free-domain-schema.md) through
 [22](requirements/22-runnable-local-acceptance-and-test-convergence.md) and
-[23](requirements/23-terminal-parse-slot-release.md) define the current
-rebuild-only contract. Story 21 adds bounded MRF admission, resident slots,
-and ordinary role-specific River workers. Story 22 makes the local image,
-Compose recipe, and verification contract runnable. Story 23 releases a slot
-after terminal parse cleanup. Story 25 treats River UI cancel of `mrf.download`
-and `mrf.parse` as that same terminal occupancy; Story 26 extends terminal
-download cleanup to `toc.download` and retry exhaustion. These stories do not
-upgrade an old populated warehouse in place.
+[23](requirements/23-terminal-parse-slot-release.md) through
+[27](requirements/27-incremental-release-publication.md) define the current
+rebuild-only contract. Story 21 adds bounded MRF admission and resident slots;
+Story 22 makes the local topology runnable; Stories 23–26 converge terminal
+cleanup and cancellation. Story 27 persists additive active-output membership,
+allows numeric partial checkpoints and terminal file failures, and keeps known
+MRF work running after first activation. These stories do not upgrade an old
+populated warehouse in place.
 
 The target removes `mrf_feeds` and `feed_id`, identifies an MRF source capture
 by exact URL + collection month, identifies a consumer snapshot by source +
@@ -29,22 +29,25 @@ There is no compatibility adapter, temporary feed state, feature flag, or
 supported intermediate runtime. The pipeline integrates exact feed-free
 `mrfconsumer 2.0.0`.
 
-The pipeline keeps one monthly release per payer in `building`, `active`,
-or `inactive` state. An operator completes and validates a building month, then
-atomically activates it without rewriting warehouse data. Activation seals the
-month against new discovery; rollback reactivates an already sealed historical
-month. Different payers may have different active months.
+The pipeline keeps one monthly release per payer in `building`, `active`, or
+`inactive` state. The first activation freezes discovery and TOC-derived source
+and plan inventory, atomically switches that payer's active month, and publishes
+only the fully consumed, plan-ready outputs validated in the warehouse. MRF
+download, parse, consume, and attachment continue for the known selected
+sources while the release is active.
 
-Activation also freezes every selected output's plan associations. The
-pipeline never schedules, retries, reconciles, or invokes plan attachment for
-an active or inactive release. Plan additions or corrections require a newly
-built release.
+Repeating activation appends newly complete outputs to the same active month;
+previously published outputs remain members. Terminal TOC/MRF file failures are
+reported and omitted rather than blocking publication. Pending MRF work is
+omitted until a later activation. Consumer-ingest and plan-attachment failures
+still block the checkpoint because they indicate publication defects. An
+inactive release is frozen and may be reactivated as an exact rollback.
 
 A future query service will load the complete active
-`(payer_id, collection_month, output_id)` relation derived from the pipeline's
-sealed snapshots at startup or control-plane refresh, validate it against the
-warehouse, and atomically publish verified serving state. Each request captures
-that already verified relation without rescanning warehouse metadata. Queries
+`(payer_id, collection_month, output_id)` relation from the pipeline's durable
+published-output membership at startup or control-plane refresh, validate it
+against the warehouse, and atomically publish verified serving state. Each
+request captures that relation without rescanning warehouse metadata. Queries
 with no payer filter must apply every active output row, not one global month
 and not every warehouse output that happens to share an active payer/month.
 Query planning, partition pruning, and performance acceptance belong to that
@@ -193,11 +196,11 @@ release and reports identifiers without waiting for downloads. `--limit` is a
 TOC limit. `--mrf-source-limit` is the cumulative MRF target; it is required
 when a release is still `unset`, and can be increased later with `set-total`.
 
-`month status` reports targeted readiness blockers, or the complete active
+`month status` reports strict completion blockers, or the complete active
 `(payer_id, collection_month, output_id)` handoff relation with no selector.
-`month activate` seals a ready building/inactive release and atomically switches
-that payer's active month. Repeating activation is idempotent; activation and
-rollback do not rewrite warehouse files.
+`month activate` atomically publishes the currently consumed, plan-ready,
+warehouse-valid outputs. The first activation freezes discovery/TOC inventory;
+repeating it appends newly ready outputs while known MRF work continues.
 
 `reconcile` performs only safe nonterminal repairs. Terminal failed stages
 require `retry`; stop control first before running reconcile because it holds
@@ -322,8 +325,11 @@ docker compose -f docker-compose.story21.yml up -d control
 ```
 
 For a controlled retry, leave the MRF/consumer roles running and execute only
-the `retry` command. `month activate` is also a one-shot CLI command, but use
-it only after a targeted status reports `database_ready:true`:
+the `retry` command. `month activate` is also a one-shot CLI command. It does
+not require strict `database_ready:true`: numeric targets, pending MRF work, and
+terminal TOC/MRF file failures may remain. Discovery and TOC work must be
+terminal, at least one output must be plan-ready, and consumer/attachment
+failures still reject the checkpoint:
 
 ```text
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month activate --payer uhc --collection-month <YYYY-MM>
@@ -370,40 +376,41 @@ associations A, B, and C, and the second batch writes only C.
 ## Monthly releases and serving relation
 
 Collection month is part of domain identity and release state, not a label.
-Discovery creates a `building` release transactionally. Activation changes it
-to `active`, freezes discovery and plan associations, and records the selected
-immutable snapshots. An `inactive` release remains available for explicit
-rollback/reactivation.
+Discovery creates a `building` release transactionally. First activation
+changes it to `active`, freezes discovery and TOC-derived inventory, and writes
+durable membership for only the currently consumed, plan-ready outputs. An
+`inactive` release remains available for exact rollback/reactivation.
 
-The serving relation is derived from PostgreSQL as
-`(payer_id, collection_month, 'mrf-' || snapshot.id)` for every snapshot in
-each active release. A payer-less query uses the complete relation; it does not
-infer membership from every warehouse output or a global latest month. No
-automatic latest-month or `current_*` serving view is supported.
+The serving relation is read from `monthly_release_outputs` as
+`(payer_id, collection_month, 'mrf-' || snapshot.id)` for the active release.
+A payer-less query uses the complete persisted relation; it does not infer
+membership from every warehouse output or a global latest month. No automatic
+latest-month or `current_*` serving view is supported.
 
-Active and inactive releases are sealed. New discovery, plans, batches, batch
-items, attachment jobs, and attachment execution require a new building
-release. Reconciliation reports sealed corruption without silently changing it.
+An active release remains open only for already-known MRF download, parse,
+consume, and attachment work. Repeating activation appends newly plan-ready
+outputs. Discovery, TOC processing, source-target changes, and new plan
+inventory are closed after first activation. Inactive releases are fully
+frozen. Reconciliation audits only published output membership.
 
 A snapshot is plan-ready only when consume succeeded, at least one attachment
 batch succeeded, every plan is assigned, and no pending/running/failed batch
-exists. A planless snapshot is not plan-ready. Do not serve planless rates
-when that PostgreSQL-derived state is required.
+exists. A planless snapshot is not plan-ready. Do not serve planless rates.
 
 ## Operator procedures
 
-Check a building release before cutover. This targeted form is authoritative
-and reports sorted blocker codes plus the exact readiness decision:
+Inspect the release before a checkpoint. `database_ready` remains the strict
+all-work completion signal; incremental activation may succeed while its
+blockers include numeric partial coverage, pending MRF work, or terminal
+TOC/MRF file failures:
 
 ```text
 mrfpipeline month status --payer uhc --collection-month 2026-09
-{"payer_id":"uhc","collection_month":"2026-09","status":"building","database_ready":true,"blockers":[]}
 ```
 
-After readiness succeeds, cut over that payer explicitly. Activation seals the
-month and makes its derived snapshot outputs active; the previous active month
-becomes inactive. To roll back, run the same command for the sealed historical
-month. Both operations are lease-protected, atomic, and idempotent:
+Activate the currently ready subset explicitly. The first call switches the
+payer and freezes TOC inventory; later calls append newly ready outputs.
+Reactivating an inactive historical month restores its frozen membership:
 
 ```text
 mrfpipeline month activate --payer uhc --collection-month 2026-09
@@ -500,9 +507,10 @@ docker compose -f docker-compose.story21.yml --profile operator run --rm cli mon
 docker compose -f docker-compose.story21.yml logs -f --tail=50 control mrf consumer
 ```
 
-Success for this sample: selected sources download, parse, and ingest; status
-stays not activatable; blockers include `mrf_source_target_partial`. Do **not**
-run `month activate` on a numeric sample.
+Success for a numeric sample: completed outputs may be activated after
+discovery/TOC work is terminal. `mrf_source_target_partial` remains a strict
+completion blocker and `partial:true` remains visible, but neither prevents an
+incremental publication checkpoint.
 
 Before a bounded run, record free space on the artifact and warehouse
 filesystems. During the run, monitor download and parsed bytes, warehouse
@@ -560,9 +568,9 @@ explicit `--mrf-source-limit` (required while the new release is unset).
 
 The numeric target is cumulative even when PostgreSQL already contains many
 pending sources: only the stable selected prefix up to the target can acquire
-resident slots and executable MRF jobs. After those selected sources drain,
-status remains partial with the `mrf_source_target_partial` blocker and
-activation is rejected without mutation.
+resident slots and executable MRF jobs. `partial:true` and
+`mrf_source_target_partial` continue to describe incomplete full-month
+coverage, while activation may publish the plan-ready subset.
 
 To process more **already imported** MRF URLs, raise the target. It cannot
 decrease, and `all` cannot be changed back to a number:
@@ -608,9 +616,11 @@ Disk, warehouse, and River history remain operator-bounded; raise
 `MRFPIPELINE_MRF_RESIDENT_CAPACITY` only if you want more concurrent raw
 sources, not as a substitute for `all`.
 
-Do not use activation as a sample check. Activation requires target `all`, all
-known sources and release gates to drain, and complete consumer/plan output.
-Use it only after targeted status reports `database_ready:true`:
+Activation is an explicit publication checkpoint, not a claim that the full
+month completed. Numeric targets and terminal TOC/MRF file failures are
+allowed; pending MRF work continues and can be appended by running activation
+again. Discovery/TOC work must be terminal, and consumer/attachment failures
+must be resolved:
 
 ```text
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month activate --payer uhc --collection-month <YYYY-MM>
@@ -735,8 +745,9 @@ ORDER BY status;
 
 SELECT r.payer_id, r.collection_month, 'mrf-' || s.id AS output_id
 FROM mrfpipeline.monthly_releases r
-JOIN mrfpipeline.mrf_snapshots s
-  ON s.payer_id = r.payer_id AND s.collection_month = r.collection_month
+JOIN mrfpipeline.monthly_release_outputs o
+  ON o.payer_id = r.payer_id AND o.collection_month = r.collection_month
+JOIN mrfpipeline.mrf_snapshots s ON s.id = o.mrf_snapshot_id
 WHERE r.status = 'active'
 ORDER BY r.payer_id, r.collection_month, s.id;
 

@@ -14,16 +14,16 @@ import (
 // before a release changes its serving state. It does not inspect Parquet
 // rows or mutate the database or warehouse.
 func ValidateActivationTargets(ctx context.Context, pool *pgxpool.Pool, warehouse, payer string, month time.Time, targets []release.Target) error {
-	sealedAt, err := release.ReleaseSealedAt(ctx, pool, payer, month)
-	if err != nil {
-		return err
-	}
 	for _, target := range targets {
+		publishedAt, err := release.OutputPublishedAt(ctx, pool, payer, month, target.SnapshotID)
+		if err != nil {
+			return err
+		}
 		if err := consumeringest.InspectCompletedSnapshot(warehouse, target.PayerID, target.CollectionMonth, target.OutputID); err != nil {
 			if consumeringest.IsPublicationUnreadable(err) {
 				return jobs.Failure(jobs.FailureArtifactReconciliationFailed)
 			}
-			if sealedAt != nil {
+			if publishedAt != nil {
 				return jobs.Failure(jobs.FailureSealedReleaseInconsistent)
 			}
 			return jobs.Failure(jobs.FailureReleaseNotReady)
@@ -32,8 +32,8 @@ func ValidateActivationTargets(ctx context.Context, pool *pgxpool.Pool, warehous
 		if err != nil {
 			return err
 		}
-		if sealedAt != nil {
-			changed, err := release.HasPlanRowsAfterSeal(ctx, pool, target.SnapshotID, *sealedAt)
+		if publishedAt != nil {
+			changed, err := release.HasPlanRowsAfterSeal(ctx, pool, target.SnapshotID, *publishedAt)
 			if err != nil {
 				return err
 			}
@@ -45,7 +45,7 @@ func ValidateActivationTargets(ctx context.Context, pool *pgxpool.Pool, warehous
 			if consumeringest.IsPublicationUnreadable(err) {
 				return jobs.Failure(jobs.FailureArtifactReconciliationFailed)
 			}
-			if sealedAt != nil {
+			if publishedAt != nil {
 				return jobs.Failure(jobs.FailureSealedReleaseInconsistent)
 			}
 			return jobs.Failure(jobs.FailureReleaseNotReady)

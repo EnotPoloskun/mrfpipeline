@@ -147,7 +147,7 @@ const monthHelp = `Usage:
   mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
   mrfpipeline month --help
 
-Inspect monthly serving state or atomically activate a ready release.
+Inspect monthly serving state or atomically publish ready outputs.
 `
 
 const monthStatusHelp = `Usage:
@@ -162,8 +162,12 @@ const monthActivateHelp = `Usage:
   mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
   mrfpipeline month activate --help
 
-Activation validates the complete consumer environment and coordinates by
-locking the payer's release rows; it does not require the control worker lease.
+Activation locks the payer's release rows and validates the consumer
+environment. First activation requires terminal discovery/TOC work and freezes
+that inventory. Numeric targets, terminal TOC/MRF file failures, and pending
+MRF work are allowed. Only consumed, plan-ready outputs are published; repeat
+activation to append newly ready outputs while MRF work continues. Consumer or
+plan-attachment failures reject the checkpoint. Control lease is not required.
 `
 
 const monthSourcesSetTotalHelp = `Usage:

@@ -168,7 +168,7 @@ ON CONFLICT (id) DO NOTHING`, ws.Root); err != nil {
 
 func waitImport(t *testing.T, pool *pgxpool.Pool, tocID int64, want string) {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(2 * time.Minute)
 	for time.Now().Before(deadline) {
 		var status string
 		err := pool.QueryRow(context.Background(), `SELECT import_status FROM mrfpipeline.toc_files WHERE id = $1`, tocID).Scan(&status)

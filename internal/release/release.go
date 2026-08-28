@@ -64,12 +64,20 @@ type StatusReport struct {
 }
 
 type ActivationResult struct {
-	PayerID                 string  `json:"payer_id"`
-	CollectionMonth         string  `json:"collection_month"`
-	OutputCount             int64   `json:"output_count"`
-	PreviousCollectionMonth *string `json:"previous_collection_month"`
+	PayerID                  string  `json:"payer_id"`
+	CollectionMonth          string  `json:"collection_month"`
+	OutputCount              int64   `json:"output_count"`
+	PublicationGeneration    int64   `json:"publication_generation"`
+	AddedOutputCount         int64   `json:"added_output_count"`
+	SkippedOutputCount       int64   `json:"skipped_output_count"`
+	TerminalFileFailureCount int64   `json:"terminal_file_failure_count"`
+	PreviousCollectionMonth  *string `json:"previous_collection_month"`
 }
 
+type rowsQueryer interface {
+	queryer
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
 type queryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
@@ -122,6 +130,8 @@ FOR UPDATE`, tocID).Scan(&lockedPayer, &lockedMonth)
 	return nil
 }
 
+// RequireBuildingForSnapshot permits materialization while the release is
+// building or active. Inactive releases remain frozen.
 func RequireBuildingForSnapshot(ctx context.Context, tx pgx.Tx, snapshotID int64) error {
 	var payer string
 	var month time.Time
@@ -135,7 +145,7 @@ WHERE id = $1`, snapshotID).Scan(&payer, &month)
 	if err != nil {
 		return dbFailure(ctx)
 	}
-	if err := lockBuildingRelease(ctx, tx, payer, month); err != nil {
+	if err := lockMaterializingRelease(ctx, tx, payer, month); err != nil {
 		return err
 	}
 	var lockedPayer string
@@ -157,6 +167,8 @@ FOR UPDATE`, snapshotID).Scan(&lockedPayer, &lockedMonth)
 	return nil
 }
 
+// RequireBuildingForBatch permits plan publication while the release is
+// building or active. Inactive releases remain frozen.
 func RequireBuildingForBatch(ctx context.Context, tx pgx.Tx, batchID int64) error {
 	var snapshotID int64
 	err := tx.QueryRow(ctx, `
@@ -181,7 +193,7 @@ WHERE id = $1`, snapshotID).Scan(&payer, &month)
 	if err != nil {
 		return dbFailure(ctx)
 	}
-	if err := lockBuildingRelease(ctx, tx, payer, month); err != nil {
+	if err := lockMaterializingRelease(ctx, tx, payer, month); err != nil {
 		return err
 	}
 	var lockedSnapshotID int64
@@ -212,6 +224,8 @@ FOR UPDATE`, batchID).Scan(&batchSnapshotID)
 	return nil
 }
 
+// RequireBuildingForStage keeps discovery/TOC work building-only and permits
+// MRF/consumer materialization for building or active releases.
 func RequireBuildingForStage(ctx context.Context, tx pgx.Tx, kind string, domainID int64) error {
 	switch kind {
 	case jobs.KindDiscoveryRun:
@@ -243,6 +257,25 @@ FOR UPDATE`, payer, month).Scan(&status)
 		return dbFailure(ctx)
 	}
 	if status != Building {
+		return jobs.Failure(jobs.FailureSealedReleaseInconsistent)
+	}
+	return nil
+}
+
+func lockMaterializingRelease(ctx context.Context, tx pgx.Tx, payer string, month time.Time) error {
+	var status string
+	err := tx.QueryRow(ctx, `
+SELECT status
+FROM mrfpipeline.monthly_releases
+WHERE payer_id = $1 AND collection_month = $2
+FOR UPDATE`, payer, month).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return jobs.Failure(jobs.FailureMissingRecord)
+	}
+	if err != nil {
+		return dbFailure(ctx)
+	}
+	if status != Building && status != Active {
 		return jobs.Failure(jobs.FailureSealedReleaseInconsistent)
 	}
 	return nil
@@ -334,7 +367,7 @@ func requireBuildingForSource(ctx context.Context, tx pgx.Tx, sourceID int64) er
 		return jobs.Failure(jobs.FailureMissingRecord)
 	}
 	for _, key := range keys {
-		if err := lockBuildingRelease(ctx, tx, key.payer, key.month); err != nil {
+		if err := lockMaterializingRelease(ctx, tx, key.payer, key.month); err != nil {
 			return err
 		}
 	}
@@ -359,7 +392,7 @@ FROM mrfpipeline.monthly_releases
 WHERE payer_id = $1 AND collection_month = $2`, key.payer, key.month).Scan(&status); err != nil {
 				return dbFailure(ctx)
 			}
-			if status != Building {
+			if status != Building && status != Active {
 				return jobs.Failure(jobs.FailureSealedReleaseInconsistent)
 			}
 		}
@@ -686,8 +719,9 @@ func ListActiveOutputs(ctx context.Context, pool *pgxpool.Pool) ([]Target, error
 	rows, err := pool.Query(ctx, `
 SELECT s.payer_id, s.collection_month, s.id
 FROM mrfpipeline.monthly_releases r
-JOIN mrfpipeline.mrf_snapshots s
-  ON s.payer_id = r.payer_id AND s.collection_month = r.collection_month
+JOIN mrfpipeline.monthly_release_outputs o
+  ON o.payer_id = r.payer_id AND o.collection_month = r.collection_month
+JOIN mrfpipeline.mrf_snapshots s ON s.id = o.mrf_snapshot_id
 WHERE r.status = 'active'
 ORDER BY s.payer_id, s.collection_month, s.id`)
 	if err != nil {
@@ -721,6 +755,101 @@ WHERE payer_id = $1 AND collection_month = $2
         AND a.mrf_source_id = mrf_snapshots.mrf_source_id
   )
 ORDER BY id`, payer, month)
+	if err != nil {
+		return nil, dbFailure(ctx)
+	}
+	defer rows.Close()
+	var out []Target
+	for rows.Next() {
+		var p string
+		var m time.Time
+		var id int64
+		if err := rows.Scan(&p, &m, &id); err != nil {
+			return nil, dbFailure(ctx)
+		}
+		out = append(out, Target{PayerID: p, CollectionMonth: formatMonth(m), OutputID: formatOutputID(id), SnapshotID: id})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbFailure(ctx)
+	}
+	return out, nil
+}
+
+func ListPublishableTargets(ctx context.Context, pool *pgxpool.Pool, payer string, month time.Time) ([]Target, error) {
+	if pool == nil {
+		return nil, jobs.Failure(jobs.FailureInvalidArguments)
+	}
+	return listPublishableTargets(ctx, pool, payer, month)
+}
+
+func listPublishableTargets(ctx context.Context, q rowsQueryer, payer string, month time.Time) ([]Target, error) {
+	rows, err := q.Query(ctx, `
+SELECT s.payer_id, s.collection_month, s.id
+FROM mrfpipeline.mrf_snapshots s
+JOIN mrfpipeline.monthly_release_mrf_sources a
+  ON a.payer_id = s.payer_id
+ AND a.collection_month = s.collection_month
+ AND a.mrf_source_id = s.mrf_source_id
+WHERE s.payer_id = $1
+  AND s.collection_month = $2
+  AND s.consume_status = 'succeeded'
+  AND EXISTS (
+      SELECT 1
+      FROM mrfpipeline.plan_attachment_batches b
+      WHERE b.mrf_snapshot_id = s.id
+        AND b.status = 'succeeded'
+        AND b.added_plan_count > 0)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM mrfpipeline.plan_attachment_batches b
+      WHERE b.mrf_snapshot_id = s.id AND b.status <> 'succeeded')
+  AND NOT EXISTS (
+      SELECT 1
+      FROM mrfpipeline.mrf_plans p
+      WHERE p.mrf_snapshot_id = s.id
+        AND NOT EXISTS (
+            SELECT 1
+            FROM mrfpipeline.plan_attachment_batch_items i
+            JOIN mrfpipeline.plan_attachment_batches b
+              ON b.id = i.plan_attachment_batch_id
+            WHERE i.mrf_plan_id = p.id
+              AND b.mrf_snapshot_id = s.id
+              AND b.status = 'succeeded'))
+ORDER BY s.id`, payer, month)
+	if err != nil {
+		return nil, dbFailure(ctx)
+	}
+	defer rows.Close()
+	var out []Target
+	for rows.Next() {
+		var p string
+		var m time.Time
+		var id int64
+		if err := rows.Scan(&p, &m, &id); err != nil {
+			return nil, dbFailure(ctx)
+		}
+		out = append(out, Target{PayerID: p, CollectionMonth: formatMonth(m), OutputID: formatOutputID(id), SnapshotID: id})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbFailure(ctx)
+	}
+	return out, nil
+}
+
+func ListPublishedTargets(ctx context.Context, pool *pgxpool.Pool, payer string, month time.Time) ([]Target, error) {
+	if pool == nil {
+		return nil, jobs.Failure(jobs.FailureInvalidArguments)
+	}
+	return listPublishedTargets(ctx, pool, payer, month)
+}
+
+func listPublishedTargets(ctx context.Context, q rowsQueryer, payer string, month time.Time) ([]Target, error) {
+	rows, err := q.Query(ctx, `
+SELECT s.payer_id, s.collection_month, s.id
+FROM mrfpipeline.monthly_release_outputs o
+JOIN mrfpipeline.mrf_snapshots s ON s.id = o.mrf_snapshot_id
+WHERE o.payer_id = $1 AND o.collection_month = $2
+ORDER BY s.id`, payer, month)
 	if err != nil {
 		return nil, dbFailure(ctx)
 	}
@@ -812,37 +941,177 @@ WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&sealedAt); e
 	return sealedAt, nil
 }
 
+func OutputPublishedAt(ctx context.Context, pool *pgxpool.Pool, payer string, month time.Time, snapshotID int64) (*time.Time, error) {
+	if pool == nil || snapshotID <= 0 {
+		return nil, jobs.Failure(jobs.FailureInvalidArguments)
+	}
+	var publishedAt time.Time
+	err := pool.QueryRow(ctx, `
+SELECT published_at
+FROM mrfpipeline.monthly_release_outputs
+WHERE payer_id = $1 AND collection_month = $2 AND mrf_snapshot_id = $3`,
+		payer, month, snapshotID).Scan(&publishedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, dbFailure(ctx)
+	}
+	return &publishedAt, nil
+}
+
+type publicationCheckpoint struct {
+	SnapshotCount            int64
+	PublishedCount           int64
+	TerminalFileFailureCount int64
+}
+
+func inspectPublicationCheckpoint(ctx context.Context, q queryer, payer string, month time.Time) (publicationCheckpoint, error) {
+	var out publicationCheckpoint
+	var targetKind string
+	var targetCount *int64
+	if err := q.QueryRow(ctx, `
+SELECT mrf_source_target_kind, mrf_source_target_count
+FROM mrfpipeline.monthly_releases
+WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&targetKind, &targetCount); errors.Is(err, pgx.ErrNoRows) {
+		return out, jobs.Failure(jobs.FailureReleaseNotFound)
+	} else if err != nil {
+		return out, dbFailure(ctx)
+	}
+	if targetKind == "unset" {
+		return out, jobs.Failure(jobs.FailureReleaseNotReady)
+	}
+	var knownSources, selectedSources int64
+	if err := q.QueryRow(ctx, `
+SELECT
+  (SELECT count(DISTINCT mrf_source_id)
+   FROM mrfpipeline.mrf_snapshots
+   WHERE payer_id = $1 AND collection_month = $2),
+  (SELECT count(*)
+   FROM mrfpipeline.monthly_release_mrf_sources
+   WHERE payer_id = $1 AND collection_month = $2)`,
+		payer, month).Scan(&knownSources, &selectedSources); err != nil {
+		return out, dbFailure(ctx)
+	}
+	requiredSelected := knownSources
+	if targetKind == "numeric" && targetCount != nil && *targetCount < requiredSelected {
+		requiredSelected = *targetCount
+	}
+	if selectedSources != requiredSelected {
+		return out, jobs.Failure(jobs.FailureReleaseNotReady)
+	}
+
+	var discoveryCount, discoveryBad int64
+	if err := q.QueryRow(ctx, `
+SELECT count(*), count(*) FILTER (WHERE status <> 'succeeded')
+FROM mrfpipeline.discovery_runs
+WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&discoveryCount, &discoveryBad); err != nil {
+		return out, dbFailure(ctx)
+	}
+	if discoveryCount == 0 || discoveryBad != 0 {
+		return out, jobs.Failure(jobs.FailureReleaseNotReady)
+	}
+
+	var tocCount, tocNonterminal, tocFailed int64
+	if err := q.QueryRow(ctx, `
+SELECT count(*),
+       count(*) FILTER (WHERE download_status IN ('pending', 'running')
+                           OR parse_status IN ('pending', 'running')
+                           OR import_status IN ('pending', 'running')),
+       count(*) FILTER (WHERE download_status = 'failed'
+                           OR parse_status = 'failed'
+                           OR import_status = 'failed')
+FROM mrfpipeline.toc_files
+WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&tocCount, &tocNonterminal, &tocFailed); err != nil {
+		return out, dbFailure(ctx)
+	}
+	if tocCount == 0 || tocNonterminal != 0 {
+		return out, jobs.Failure(jobs.FailureReleaseNotReady)
+	}
+
+	var publicationFailed int64
+	if err := q.QueryRow(ctx, `
+SELECT
+  (SELECT count(*)
+   FROM mrfpipeline.mrf_snapshots s
+   JOIN mrfpipeline.monthly_release_mrf_sources a
+     ON a.payer_id = s.payer_id
+    AND a.collection_month = s.collection_month
+    AND a.mrf_source_id = s.mrf_source_id
+   WHERE s.payer_id = $1 AND s.collection_month = $2
+     AND s.consume_status = 'failed')
+  +
+  (SELECT count(*)
+   FROM mrfpipeline.plan_attachment_batches b
+   JOIN mrfpipeline.mrf_snapshots s ON s.id = b.mrf_snapshot_id
+   JOIN mrfpipeline.monthly_release_mrf_sources a
+     ON a.payer_id = s.payer_id
+    AND a.collection_month = s.collection_month
+    AND a.mrf_source_id = s.mrf_source_id
+   WHERE s.payer_id = $1 AND s.collection_month = $2
+     AND b.status = 'failed')`, payer, month).Scan(&publicationFailed); err != nil {
+		return out, dbFailure(ctx)
+	}
+	if publicationFailed != 0 {
+		return out, jobs.Failure(jobs.FailureReleaseNotReady)
+	}
+
+	if err := q.QueryRow(ctx, `
+SELECT count(*)
+FROM mrfpipeline.mrf_snapshots s
+JOIN mrfpipeline.monthly_release_mrf_sources a
+  ON a.payer_id = s.payer_id
+ AND a.collection_month = s.collection_month
+ AND a.mrf_source_id = s.mrf_source_id
+WHERE s.payer_id = $1 AND s.collection_month = $2`, payer, month).Scan(&out.SnapshotCount); err != nil {
+		return out, dbFailure(ctx)
+	}
+	var mrfFailed int64
+	if err := q.QueryRow(ctx, `
+SELECT count(*)
+FROM mrfpipeline.mrf_sources s
+JOIN mrfpipeline.monthly_release_mrf_sources a ON a.mrf_source_id = s.id
+WHERE a.payer_id = $1 AND a.collection_month = $2
+  AND (s.download_status = 'failed' OR s.parse_status = 'failed')`, payer, month).Scan(&mrfFailed); err != nil {
+		return out, dbFailure(ctx)
+	}
+	if err := q.QueryRow(ctx, `
+SELECT count(*)
+FROM mrfpipeline.monthly_release_outputs
+WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&out.PublishedCount); err != nil {
+		return out, dbFailure(ctx)
+	}
+	out.TerminalFileFailureCount = tocFailed + mrfFailed
+	return out, nil
+}
+
+func mergeTargets(left, right []Target) []Target {
+	seen := make(map[int64]struct{}, len(left)+len(right))
+	out := make([]Target, 0, len(left)+len(right))
+	for _, targets := range [][]Target{left, right} {
+		for _, target := range targets {
+			if _, ok := seen[target.SnapshotID]; ok {
+				continue
+			}
+			seen[target.SnapshotID] = struct{}{}
+			out = append(out, target)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SnapshotID < out[j].SnapshotID })
+	return out
+}
+
 func Activate(ctx context.Context, pool *pgxpool.Pool, payer string, month time.Time, preflight func([]Target) error) (ActivationResult, error) {
 	if pool == nil {
 		return ActivationResult{}, jobs.Failure(jobs.FailureInvalidArguments)
 	}
-	initial, err := Readiness(ctx, pool, payer, month)
-	if err != nil {
-		return ActivationResult{}, err
-	}
-	if initial.Status != Building && initial.Status != Inactive && initial.Status != Active {
-		return ActivationResult{}, jobs.Failure(jobs.FailureDomainInvariant)
-	}
-	if !initial.DatabaseReady {
-		return ActivationResult{}, jobs.Failure(jobs.FailureReleaseNotReady)
-	}
-	targets, err := ListTargets(ctx, pool, payer, month)
-	if err != nil {
-		return ActivationResult{}, err
-	}
-	if preflight != nil {
-		if err := preflight(targets); err != nil {
-			return ActivationResult{}, err
-		}
-	}
-
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return ActivationResult{}, dbFailure(ctx)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	rows, err := tx.Query(ctx, `
-SELECT payer_id, collection_month, status
+SELECT payer_id, collection_month, status, publication_generation
 FROM mrfpipeline.monthly_releases
 WHERE payer_id = $1
 ORDER BY collection_month
@@ -851,17 +1120,20 @@ FOR UPDATE`, payer)
 		return ActivationResult{}, dbFailure(ctx)
 	}
 	var targetStatus string
+	var generation int64
 	var activeMonth *time.Time
 	for rows.Next() {
 		var p string
 		var m time.Time
 		var s string
-		if err := rows.Scan(&p, &m, &s); err != nil {
+		var g int64
+		if err := rows.Scan(&p, &m, &s, &g); err != nil {
 			rows.Close()
 			return ActivationResult{}, dbFailure(ctx)
 		}
 		if m.Equal(month) {
 			targetStatus = s
+			generation = g
 		}
 		if s == Active && !m.Equal(month) {
 			mm := m
@@ -875,41 +1147,104 @@ FOR UPDATE`, payer)
 	if targetStatus == "" {
 		return ActivationResult{}, jobs.Failure(jobs.FailureReleaseNotFound)
 	}
-	locked, err := readiness(ctx, tx, payer, month)
+	if targetStatus != Building && targetStatus != Inactive && targetStatus != Active {
+		return ActivationResult{}, jobs.Failure(jobs.FailureDomainInvariant)
+	}
+
+	state := publicationCheckpoint{}
+	published, err := listPublishedTargets(ctx, tx, payer, month)
 	if err != nil {
 		return ActivationResult{}, err
 	}
-	if !locked.DatabaseReady {
+	targets := published
+	if targetStatus != Inactive {
+		state, err = inspectPublicationCheckpoint(ctx, tx, payer, month)
+		if err != nil {
+			return ActivationResult{}, err
+		}
+		publishable, err := listPublishableTargets(ctx, tx, payer, month)
+		if err != nil {
+			return ActivationResult{}, err
+		}
+		targets = mergeTargets(published, publishable)
+	}
+	if len(targets) == 0 {
 		return ActivationResult{}, jobs.Failure(jobs.FailureReleaseNotReady)
 	}
-	if targetStatus == Active {
-		if err := tx.Commit(ctx); err != nil {
+	if preflight != nil {
+		if err := preflight(targets); err != nil {
+			return ActivationResult{}, err
+		}
+	}
+
+	ids := make([]int64, 0, len(targets))
+	for _, target := range targets {
+		ids = append(ids, target.SnapshotID)
+	}
+	var added int64
+	if targetStatus != Inactive {
+		nextGeneration := generation + 1
+		tag, err := tx.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_outputs
+    (payer_id, collection_month, mrf_snapshot_id, published_generation)
+SELECT $1, $2, s.id, $4
+FROM mrfpipeline.mrf_snapshots s
+WHERE s.payer_id = $1
+  AND s.collection_month = $2
+  AND s.id = ANY($3::bigint[])
+ON CONFLICT (payer_id, collection_month, mrf_snapshot_id) DO NOTHING`,
+			payer, month, ids, nextGeneration)
+		if err != nil {
 			return ActivationResult{}, dbFailure(ctx)
 		}
-		return ActivationResult{PayerID: payer, CollectionMonth: formatMonth(month), OutputCount: int64(len(targets))}, nil
+		added = tag.RowsAffected()
+		if targetStatus == Building && added == 0 {
+			return ActivationResult{}, jobs.Failure(jobs.FailureReleaseNotReady)
+		}
+		if added != 0 {
+			generation = nextGeneration
+		}
 	}
-	if targetStatus != Building && targetStatus != Inactive {
-		return ActivationResult{}, jobs.Failure(jobs.FailureDomainInvariant)
-	}
-	if _, err := tx.Exec(ctx, `
+
+	if targetStatus != Active {
+		if _, err := tx.Exec(ctx, `
 UPDATE mrfpipeline.monthly_releases
 SET status = 'inactive', updated_at = transaction_timestamp()
 WHERE payer_id = $1 AND status = 'active'`, payer); err != nil {
-		return ActivationResult{}, dbFailure(ctx)
+			return ActivationResult{}, dbFailure(ctx)
+		}
 	}
-	if _, err := tx.Exec(ctx, `
+	if targetStatus != Active || added != 0 {
+		if _, err := tx.Exec(ctx, `
 UPDATE mrfpipeline.monthly_releases
 SET status = 'active',
+    publication_generation = $3,
     sealed_at = COALESCE(sealed_at, transaction_timestamp()),
     last_activated_at = transaction_timestamp(),
     updated_at = transaction_timestamp()
-WHERE payer_id = $1 AND collection_month = $2`, payer, month); err != nil {
+WHERE payer_id = $1 AND collection_month = $2`, payer, month, generation); err != nil {
+			return ActivationResult{}, dbFailure(ctx)
+		}
+	}
+	var outputCount int64
+	if err := tx.QueryRow(ctx, `
+SELECT count(*)
+FROM mrfpipeline.monthly_release_outputs
+WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&outputCount); err != nil {
 		return ActivationResult{}, dbFailure(ctx)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return ActivationResult{}, dbFailure(ctx)
 	}
-	result := ActivationResult{PayerID: payer, CollectionMonth: formatMonth(month), OutputCount: int64(len(targets))}
+	result := ActivationResult{
+		PayerID: payer, CollectionMonth: formatMonth(month),
+		OutputCount: outputCount, PublicationGeneration: generation,
+		AddedOutputCount: added, SkippedOutputCount: state.SnapshotCount - outputCount,
+		TerminalFileFailureCount: state.TerminalFileFailureCount,
+	}
+	if result.SkippedOutputCount < 0 {
+		result.SkippedOutputCount = 0
+	}
 	if activeMonth != nil {
 		text := formatMonth(*activeMonth)
 		result.PreviousCollectionMonth = &text

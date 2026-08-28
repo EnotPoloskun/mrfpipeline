@@ -75,7 +75,7 @@ JOIN mrfpipeline.monthly_release_mrf_sources a ON a.mrf_source_id = s.id
 JOIN mrfpipeline.monthly_releases r
   ON r.payer_id = a.payer_id AND r.collection_month = a.collection_month
 WHERE s.parse_status = 'failed'
-  AND r.status = 'building'
+  AND r.status IN ('building', 'active')
   AND s.id > $1
 ORDER BY s.id LIMIT $2`
 	var after int64

@@ -12,8 +12,9 @@ ORDER BY status`
 	SQLActiveOutputs = `
 SELECT r.payer_id, r.collection_month, 'mrf-' || s.id AS output_id
 FROM mrfpipeline.monthly_releases r
-JOIN mrfpipeline.mrf_snapshots s
-  ON s.payer_id = r.payer_id AND s.collection_month = r.collection_month
+JOIN mrfpipeline.monthly_release_outputs o
+  ON o.payer_id = r.payer_id AND o.collection_month = r.collection_month
+JOIN mrfpipeline.mrf_snapshots s ON s.id = o.mrf_snapshot_id
 WHERE r.status = 'active'
 ORDER BY r.payer_id, r.collection_month, s.id`
 

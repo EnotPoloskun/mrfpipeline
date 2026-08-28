@@ -16,8 +16,8 @@ Compose PostgreSQL.
 - `--scale consumer=2` (the extra replica exits `worker_busy`)
 - `docker compose down -v` unless deleting the disposable PostgreSQL and
   artifact volumes is intentional
-- `month activate` on a numeric MRF sample (`mrf_source_target` is a number,
-  not `all`)
+- run first `month activate` before discovery/TOC work is terminal; activation
+  freezes that inventory, while known MRF work continues
 - retry or delete River jobs from River UI; do not cancel kinds other than
   `mrf.download` / `mrf.parse` / `toc.download` (those fail the stage; MRF
   download cleanup frees the slot)
@@ -166,9 +166,10 @@ If `mrf_sources_known` is still below the new target, admit more TOC files
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 11 --mrf-source-limit <current-target>
 ```
 
-Repeat `discover` with a larger `--limit` until `mrf_sources_selected` matches
-the target. Status stays `building` with `mrf_source_target_partial` until
-target is `all` and every selected source drains.
+Repeat `discover` with a larger `--limit` until the intended TOC/source
+inventory is present. First activation freezes discovery/TOC inventory.
+Numeric targets remain valid for incremental activation; `partial:true` and
+`mrf_source_target_partial` continue to report incomplete full-month coverage.
 
 ## Reconcile
 

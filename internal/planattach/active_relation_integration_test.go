@@ -38,6 +38,12 @@ WHERE payer_id = 'uhc' AND collection_month = DATE '2026-08-01'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_outputs
+    (payer_id, collection_month, mrf_snapshot_id, published_generation)
+VALUES ('uhc', DATE '2026-08-01', $1, 1)`, snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
 INSERT INTO mrfpipeline.monthly_releases
     (payer_id, collection_month, status, sealed_at, last_activated_at)
 VALUES ('uhc', DATE '2026-07-01', 'inactive', transaction_timestamp(), transaction_timestamp())`); err != nil {

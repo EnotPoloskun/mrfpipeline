@@ -2,11 +2,11 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–26 architecture. The
+This document describes the implemented Stories 01–27 architecture. The
 numbered requirement stories remain authoritative where they are more
 specific. Sections below the approved contract that are explicitly labeled
 historical version 1 are retained as background only; they are not current
-runtime guidance. The Stories 14–26 requirements and current README describe
+runtime guidance. The Stories 14–27 requirements and current README describe
 the rebuild-only feed-free contract and runnable local operation.
 
 The design records the implemented version 1 decisions that remain normative
@@ -30,7 +30,7 @@ except where the target addendum explicitly replaces them:
 - Use numeric database identities and exact database uniqueness. Do not add
   hashes as URL, artifact, job, plan, or output identity.
 
-## Active current architecture: Stories 14–26
+## Active current architecture: Stories 14–27
 
 The current contract is defined by:
 
@@ -47,6 +47,7 @@ The current contract is defined by:
 - [Story 24: Nullable plan sponsor on TOC import](24-nullable-plan-sponsor-import.md)
 - [Story 25: River UI cancel of MRF occupancy](25-river-ui-cancel-slot-release.md)
 - [Story 26: Delete leftover download bytes on cancel and exhaustion](26-terminal-download-artifact-delete.md)
+- [Story 27: Incremental release publication](27-incremental-release-publication.md)
 
 Stories 14–17 were one atomic breaking delivery batch. Consumer `2.0.0` is
 available, and there is no adapter,
@@ -80,21 +81,21 @@ The target release model is:
 ```text
 building -> active -> inactive
              ^           |
-             +-----------+  manual rollback/reactivation
+             +-----------+  exact rollback/reactivation
 ```
 
-A building month may receive bounded discovery and background processing. An
-activation readiness gate requires every admitted TOC, source, snapshot, and
-initial plan attachment to be complete, then atomically deactivates the former
-month and activates the target for that payer. Activation seals the month;
-active and inactive releases reject new discovery. Warehouse files are never
-rewritten by activation or rollback.
+A building month receives bounded discovery and background processing. First
+activation requires discovery/TOC processing to be terminal, freezes that
+source/plan inventory, persists only the currently consumed, plan-ready,
+warehouse-validated output IDs, and atomically switches the payer's active
+month. Numeric source targets and terminal TOC/MRF file failures are allowed.
 
-Activation also freezes every selected output's plan associations. The
-pipeline never creates, schedules, retries, reconciles, or invokes plan
-attachment for active or inactive releases. An out-of-band consumer plan part
-is unsupported sealed-release mutation; plan additions or corrections require
-a newly built release.
+Active releases remain executable for already-known MRF download, parse,
+consumer ingest, and plan attachment. Pending MRF work is not published and
+does not block the checkpoint. Repeating activation appends newly plan-ready
+outputs to durable `monthly_release_outputs`; existing membership is never
+removed. Inactive releases are fully frozen. Warehouse files are never
+rewritten by activation or rollback.
 
 Active state is a relation rather than one global month. The compact release
 view is:
@@ -104,12 +105,13 @@ uhc   -> 2026-09
 aetna -> 2026-08
 ```
 
-A future query service joins each active release to its immutable
-`mrf_snapshots` rows at startup or control-plane refresh, derives `output_id` as
-`mrf-<snapshot-id>`, validates the complete relation against the warehouse, and
-atomically publishes verified serving state. Each request captures that state
-without rescanning warehouse metadata. A payer-filtered query uses that payer's
-output rows; a query without a payer filter uses every active output row.
+A future query service joins each active release to its persisted published
+output membership, derives `output_id` as `mrf-<snapshot-id>`, validates the
+complete relation against the warehouse, and atomically publishes verified
+serving state without rescanning warehouse metadata. It never exposes every
+snapshot merely because the month is active. A payer-filtered query uses that
+payer's output rows; a query without a payer filter uses every active output
+row.
 Payers with no active release contribute no served data. Consumer outputs with
 no pipeline snapshot are not release members even when payer/month matches.
 Query planning, partition pruning, and performance acceptance remain consumer
@@ -183,28 +185,25 @@ staging. MRF download cleanup then releases the slot. Worker recreate/SIGTERM
 stays an interruption and keeps bytes for resume. The capacity is a source
 count, not a byte quota.
 
-Terminal parse failure remains selected and blocks activation, but after
-unpublished parsed output, parser staging, and raw bytes are removed the source
-is no longer resident. Cleanup marks its download blocked, releases the slot,
-and wakes control; it never substitutes another selected URL. Automatic parse
-retries retain raw bytes and the slot. `retry --stage mrf.parse` reuses valid
-raw bytes or rematerializes through admission when bytes are gone.
-`mrf.parse`, `mrf.download`, and `toc.download` jobs have four total attempts;
-every other production kind has eight. Reconcile repairs already-terminal parse
-rows that still hold slots after deployment and removes failed download
-leftovers before releasing MRF slots.
+Terminal TOC/MRF file failure is excluded from publication and no longer blocks
+an incremental activation checkpoint. Cleanup still removes unpublished output,
+parser staging, and raw bytes, releases the slot, and wakes control; it never
+substitutes another selected URL. Automatic parse retries retain raw bytes and
+the slot. `retry --stage mrf.parse` reuses valid raw bytes or rematerializes
+through admission when bytes are gone. `mrf.parse`, `mrf.download`, and
+`toc.download` jobs have four total attempts; every other production kind has
+eight.
 
 Every MRF source and consumer output has an exact execution lock. Locks are
 deterministic PostgreSQL advisory keys over positive `bigint` identities; they
 are not hashes and are never part of ordinary logs. A busy lock defers work,
 while a lost lock interrupts it before success confirmation.
 
-The active-output relation is the handoff
-`(payer, collection_month, output_id)` derived from sealed monthly releases.
-Activation does not serve queries and this repository has no query API or SQL
-facade. A numeric source target is intentionally partial and non-activatable;
-target `all` plus drained known sources and release gates is required for
-activation.
+The active-output handoff is the persisted
+`(payer, collection_month, output_id)` membership, not every snapshot in the
+month. Activation does not serve queries and this repository has no query API
+or SQL facade. Numeric targets are valid checkpoints; `partial:true` and
+`mrf_source_target_partial` remain explicit full-month coverage diagnostics.
 
 The local Compose recipe builds with BuildKit SSH forwarding, mounts the
 operator's accepted catalog and selector, starts PostgreSQL and migration,
@@ -993,13 +992,13 @@ consumer 1.5.0 acceptance contract.
 
 While a release is building, the pipeline never waits for every payer TOC
 globally before parsing an MRF. There may be thousands of current TOCs, and
-additional bounded discoveries may add plans to that building release.
+additional bounded discoveries may add plans.
 
-For the Stories 14–19 target, this incremental behavior applies only while the
-monthly release is `building`. Story 18 activation is the durable completion
-boundary: every admitted TOC and attachment must be complete, and the resulting
-plan set is frozen while the release is `active` or `inactive`. Later plan
-addition requires a newly built release.
+First activation is the source/plan-inventory boundary: discovery and TOC work
+must be terminal, after which no new TOC-derived plans enter that month.
+Already-known MRF work continues while the release is active. Each later
+activation appends outputs that have completed consume and their complete
+initial plan attachment; inactive releases remain frozen.
 
 Instead, association is incremental:
 
@@ -1328,7 +1327,7 @@ Stories 01–13 are the full version 1 implementation sequence:
 | 12 | Plan batch projection and additive consumer attachment worker. |
 | 13 | Reconciliation, operational acceptance, 1→2→5 TOC live progression, authorized URL-debug queries, retention guidance, and final documentation. |
 
-Stories 14–26 are the approved rebuild-only next sequence:
+Stories 14–27 are the approved rebuild-only next sequence:
 
 | Story | Deliverable |
 |---:|---|
@@ -1345,6 +1344,7 @@ Stories 14–26 are the approved rebuild-only next sequence:
 | 24 | Allow nullable EIN sponsors through TOC import, preserve sponsor provenance, and emit JSON-null EIN sponsors. |
 | 25 | Treat River UI cancel of `mrf.download` and `mrf.parse` as terminal occupancy so the slot is released. |
 | 26 | Delete leftover `mrf.download` and `toc.download` bytes on River UI cancel, retry exhaustion, and HTTP 404, then release an empty MRF slot. |
+| 27 | Persist additive active-output membership, publish numeric partial checkpoints, omit terminal file failures, and keep known MRF work running. |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC

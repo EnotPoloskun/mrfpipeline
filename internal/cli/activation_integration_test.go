@@ -121,8 +121,18 @@ VALUES ($1, $2)`, batchID, planID); err != nil {
 	if sealed {
 		if _, err := pool.Exec(ctx, `
 UPDATE mrfpipeline.monthly_releases
-SET status = 'inactive', sealed_at = transaction_timestamp(), last_activated_at = transaction_timestamp()
+SET status = 'inactive', sealed_at = transaction_timestamp(),
+    last_activated_at = transaction_timestamp(), publication_generation = 1
 WHERE payer_id = 'uhc' AND collection_month = $1`, month); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_outputs
+    (payer_id, collection_month, mrf_snapshot_id, published_generation,
+     published_at)
+SELECT 'uhc', $1, $2, 1, sealed_at
+FROM mrfpipeline.monthly_releases
+WHERE payer_id = 'uhc' AND collection_month = $1`, month, snapshotID); err != nil {
 			t.Fatal(err)
 		}
 	}

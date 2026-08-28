@@ -115,6 +115,91 @@ VALUES ($1, $2)`, batchID, planID); err != nil {
 	return snapshotID
 }
 
+func seedSnapshotState(t *testing.T, pool *pgxpool.Pool, payer, month, suffix, download, parse, consume string, selected bool) (int64, int64) {
+	t.Helper()
+	ctx := context.Background()
+	monthDate, err := time.Parse("2006-01-02", month+"-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sourceID, snapshotID int64
+	var failureCode *string
+	if download == jobs.StatusFailed {
+		code := jobs.FailureMRFDownload
+		failureCode = &code
+	} else if parse == jobs.StatusFailed {
+		code := jobs.FailureMRFParseExecutionFailed
+		failureCode = &code
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_sources
+    (source_url, collection_month, download_status, parse_status, failure_code)
+VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		"https://example.invalid/mrf/"+suffix, monthDate, download, parse, failureCode).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	var consumeFailureCode *string
+	if consume == jobs.StatusFailed {
+		code := jobs.FailureConsumerIngestOutputFailed
+		consumeFailureCode = &code
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots
+    (mrf_source_id, payer_id, collection_month, consume_status, failure_code)
+VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+		sourceID, payer, monthDate, consume, consumeFailureCode).Scan(&snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if selected {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id)
+VALUES ($1, $2, $3)`, payer, monthDate, sourceID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return sourceID, snapshotID
+}
+
+func markSnapshotReady(t *testing.T, pool *pgxpool.Pool, sourceID, snapshotID int64, suffix string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.mrf_sources
+SET download_status = 'succeeded', parse_status = 'succeeded', failure_code = NULL,
+    updated_at = transaction_timestamp()
+WHERE id = $1`, sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.mrf_snapshots
+SET consume_status = 'succeeded', failure_code = NULL,
+    updated_at = transaction_timestamp()
+WHERE id = $1`, snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	var planID, batchID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_plans (
+    mrf_snapshot_id, plan_name, issuer_name, plan_id_type, plan_id, plan_market_type
+) VALUES ($1, 'plan-' || $2, 'issuer', 'hios', $2, 'group') RETURNING id`,
+		snapshotID, suffix).Scan(&planID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.plan_attachment_batches (
+    mrf_snapshot_id, status, requested_plan_count, added_plan_count, completed_at
+) VALUES ($1, 'succeeded', 1, 1, transaction_timestamp()) RETURNING id`,
+		snapshotID).Scan(&batchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.plan_attachment_batch_items (plan_attachment_batch_id, mrf_plan_id)
+VALUES ($1, $2)`, batchID, planID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIntegrationActivationAndSealedSnapshotGate(t *testing.T) {
 	pool := releaseTestDB(t)
 	ctx := context.Background()
@@ -201,8 +286,149 @@ WHERE payer_id = 'uhc' AND status = 'active'`).Scan(&activeMonth); err != nil ||
 	}
 	err = RequireBuildingForSnapshot(ctx, tx, aug)
 	_ = tx.Rollback(ctx)
-	if !jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
-		t.Fatalf("sealed gate error %v", err)
+	if err != nil {
+		t.Fatalf("active materialization gate error %v", err)
+	}
+}
+
+func TestIntegrationActivationAppendsReadyOutputsWhileMRFWorkContinues(t *testing.T) {
+	pool := releaseTestDB(t)
+	ctx := context.Background()
+	month := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	firstSnapshot := seedReadyRelease(t, pool, "uhc", "2026-08", "incremental-first")
+	pendingSource, pendingSnapshot := seedSnapshotState(
+		t, pool, "uhc", "2026-08", "incremental-pending",
+		jobs.StatusPending, jobs.StatusBlocked, jobs.StatusBlocked, true,
+	)
+	_, failedSnapshot := seedSnapshotState(
+		t, pool, "uhc", "2026-08", "incremental-failed",
+		jobs.StatusBlocked, jobs.StatusFailed, jobs.StatusBlocked, true,
+	)
+	_, planlessSnapshot := seedSnapshotState(
+		t, pool, "uhc", "2026-08", "incremental-planless",
+		jobs.StatusSucceeded, jobs.StatusSucceeded, jobs.StatusSucceeded, true,
+	)
+	seedSnapshotState(
+		t, pool, "uhc", "2026-08", "incremental-unselected",
+		jobs.StatusPending, jobs.StatusBlocked, jobs.StatusBlocked, false,
+	)
+	if _, err := pool.Exec(ctx, `
+UPDATE mrfpipeline.monthly_releases
+SET mrf_source_target_kind = 'numeric', mrf_source_target_count = 4
+WHERE payer_id = 'uhc' AND collection_month = $1`, month); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := Readiness(ctx, pool, "uhc", month)
+	if err != nil || before.DatabaseReady || !before.Partial {
+		t.Fatalf("strict readiness %+v %v", before, err)
+	}
+	first, err := Activate(ctx, pool, "uhc", month, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.OutputCount != 1 || first.PublicationGeneration != 1 || first.AddedOutputCount != 1 ||
+		first.SkippedOutputCount != 3 || first.TerminalFileFailureCount != 1 {
+		t.Fatalf("first checkpoint %+v", first)
+	}
+	active, err := ListActiveOutputs(ctx, pool)
+	if err != nil || len(active) != 1 || active[0].SnapshotID != firstSnapshot {
+		t.Fatalf("first active outputs %+v %v", active, err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireBuildingForStage(ctx, tx, jobs.KindMRFDownload, pendingSource); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("active MRF gate %v", err)
+	}
+	_ = tx.Rollback(ctx)
+	var tocID int64
+	if err := pool.QueryRow(ctx, `
+SELECT id FROM mrfpipeline.toc_files
+WHERE payer_id = 'uhc' AND collection_month = $1`, month).Scan(&tocID); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tocGateErr := RequireBuildingForStage(ctx, tx, jobs.KindTOCDownload, tocID)
+	_ = tx.Rollback(ctx)
+	if !jobs.IsFailure(tocGateErr, jobs.FailureSealedReleaseInconsistent) {
+		t.Fatalf("active TOC gate %v", tocGateErr)
+	}
+
+	markSnapshotReady(t, pool, pendingSource, pendingSnapshot, "incremental-second")
+	second, err := Activate(ctx, pool, "uhc", month, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.OutputCount != 2 || second.PublicationGeneration != 2 || second.AddedOutputCount != 1 ||
+		second.SkippedOutputCount != 2 || second.TerminalFileFailureCount != 1 {
+		t.Fatalf("second checkpoint %+v", second)
+	}
+	active, err = ListActiveOutputs(ctx, pool)
+	if err != nil || len(active) != 2 ||
+		active[0].SnapshotID != firstSnapshot || active[1].SnapshotID != pendingSnapshot {
+		t.Fatalf("second active outputs %+v %v", active, err)
+	}
+	for _, output := range active {
+		if output.SnapshotID == failedSnapshot || output.SnapshotID == planlessSnapshot {
+			t.Fatalf("unpublishable output published: %+v", output)
+		}
+	}
+	third, err := Activate(ctx, pool, "uhc", month, nil)
+	if err != nil || third.OutputCount != 2 || third.PublicationGeneration != 2 || third.AddedOutputCount != 0 {
+		t.Fatalf("idempotent checkpoint %+v %v", third, err)
+	}
+}
+
+func TestIntegrationActivationRejectsPublicationFailureWithoutMutation(t *testing.T) {
+	pool := releaseTestDB(t)
+	ctx := context.Background()
+	month := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	seedReadyRelease(t, pool, "uhc", "2026-08", "publication-ready")
+	seedSnapshotState(
+		t, pool, "uhc", "2026-08", "publication-failed",
+		jobs.StatusSucceeded, jobs.StatusSucceeded, jobs.StatusFailed, true,
+	)
+	_, err := Activate(ctx, pool, "uhc", month, nil)
+	if !jobs.IsFailure(err, jobs.FailureReleaseNotReady) {
+		t.Fatalf("activation failure %v", err)
+	}
+	var status string
+	if err := pool.QueryRow(ctx, `
+SELECT status FROM mrfpipeline.monthly_releases
+WHERE payer_id = 'uhc' AND collection_month = $1`, month).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != Building {
+		t.Fatalf("status %s", status)
+	}
+	outputs, err := ListActiveOutputs(ctx, pool)
+	if err != nil || len(outputs) != 0 {
+		t.Fatalf("active outputs %+v %v", outputs, err)
+	}
+}
+
+func TestIntegrationActivationWaitsForSelectedTargetMembership(t *testing.T) {
+	pool := releaseTestDB(t)
+	ctx := context.Background()
+	month := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
+	seedReadyRelease(t, pool, "uhc", "2026-08", "selection-ready")
+	seedSnapshotState(
+		t, pool, "uhc", "2026-08", "selection-unselected",
+		jobs.StatusPending, jobs.StatusBlocked, jobs.StatusBlocked, false,
+	)
+	_, err := Activate(ctx, pool, "uhc", month, nil)
+	if !jobs.IsFailure(err, jobs.FailureReleaseNotReady) {
+		t.Fatalf("activation error %v", err)
+	}
+	outputs, err := ListActiveOutputs(ctx, pool)
+	if err != nil || len(outputs) != 0 {
+		t.Fatalf("active outputs %+v %v", outputs, err)
 	}
 }
 
@@ -378,8 +604,8 @@ SET status = 'active', sealed_at = transaction_timestamp(), last_activated_at = 
 WHERE payer_id = 'aetna' AND collection_month = DATE '2026-08-01'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := gate(jobs.KindMRFDownload); !jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
-		t.Fatalf("shared source gate: %v", err)
+	if err := gate(jobs.KindMRFDownload); err != nil {
+		t.Fatalf("shared active source gate: %v", err)
 	}
 	for _, status := range []string{"active", "inactive"} {
 		if _, err := pool.Exec(ctx, `
@@ -395,7 +621,16 @@ WHERE payer_id = 'uhc'`, status); err != nil {
 			t.Fatal(err)
 		}
 		for _, kind := range jobs.ProductionKinds() {
-			if err := gate(kind); !jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
+			err := gate(kind)
+			materializing := kind == jobs.KindMRFDownload || kind == jobs.KindMRFParse ||
+				kind == jobs.KindConsumerIngest || kind == jobs.KindConsumerAttachPlans
+			if status == "active" && materializing {
+				if err != nil {
+					t.Fatalf("%s active materialization gate: %v", kind, err)
+				}
+				continue
+			}
+			if !jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
 				t.Fatalf("%s gate for %s release: %v", kind, status, err)
 			}
 		}
