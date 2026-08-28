@@ -121,27 +121,44 @@ func TestRunForcedRescueSerializesWork(t *testing.T) {
 	}
 }
 
-func TestRunCanceledWorkDoesNotMutate(t *testing.T) {
+func TestRunCanceledDownloadDoesNotMutate(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithCancel(context.Background())
-	err := Run(ctx, RunParams{
-		DomainID:   1,
-		RiverJobID: 2,
-		Attempt:    1,
-		Claim: func(context.Context) (ClaimResult, error) {
-			return ClaimResult{Action: ClaimWork}, nil
-		},
-		Work: func(context.Context) error {
-			cancel()
-			return context.Canceled
-		},
-		Confirm: func(context.Context, pgx.Tx) error {
-			t.Fatal("confirm")
-			return nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("want nil to River, got %v", err)
+	for _, tc := range []struct {
+		kind string
+		spec StageSpec
+	}{
+		{kind: KindMRFDownload, spec: MRFDownloadStage},
+		{kind: KindTOCDownload, spec: TOCDownloadStage},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(context.Background())
+			var terminal int
+			err := Run(ctx, RunParams{
+				Kind:       tc.kind,
+				Spec:       tc.spec,
+				DomainID:   1,
+				RiverJobID: 2,
+				Attempt:    1,
+				Claim: func(context.Context) (ClaimResult, error) {
+					return ClaimResult{Action: ClaimWork}, nil
+				},
+				Work: func(context.Context) error {
+					cancel()
+					return context.Canceled
+				},
+				Terminal: func(context.Context) error {
+					terminal++
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("want nil to River, got %v", err)
+			}
+			if terminal != 0 {
+				t.Fatal("plain cancel ran terminal cleanup")
+			}
+		})
 	}
 }
 
@@ -212,10 +229,11 @@ func TestRunRemoteCancelFailsMRFOccupancy(t *testing.T) {
 	}
 }
 
-func TestRunRemoteCancelUsesCancelTerminal(t *testing.T) {
+func TestRunRemoteCancelRunsTerminal(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancelCause(context.Background())
-	var terminal, cancelTerm int
+	var terminal int
+	var failed string
 	err := Run(ctx, RunParams{
 		Kind:       KindMRFDownload,
 		Spec:       MRFDownloadStage,
@@ -229,33 +247,71 @@ func TestRunRemoteCancelUsesCancelTerminal(t *testing.T) {
 			cancel(river.ErrJobCancelledRemotely)
 			return context.Canceled
 		},
-		Fail: func(context.Context, string) error { return nil },
-		Terminal: func(context.Context) error {
-			terminal++
+		Fail: func(_ context.Context, code string) error {
+			failed = code
 			return nil
 		},
-		CancelTerminal: func(context.Context) error {
-			cancelTerm++
+		Terminal: func(context.Context) error {
+			terminal++
 			return nil
 		},
 	})
 	if err == nil {
 		t.Fatal("remote MRF cancel must not look like interruption")
 	}
-	if cancelTerm != 1 {
-		t.Fatal("remote download cancel skipped CancelTerminal")
+	if failed != FailureRiverTerminalWithoutResult {
+		t.Fatalf("failure %q", failed)
 	}
-	if terminal != 0 {
-		t.Fatal("ordinary terminal ran on remote cancel")
+	if terminal != 1 {
+		t.Fatal("remote cancel skipped terminal cleanup")
 	}
 }
 
-func TestRunRemoteCancelLeavesTOCAsInterruption(t *testing.T) {
+func TestRunRemoteCancelFailsTOCDownload(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	var terminal int
+	var failed string
+	err := Run(ctx, RunParams{
+		Kind:       KindTOCDownload,
+		Spec:       TOCDownloadStage,
+		DomainID:   1,
+		RiverJobID: 2,
+		Attempt:    1,
+		Claim: func(context.Context) (ClaimResult, error) {
+			return ClaimResult{Action: ClaimWork}, nil
+		},
+		Work: func(context.Context) error {
+			cancel(river.ErrJobCancelledRemotely)
+			return context.Canceled
+		},
+		Fail: func(_ context.Context, code string) error {
+			failed = code
+			return nil
+		},
+		Terminal: func(context.Context) error {
+			terminal++
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("remote TOC cancel must not look like interruption")
+	}
+	if failed != FailureRiverTerminalWithoutResult {
+		t.Fatalf("failure %q", failed)
+	}
+	if terminal != 1 {
+		t.Fatal("remote cancel skipped terminal cleanup")
+	}
+}
+
+func TestRunRemoteCancelLeavesTOCParseAsInterruption(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancelCause(context.Background())
 	var terminal int
 	err := Run(ctx, RunParams{
-		Kind:       KindTOCDownload,
+		Kind:       KindTOCParse,
+		Spec:       TOCParseStage,
 		DomainID:   1,
 		RiverJobID: 2,
 		Attempt:    1,
@@ -275,7 +331,67 @@ func TestRunRemoteCancelLeavesTOCAsInterruption(t *testing.T) {
 		t.Fatalf("want nil to River, got %v", err)
 	}
 	if terminal != 0 {
-		t.Fatal("TOC remote cancel ran MRF occupancy cleanup")
+		t.Fatal("TOC parse remote cancel ran terminal cleanup")
+	}
+}
+
+func TestRunDownloadTerminalRunsOnLastAttempt(t *testing.T) {
+	t.Parallel()
+	var terminal, failed int
+	err := Run(context.Background(), RunParams{
+		Kind:        KindTOCDownload,
+		Spec:        TOCDownloadStage,
+		DomainID:    1,
+		RiverJobID:  2,
+		Attempt:     4,
+		MaxAttempts: 4,
+		Claim: func(context.Context) (ClaimResult, error) {
+			return ClaimResult{Action: ClaimWork}, nil
+		},
+		Work: func(context.Context) error {
+			return Failure(FailureTOCDownload)
+		},
+		Fail: func(context.Context, string) error {
+			failed++
+			return nil
+		},
+		Terminal: func(context.Context) error {
+			terminal++
+			return nil
+		},
+	})
+	if err == nil || failed != 1 || terminal != 1 {
+		t.Fatalf("err=%v failed=%d terminal=%d", err, failed, terminal)
+	}
+}
+
+func TestRunDownloadTerminalRunsOnImmediateFailure(t *testing.T) {
+	t.Parallel()
+	var terminal, failed int
+	err := Run(context.Background(), RunParams{
+		Kind:        KindMRFDownload,
+		Spec:        MRFDownloadStage,
+		DomainID:    1,
+		RiverJobID:  2,
+		Attempt:     1,
+		MaxAttempts: 4,
+		Claim: func(context.Context) (ClaimResult, error) {
+			return ClaimResult{Action: ClaimWork}, nil
+		},
+		Work: func(context.Context) error {
+			return Failure(FailureMRFDownloadNotFound)
+		},
+		Fail: func(context.Context, string) error {
+			failed++
+			return nil
+		},
+		Terminal: func(context.Context) error {
+			terminal++
+			return nil
+		},
+	})
+	if err == nil || failed != 1 || terminal != 1 {
+		t.Fatalf("err=%v failed=%d terminal=%d", err, failed, terminal)
 	}
 }
 
@@ -292,7 +408,10 @@ func TestRemoteJobCancelCause(t *testing.T) {
 		t.Fatal("plain cancel is not remote job cancel")
 	}
 	if isResidentSlotKind(KindTOCDownload) || !isResidentSlotKind(KindMRFDownload) || !isResidentSlotKind(KindMRFParse) {
-		t.Fatal("slot kinds")
+		t.Fatal("resident slot kinds")
+	}
+	if !isRemoteCancelTerminalKind(KindTOCDownload) || !isRemoteCancelTerminalKind(KindMRFDownload) || !isRemoteCancelTerminalKind(KindMRFParse) || isRemoteCancelTerminalKind(KindTOCParse) {
+		t.Fatal("remote cancel terminal kinds")
 	}
 }
 

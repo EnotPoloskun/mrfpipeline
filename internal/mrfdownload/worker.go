@@ -53,15 +53,12 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.MRFDownloadArgs])
 			Args:     &jobs.MRFParseArgs{MRFSourceID: job.Args.MRFSourceID},
 		},
 		Terminal: func(ctx context.Context) error {
-			return releaseEmptyDownloadSlot(ctx, w.Pool, client, ws, job.Args.MRFSourceID, w.Logger)
-		},
-		CancelTerminal: func(ctx context.Context) error {
-			return releaseCancelledDownloadSlot(ctx, w.Pool, client, ws, job.Args.MRFSourceID, w.Logger)
+			return releaseDownloadSlot(ctx, w.Pool, client, ws, job.Args.MRFSourceID, w.Logger)
 		},
 	}, jobs.LockNamespaceMRF, job.Args.MRFSourceID)
 }
 
-func releaseCancelledDownloadSlot(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], ws *artifact.Workspace, sourceID int64, loggers ...*slog.Logger) error {
+func releaseDownloadSlot(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], ws *artifact.Workspace, sourceID int64, loggers ...*slog.Logger) error {
 	if ws == nil {
 		return jobs.Failure(jobs.FailureInvalidArguments)
 	}

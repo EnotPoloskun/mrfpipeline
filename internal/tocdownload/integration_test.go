@@ -376,11 +376,36 @@ func TestIntegrationEighthFailureCode(t *testing.T) {
 	}
 	client := insertClient(t, pool)
 	tocID, _ := insertTOCJob(t, pool, client, storedURL("/data"))
+	data, err := ws.DownloadDataPath(artifact.KindTOC, tocID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(data), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(data, []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	staging, err := os.MkdirTemp(ws.StagingDir(), "toc-download-"+strconv.FormatInt(tocID, 10)+"-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "partial"), []byte("y"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	startDownloadRuntime(t, pool, hookDownloader(ws, ts), 1)
 	waitDownload(t, pool, tocID, jobs.StatusFailed)
 	download, parse, parseJob, fail := tocRow(t, pool, tocID)
 	if download != jobs.StatusFailed || parse != jobs.StatusBlocked || parseJob != nil || fail == nil || *fail != jobs.FailureTOCDownload {
 		t.Fatalf("terminal %s %s job=%v fail=%v", download, parse, parseJob, fail)
+	}
+	state, err := ws.InspectDownloadState(artifact.KindTOC, tocID)
+	if err != nil || state != artifact.DownloadAbsent {
+		t.Fatalf("download state %s %v", state, err)
+	}
+	has, err := ws.HasDownloadStaging(artifact.KindTOC, tocID)
+	if err != nil || has {
+		t.Fatalf("staging %v %v", has, err)
 	}
 	var n int
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.toc_files WHERE id = $1`, tocID).Scan(&n); err != nil || n != 1 {

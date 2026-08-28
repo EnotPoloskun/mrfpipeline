@@ -10,7 +10,8 @@ func TestControlNotifyIsMRFCancel(t *testing.T) {
 	}{
 		{payload: `{"action":"cancel","job_id":9,"queue":"mrf_download"}`, want: true},
 		{payload: `{"action":"cancel","job_id":9,"queue":"mrf_parse"}`, want: true},
-		{payload: `{"action":"cancel","job_id":9,"queue":"toc_download"}`, want: false},
+		{payload: `{"action":"cancel","job_id":9,"queue":"toc_download"}`, want: true},
+		{payload: `{"action":"cancel","job_id":9,"queue":"toc_parse"}`, want: false},
 		{payload: `{"action":"pause","queue":"mrf_download"}`, want: false},
 		{payload: `{`, want: false},
 	}

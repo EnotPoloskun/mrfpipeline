@@ -25,10 +25,11 @@ type riverControlPayload struct {
 	Queue  string `json:"queue"`
 }
 
-// RepairCancelledMaterialization fails selected mrf.download / mrf.parse
-// stages whose current River job is already cancelled or discarded, then runs
-// the existing terminal occupancy cleanup. It does not replace running jobs:
-// those stay interruptions unless the worker observed a remote cancel.
+// RepairCancelledMaterialization fails selected mrf.download / mrf.parse /
+// toc.download stages whose current River job is already cancelled or
+// discarded, then runs the existing terminal occupancy cleanup. It does not
+// replace running jobs: those stay interruptions unless the worker observed a
+// remote cancel.
 func RepairCancelledMaterialization(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], ws *artifact.Workspace, servicesPath string, loggers ...*slog.Logger) error {
 	if ctx == nil {
 		panic("nil context")
@@ -40,6 +41,7 @@ func RepairCancelledMaterialization(ctx context.Context, pool *pgxpool.Pool, cli
 	for _, b := range []jobs.KindBinding{
 		{Kind: jobs.KindMRFDownload, Spec: jobs.MRFDownloadStage, ArgField: jobs.FieldMRFSourceID},
 		{Kind: jobs.KindMRFParse, Spec: jobs.MRFParseStage, ArgField: jobs.FieldMRFSourceID},
+		{Kind: jobs.KindTOCDownload, Spec: jobs.TOCDownloadStage, ArgField: jobs.FieldTOCFileID},
 	} {
 		if err := repairCancelledKind(ctx, pool, client, b); err != nil {
 			return err
@@ -48,7 +50,7 @@ func RepairCancelledMaterialization(ctx context.Context, pool *pgxpool.Pool, cli
 	if err := releaseTerminalParses(ctx, pool, client, ws, servicesPath, logger); err != nil {
 		return err
 	}
-	if err := removeCancelledDownloadArtifacts(ctx, pool, ws); err != nil {
+	if err := removeFailedDownloadArtifacts(ctx, pool, ws); err != nil {
 		return err
 	}
 	return releaseEmptyTerminalDownloads(ctx, pool, ws, logger)
@@ -89,6 +91,9 @@ LIMIT $2`, after, pageSize)
 }
 
 func repairOneCancelled(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx], b jobs.KindBinding, domainID int64) (int, error) {
+	if b.Kind == jobs.KindTOCDownload {
+		return repairOneCancelledUnlocked(ctx, pool, client, b, domainID)
+	}
 	inserted := 0
 	busy, err := jobs.WithExecutionLock(ctx, pool, jobs.LockNamespaceMRF, domainID, func(ctx context.Context) error {
 		n, err := repairOneCancelledUnlocked(ctx, pool, client, b, domainID)
@@ -106,24 +111,23 @@ func repairOneCancelled(ctx context.Context, pool *pgxpool.Pool, client *river.C
 	return inserted, nil
 }
 
-func removeCancelledDownloadArtifacts(ctx context.Context, pool *pgxpool.Pool, ws *artifact.Workspace) error {
-	query := `
+func removeFailedDownloadArtifacts(ctx context.Context, pool *pgxpool.Pool, ws *artifact.Workspace) error {
+	mrfQuery := `
 SELECT s.id
 FROM mrfpipeline.mrf_sources s
 JOIN mrfpipeline.mrf_materialization_slots x ON x.mrf_source_id = s.id
 WHERE s.download_status = 'failed'
-  AND s.failure_code = '` + jobs.FailureRiverTerminalWithoutResult + `'
   AND EXISTS (SELECT 1 FROM mrfpipeline.monthly_release_mrf_sources a WHERE a.mrf_source_id = s.id)
   AND s.id > $1
 ORDER BY s.id LIMIT $2`
 	var after int64
 	for {
-		ids, err := pageIDs(ctx, pool, query, after, pageSize)
+		ids, err := pageIDs(ctx, pool, mrfQuery, after, pageSize)
 		if err != nil {
 			return err
 		}
 		if len(ids) == 0 {
-			return nil
+			break
 		}
 		for _, id := range ids {
 			busy, err := jobs.WithExecutionLock(ctx, pool, jobs.LockNamespaceMRF, id, func(ctx context.Context) error {
@@ -133,6 +137,29 @@ ORDER BY s.id LIMIT $2`
 				return err
 			}
 			_ = busy
+			after = id
+		}
+	}
+
+	tocQuery := `
+SELECT id
+FROM mrfpipeline.toc_files
+WHERE download_status = 'failed'
+  AND id > $1
+ORDER BY id LIMIT $2`
+	after = 0
+	for {
+		ids, err := pageIDs(ctx, pool, tocQuery, after, pageSize)
+		if err != nil {
+			return err
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		for _, id := range ids {
+			if err := ws.RemoveUnpublishedDownload(artifact.KindTOC, id); err != nil {
+				return err
+			}
 			after = id
 		}
 	}
@@ -202,7 +229,7 @@ func repairOneCancelledUnlocked(ctx context.Context, pool *pgxpool.Pool, client 
 }
 
 func materializationCancelQueue(queue string) bool {
-	return queue == jobs.QueueMRFDownload || queue == jobs.QueueMRFParse
+	return queue == jobs.QueueMRFDownload || queue == jobs.QueueMRFParse || queue == jobs.QueueTOCDownload
 }
 
 func controlNotifyIsMRFCancel(payload string) bool {
@@ -214,8 +241,8 @@ func controlNotifyIsMRFCancel(payload string) bool {
 }
 
 // WatchMaterializationCancels listens for River cancel notifications on MRF
-// occupancy queues and wakes control so queued cancels are failed and slots
-// released without waiting for an unrelated refill.
+// and TOC download queues and wakes control so queued cancels are failed and
+// slots released without waiting for an unrelated refill.
 func WatchMaterializationCancels(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) {
 	if ctx == nil || pool == nil {
 		return

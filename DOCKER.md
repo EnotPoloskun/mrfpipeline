@@ -19,7 +19,8 @@ Compose PostgreSQL.
 - `month activate` on a numeric MRF sample (`mrf_source_target` is a number,
   not `all`)
 - retry or delete River jobs from River UI; do not cancel kinds other than
-  `mrf.download` / `mrf.parse` (those two fail the stage and free the slot)
+  `mrf.download` / `mrf.parse` / `toc.download` (those fail the stage; MRF
+  download cleanup frees the slot)
 - `DELETE` from `mrf_materialization_slots`
 - change the catalog or selector while a warehouse already exists
 
@@ -135,11 +136,15 @@ A different value fails `source_target_conflict`.
 `toc.import`, `mrf.download`, `mrf.parse`, `consumer.ingest`,
 `consumer.attach_plans`. `--id` is the domain row, not a River job id.
 
-`mrf.parse` has four attempts including the first. After a terminal parse,
-the worker deletes unpublished parsed output, parser staging, and the raw
-download, then frees the resident slot. The source stays selected and failed.
-`retry --stage mrf.parse --id <source-id>` rematerializes the download when
-bytes are gone.
+`mrf.parse`, `mrf.download`, and `toc.download` have four attempts including
+the first. A terminal download (retry exhaustion, HTTP 404, or River UI cancel)
+deletes unpublished download bytes and matching staging; MRF cleanup then frees
+the resident slot. Recreate/SIGTERM stays an interruption and keeps bytes for
+resume. After a terminal parse, the worker deletes unpublished parsed output,
+parser staging, and the raw download, then frees the resident slot. The source
+stays selected and failed. `retry --stage mrf.download --id <source-id>`
+redownloads from scratch; `retry --stage mrf.parse --id <source-id>`
+rematerializes the download when bytes are gone.
 
 ## Admit more MRF sources
 
@@ -213,9 +218,9 @@ docker compose -f docker-compose.story21.yml exec -T postgres psql -U mrfpipelin
 
 ## River UI (optional)
 
-Pause and resume queues. Cancelling `mrf.download` or `mrf.parse` fails the
-stage and frees the slot. Do not retry or delete jobs, and do not cancel
-other kinds.
+Pause and resume queues. Cancelling `mrf.download`, `mrf.parse`, or
+`toc.download` fails that stage and deletes unpublished download bytes. Do not
+retry or delete jobs, and do not cancel other kinds.
 
 ```text
 docker run --rm -p 8080:8080 --network <project>_default \

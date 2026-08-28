@@ -48,12 +48,9 @@ type RunParams struct {
 	// delivery is protected by a cross-process execution lease.
 	LeaseHealth func(context.Context) error
 	// Terminal runs after a failed stage has been durably marked failed. It is
-	// used only for stage-specific cleanup such as releasing an empty download
-	// slot; returning an error keeps the failure visible to River.
+	// used for stage-specific terminal cleanup such as deleting unpublished
+	// download artifacts; returning an error keeps the failure visible to River.
 	Terminal func(context.Context) error
-	// CancelTerminal, when set, replaces Terminal after a remote River UI
-	// cancel of resident MRF occupancy. Worker recreate never reaches it.
-	CancelTerminal func(context.Context) error
 	// Fail records the durable terminal domain failure. When nil, MarkFailed
 	// is used.
 	Fail   func(context.Context, string) error
@@ -112,12 +109,8 @@ func Run(ctx context.Context, p RunParams) error {
 	if isFailure(workErr, FailureWorkerLeaseLost) {
 		return nil
 	}
-	if isResidentSlotKind(p.Kind) && isRemoteJobCancel(ctx) {
-		q := p
-		if q.CancelTerminal != nil {
-			q.Terminal = q.CancelTerminal
-		}
-		return failAssignedTerminal(context.WithoutCancel(ctx), q, Failure(FailureRiverTerminalWithoutResult))
+	if isRemoteCancelTerminalKind(p.Kind) && isRemoteJobCancel(ctx) {
+		return failAssignedTerminal(context.WithoutCancel(ctx), p, Failure(FailureRiverTerminalWithoutResult))
 	}
 	if ctx.Err() != nil {
 		return nil
@@ -142,6 +135,10 @@ func effectiveMaxAttempts(p RunParams) int {
 
 func isResidentSlotKind(kind string) bool {
 	return kind == KindMRFDownload || kind == KindMRFParse
+}
+
+func isRemoteCancelTerminalKind(kind string) bool {
+	return isResidentSlotKind(kind) || kind == KindTOCDownload
 }
 
 func isRemoteJobCancel(ctx context.Context) bool {

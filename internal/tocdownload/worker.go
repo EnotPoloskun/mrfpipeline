@@ -23,6 +23,10 @@ type Worker struct {
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.TOCDownloadArgs]) error {
 	var sourceURL string
 	client := river.ClientFromContext[pgx.Tx](ctx)
+	var ws *artifact.Workspace
+	if w != nil && w.Downloader != nil {
+		ws = w.Downloader.Workspace()
+	}
 	return jobs.Run(ctx, jobs.RunParams{
 		Pool:        w.Pool,
 		Client:      client,
@@ -46,6 +50,15 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.TOCDownloadArgs])
 			Spec:     jobs.TOCParseStage,
 			DomainID: job.Args.TOCFileID,
 			Args:     &jobs.TOCParseArgs{TOCFileID: job.Args.TOCFileID},
+		},
+		Terminal: func(ctx context.Context) error {
+			if ws == nil {
+				return jobs.Failure(jobs.FailureInvalidArguments)
+			}
+			if err := ws.RemoveUnpublishedDownload(artifact.KindTOC, job.Args.TOCFileID); err != nil {
+				return jobs.Failure(jobs.FailureArtifactReconciliationFailed)
+			}
+			return nil
 		},
 	})
 }

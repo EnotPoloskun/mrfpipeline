@@ -3,7 +3,7 @@
 Operator executable for CMS Transparency in Coverage discovery, TOC and MRF
 processing, warehouse ingestion, and additive plan attachment.
 
-Version 1 is specified by Stories 01–25 in [`requirements/`](requirements/).
+Version 1 is specified by Stories 01–26 in [`requirements/`](requirements/).
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
@@ -16,8 +16,9 @@ rebuild-only contract. Story 21 adds bounded MRF admission, resident slots,
 and ordinary role-specific River workers. Story 22 makes the local image,
 Compose recipe, and verification contract runnable. Story 23 releases a slot
 after terminal parse cleanup. Story 25 treats River UI cancel of `mrf.download`
-and `mrf.parse` as that same terminal occupancy. These stories do not upgrade
-an old populated warehouse in place.
+and `mrf.parse` as that same terminal occupancy; Story 26 extends terminal
+download cleanup to `toc.download` and retry exhaustion. These stories do not
+upgrade an old populated warehouse in place.
 
 The target removes `mrf_feeds` and `feed_id`, identifies an MRF source capture
 by exact URL + collection month, identifies a consumer snapshot by source +
@@ -509,19 +510,24 @@ bytes, free space, database size, and pending/running MRF download/parse
 counts. Version 1 does not guess required disk from HTTP headers. Stop the
 worker if capacity approaches the operator safety threshold.
 
-An interrupted or failed download keeps its selected source and slot; the
+An interrupted or retryable download keeps its selected source and slot; the
 existing staging directory is used for cleanup/resume. Automatic parse retries
-keep the raw file and slot, so they do not redownload. When parse reaches a
-terminal failure, the worker removes unpublished parsed output, parser staging,
-and raw bytes, marks download blocked, then releases the slot and wakes control.
-The source remains selected and failed, and `retry --stage mrf.parse` is the
-only way to reopen it: it reuses valid raw bytes when present and rematerializes
-the download when they are gone. `mrf.parse`, `mrf.download`, and
-`toc.download` have four attempts including the first. HTTP 404 is not
-retried. Other stages retain eight. After deploy, reconcile repairs already
-terminal parses that still hold slots; do not delete slot rows from SQL.
-Cancelling `mrf.download` or `mrf.parse` in River UI fails the stage and
-releases the slot after that cleanup.
+keep the raw file and slot, so they do not redownload. When a download reaches
+terminal failure (retry exhaustion, HTTP 404, or River UI cancel), the worker
+removes unpublished download bytes and matching staging; an MRF slot is then
+released. Recreate/SIGTERM remains an interruption and keeps bytes for resume.
+When parse reaches a terminal failure, the worker removes unpublished parsed
+output, parser staging, and raw bytes, marks download blocked, then releases the
+slot and wakes control. The source remains selected and failed, and
+`retry --stage mrf.download` redownloads from scratch; `retry --stage
+mrf.parse` reuses valid raw bytes when present and rematerializes the download
+when they are gone. `mrf.parse`, `mrf.download`, and `toc.download` have four
+attempts including the first. HTTP 404 is not retried. Other stages retain
+eight. After deploy, reconcile repairs already terminal parses that still hold
+slots; do not delete slot rows from SQL.
+Cancelling `mrf.download`, `mrf.parse`, or `toc.download` in River UI fails
+that stage and deletes unpublished download bytes; download retry exhaustion
+does the same. Recreate stays an interruption.
 
 ### Subsequent runs (same Compose volumes)
 
@@ -868,8 +874,8 @@ Then open http://localhost:8080. The UI shows River queues and jobs, not domain
 readiness; keep using `month status` for that.
 
 Pause and resume queues. Pause stops fetching new jobs and does not cancel
-in-flight work. Cancelling `mrf.download` or `mrf.parse` fails that stage,
-deletes in-progress raw/temp, and frees the slot. The source stays selected;
+in-flight work. Cancelling `mrf.download`, `mrf.parse`, or `toc.download` fails
+that stage and deletes unpublished download bytes. The source stays selected;
 reopen it with `retry`. Do not retry or delete jobs from the UI, and do not
 cancel other kinds.
 

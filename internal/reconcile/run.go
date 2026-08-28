@@ -131,6 +131,9 @@ func Run(ctx context.Context, p Params) (Report, error) {
 	if err := releaseTerminalParses(ctx, p.Pool, client, p.Workspace, p.ServicesPath, logger); err != nil {
 		return report, err
 	}
+	if err := removeFailedDownloadArtifacts(ctx, p.Pool, p.Workspace); err != nil {
+		return report, err
+	}
 	if err := releaseEmptyTerminalDownloads(ctx, p.Pool, p.Workspace, logger); err != nil {
 		return report, err
 	}
@@ -157,6 +160,9 @@ func Run(ctx context.Context, p Params) (Report, error) {
 	// for slot release. Re-run the repair after that cleanup so the refill wake
 	// is published in this same reconciliation pass.
 	if err := releaseTerminalParses(ctx, p.Pool, client, p.Workspace, p.ServicesPath, logger); err != nil {
+		return report, err
+	}
+	if err := removeFailedDownloadArtifacts(ctx, p.Pool, p.Workspace); err != nil {
 		return report, err
 	}
 	if err := releaseEmptyTerminalDownloads(ctx, p.Pool, p.Workspace, logger); err != nil {

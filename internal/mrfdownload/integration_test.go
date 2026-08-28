@@ -567,6 +567,14 @@ func TestIntegrationEighthFailureLeavesSnapshots(t *testing.T) {
 	if download != jobs.StatusFailed || parse != jobs.StatusBlocked || parseJob != nil || fail == nil || *fail != jobs.FailureMRFDownloadNotFound {
 		t.Fatalf("terminal %s %s job=%v fail=%v", download, parse, parseJob, fail)
 	}
+	state, err := ws.InspectDownloadState(artifact.KindMRF, sourceID)
+	if err != nil || state != artifact.DownloadAbsent {
+		t.Fatalf("download state %s %v", state, err)
+	}
+	staging, err := ws.HasDownloadStaging(artifact.KindMRF, sourceID)
+	if err != nil || staging {
+		t.Fatalf("staging %v %v", staging, err)
+	}
 	var consume string
 	var snapFail *string
 	if err := pool.QueryRow(context.Background(), `
