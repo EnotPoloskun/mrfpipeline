@@ -195,6 +195,15 @@ func (w *Workspace) RemoveDownload(kind string, id int64) error {
 	return removeExactDir(dir)
 }
 
+// RemoveUnpublishedDownload removes the published download leaf and any
+// matching staging directories for one record. Absent is success.
+func (w *Workspace) RemoveUnpublishedDownload(kind string, id int64) error {
+	if err := w.RemoveDownload(kind, id); err != nil {
+		return err
+	}
+	return w.cleanMatchingStaging(kind, id)
+}
+
 // InspectDownloadState classifies a download leaf without treating incomplete
 // as an inspect error.
 func (w *Workspace) InspectDownloadState(kind string, id int64) (string, error) {

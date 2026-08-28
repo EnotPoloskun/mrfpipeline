@@ -149,6 +149,60 @@ func TestRemoveDownloadIdempotent(t *testing.T) {
 	}
 }
 
+func TestRemoveUnpublishedDownloadClearsLeafAndStaging(t *testing.T) {
+	t.Parallel()
+	ws := mustInit(t, filepath.Join(t.TempDir(), "ws"))
+	if _, err := ws.ensureRecord(KindMRF, 3); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(ws.Root, dirMRF, "mrf-source-3", dirDownload)
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, fileData), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	prefix, err := stagingPrefix(KindMRF, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging, err := os.MkdirTemp(ws.StagingDir(), prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "partial"), []byte("y"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	otherPrefix, err := stagingPrefix(KindMRF, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := os.MkdirTemp(ws.StagingDir(), otherPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RemoveUnpublishedDownload(KindMRF, 3); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+		t.Fatal("download remained")
+	}
+	if _, err := os.Lstat(staging); !os.IsNotExist(err) {
+		t.Fatal("staging remained")
+	}
+	if _, err := os.Lstat(other); err != nil {
+		t.Fatal("removed another source staging")
+	}
+	state, err := ws.InspectDownloadState(KindMRF, 3)
+	if err != nil || state != DownloadAbsent {
+		t.Fatalf("state %s %v", state, err)
+	}
+	has, err := ws.HasDownloadStaging(KindMRF, 3)
+	if err != nil || has {
+		t.Fatalf("staging %v %v", has, err)
+	}
+}
+
 func TestInspectDownloadRequiresCompletedLeaf(t *testing.T) {
 	t.Parallel()
 	ws := mustInit(t, filepath.Join(t.TempDir(), "ws"))

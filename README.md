@@ -3,7 +3,7 @@
 Operator executable for CMS Transparency in Coverage discovery, TOC and MRF
 processing, warehouse ingestion, and additive plan attachment.
 
-Version 1 is specified by Stories 01–23 in [`requirements/`](requirements/).
+Version 1 is specified by Stories 01–25 in [`requirements/`](requirements/).
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
@@ -15,8 +15,9 @@ Stories [14](requirements/14-feed-free-domain-schema.md) through
 rebuild-only contract. Story 21 adds bounded MRF admission, resident slots,
 and ordinary role-specific River workers. Story 22 makes the local image,
 Compose recipe, and verification contract runnable. Story 23 releases a slot
-after terminal parse cleanup. These stories do not upgrade an old populated
-warehouse in place.
+after terminal parse cleanup. Story 25 treats River UI cancel of `mrf.download`
+and `mrf.parse` as that same terminal occupancy. These stories do not upgrade
+an old populated warehouse in place.
 
 The target removes `mrf_feeds` and `feed_id`, identifies an MRF source capture
 by exact URL + collection month, identifies a consumer snapshot by source +
@@ -515,10 +516,12 @@ terminal failure, the worker removes unpublished parsed output, parser staging,
 and raw bytes, marks download blocked, then releases the slot and wakes control.
 The source remains selected and failed, and `retry --stage mrf.parse` is the
 only way to reopen it: it reuses valid raw bytes when present and rematerializes
-the download when they are gone. `mrf.parse` has four attempts including the
-first; other stages retain eight. After deploy, reconcile repairs already
-terminal parses that still hold slots; do not delete slot rows from SQL or
-River UI.
+the download when they are gone. `mrf.parse`, `mrf.download`, and
+`toc.download` have four attempts including the first. HTTP 404 is not
+retried. Other stages retain eight. After deploy, reconcile repairs already
+terminal parses that still hold slots; do not delete slot rows from SQL.
+Cancelling `mrf.download` or `mrf.parse` in River UI fails the stage and
+releases the slot after that cleanup.
 
 ### Subsequent runs (same Compose volumes)
 
@@ -864,9 +867,11 @@ docker run --rm -p 8080:8080 --network <project>_default \
 Then open http://localhost:8080. The UI shows River queues and jobs, not domain
 readiness; keep using `month status` for that.
 
-Pause and resume only. Pause stops fetching new jobs and does not cancel
-in-flight work. Do not cancel, retry, or delete jobs from the UI. Use
-`retry` / `reconcile` for those.
+Pause and resume queues. Pause stops fetching new jobs and does not cancel
+in-flight work. Cancelling `mrf.download` or `mrf.parse` fails that stage,
+deletes in-progress raw/temp, and frees the slot. The source stays selected;
+reopen it with `retry`. Do not retry or delete jobs from the UI, and do not
+cancel other kinds.
 
 ## Limitations
 

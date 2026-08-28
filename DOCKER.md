@@ -18,7 +18,8 @@ Compose PostgreSQL.
   artifact volumes is intentional
 - `month activate` on a numeric MRF sample (`mrf_source_target` is a number,
   not `all`)
-- cancel, retry, or delete River jobs from River UI (pause/resume only)
+- retry or delete River jobs from River UI; do not cancel kinds other than
+  `mrf.download` / `mrf.parse` (those two fail the stage and free the slot)
 - `DELETE` from `mrf_materialization_slots`
 - change the catalog or selector while a warehouse already exists
 
@@ -212,7 +213,9 @@ docker compose -f docker-compose.story21.yml exec -T postgres psql -U mrfpipelin
 
 ## River UI (optional)
 
-Pause and resume only. Do not cancel, retry, or delete jobs from the UI.
+Pause and resume queues. Cancelling `mrf.download` or `mrf.parse` fails the
+stage and frees the slot. Do not retry or delete jobs, and do not cancel
+other kinds.
 
 ```text
 docker run --rm -p 8080:8080 --network <project>_default \

@@ -14,8 +14,9 @@ import (
 // materialization work under the control lease.
 type Worker struct {
 	river.WorkerDefaults[jobs.ControlScheduleArgs]
-	Pool   *pgxpool.Pool
-	Logger *slog.Logger
+	Pool           *pgxpool.Pool
+	Logger         *slog.Logger
+	BeforeSchedule func(context.Context, *river.Client[pgx.Tx]) error
 }
 
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ControlScheduleArgs]) error {
@@ -23,6 +24,11 @@ func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ControlScheduleAr
 		return jobs.Failure(jobs.FailureInvalidArguments)
 	}
 	client := river.ClientFromContext[pgx.Tx](ctx)
+	if w.BeforeSchedule != nil {
+		if err := w.BeforeSchedule(ctx, client); err != nil {
+			return err
+		}
+	}
 	tx, err := w.Pool.Begin(ctx)
 	if err != nil {
 		return jobs.Failure(jobs.FailureReconciliationDatabaseFailed)

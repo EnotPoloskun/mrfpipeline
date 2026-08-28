@@ -51,9 +51,15 @@ type RunParams struct {
 	// used only for stage-specific cleanup such as releasing an empty download
 	// slot; returning an error keeps the failure visible to River.
 	Terminal func(context.Context) error
-	Kind     string
-	Queue    string
-	Logger   *slog.Logger
+	// CancelTerminal, when set, replaces Terminal after a remote River UI
+	// cancel of resident MRF occupancy. Worker recreate never reaches it.
+	CancelTerminal func(context.Context) error
+	// Fail records the durable terminal domain failure. When nil, MarkFailed
+	// is used.
+	Fail   func(context.Context, string) error
+	Kind   string
+	Queue  string
+	Logger *slog.Logger
 }
 
 // Run executes claim, external work, success/successor, retry bookkeeping,
@@ -103,42 +109,21 @@ func Run(ctx context.Context, p RunParams) error {
 		}
 		return nil
 	}
-	if isFailure(workErr, FailureWorkerLeaseLost) || ctx.Err() != nil {
+	if isFailure(workErr, FailureWorkerLeaseLost) {
 		return nil
 	}
-	if isImmediateFail(workErr) {
-		code := terminalFailureCode(workErr)
-		if ferr := MarkFailed(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID, code); ferr != nil {
-			p.logBookkeeping(ctx, "terminal_bookkeeping")
-			return ferr
+	if isResidentSlotKind(p.Kind) && isRemoteJobCancel(ctx) {
+		q := p
+		if q.CancelTerminal != nil {
+			q.Terminal = q.CancelTerminal
 		}
-		if p.Terminal != nil {
-			if ferr := p.Terminal(ctx); ferr != nil {
-				p.logBookkeeping(ctx, "terminal_cleanup")
-				return ferr
-			}
-		}
-		p.logLifecycle(ctx, slog.LevelInfo, "job_attempt_failed", "", workErr, "terminal")
-		return river.JobCancel(jobErr(code))
+		return failAssignedTerminal(context.WithoutCancel(ctx), q, Failure(FailureRiverTerminalWithoutResult))
 	}
-	max := p.MaxAttempts
-	if max <= 0 {
-		max = MaxAttempts
+	if ctx.Err() != nil {
+		return nil
 	}
-	if p.Attempt >= max {
-		code := terminalFailureCode(workErr)
-		if ferr := MarkFailed(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID, code); ferr != nil {
-			p.logBookkeeping(ctx, "terminal_bookkeeping")
-			return ferr
-		}
-		if p.Terminal != nil {
-			if ferr := p.Terminal(ctx); ferr != nil {
-				p.logBookkeeping(ctx, "terminal_cleanup")
-				return ferr
-			}
-		}
-		p.logLifecycle(ctx, slog.LevelInfo, "job_attempt_failed", "", workErr, "terminal")
-		return river.JobCancel(jobErr(code))
+	if isImmediateFail(workErr) || p.Attempt >= effectiveMaxAttempts(p) {
+		return failAssignedTerminal(ctx, p, workErr)
 	}
 	if ferr := MarkRetryable(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID); ferr != nil {
 		p.logBookkeeping(ctx, "retry_bookkeeping")
@@ -146,6 +131,43 @@ func Run(ctx context.Context, p RunParams) error {
 	}
 	p.logLifecycle(ctx, slog.LevelInfo, "job_attempt_failed", "", workErr, "retrying")
 	return workErr
+}
+
+func effectiveMaxAttempts(p RunParams) int {
+	if p.MaxAttempts <= 0 {
+		return MaxAttempts
+	}
+	return p.MaxAttempts
+}
+
+func isResidentSlotKind(kind string) bool {
+	return kind == KindMRFDownload || kind == KindMRFParse
+}
+
+func isRemoteJobCancel(ctx context.Context) bool {
+	return errors.Is(context.Cause(ctx), river.ErrJobCancelledRemotely)
+}
+
+func failAssignedTerminal(ctx context.Context, p RunParams, workErr error) error {
+	code := terminalFailureCode(workErr)
+	failFn := p.Fail
+	if failFn == nil {
+		failFn = func(ctx context.Context, code string) error {
+			return MarkFailed(ctx, p.Pool, p.Spec, p.DomainID, p.RiverJobID, code)
+		}
+	}
+	if ferr := failFn(ctx, code); ferr != nil {
+		p.logBookkeeping(ctx, "terminal_bookkeeping")
+		return ferr
+	}
+	if p.Terminal != nil {
+		if ferr := p.Terminal(ctx); ferr != nil {
+			p.logBookkeeping(ctx, "terminal_cleanup")
+			return ferr
+		}
+	}
+	p.logLifecycle(ctx, slog.LevelInfo, "job_attempt_failed", "", workErr, "terminal")
+	return river.JobCancel(jobErr(code))
 }
 
 func (p RunParams) logLifecycle(ctx context.Context, level slog.Level, event, phase string, err error, outcome string) {

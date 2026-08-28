@@ -419,6 +419,225 @@ SELECT download_status, failure_code FROM mrfpipeline.toc_files WHERE id = $1`, 
 	}
 }
 
+func TestIntegrationCancelledMRFDownloadReleasesSlot(t *testing.T) {
+	pool := testDB(t)
+	ws := workspace(t)
+	client, err := jobs.NewInsertClient(context.Background(), pool, jobs.NewLogger(io.Discard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := insertPendingMRFDownload(t, pool, true)
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, err := jobs.InsertTx(context.Background(), client, tx, &jobs.MRFDownloadArgs{MRFSourceID: sourceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `
+UPDATE mrfpipeline.mrf_sources SET download_river_job_id = $2 WHERE id = $1`, sourceID, jobID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+UPDATE mrfpipeline_river.river_job SET state = 'cancelled', finalized_at = now() WHERE id = $1`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	svc := filepath.Join(t.TempDir(), "services.csv")
+	if err := os.WriteFile(svc, []byte("billing_code_type,billing_code\nCPT,99213\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RepairCancelledMaterialization(context.Background(), pool, client, ws, svc, jobs.NewLogger(io.Discard)); err != nil {
+		t.Fatal(err)
+	}
+	var download, parse, code string
+	if err := pool.QueryRow(context.Background(), `
+SELECT download_status, parse_status, failure_code FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&download, &parse, &code); err != nil {
+		t.Fatal(err)
+	}
+	if download != jobs.StatusFailed || parse != jobs.StatusBlocked || code != jobs.FailureRiverTerminalWithoutResult {
+		t.Fatalf("%s %s %s", download, parse, code)
+	}
+	var held int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_materialization_slots`).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Fatalf("held %d", held)
+	}
+}
+
+func TestIntegrationCancelledMRFDownloadWithBytesReleasesSlot(t *testing.T) {
+	pool := testDB(t)
+	ws := workspace(t)
+	client, err := jobs.NewInsertClient(context.Background(), pool, jobs.NewLogger(io.Discard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := insertPendingMRFDownload(t, pool, true)
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, err := jobs.InsertTx(context.Background(), client, tx, &jobs.MRFDownloadArgs{MRFSourceID: sourceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `
+UPDATE mrfpipeline.mrf_sources SET download_river_job_id = $2 WHERE id = $1`, sourceID, jobID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+UPDATE mrfpipeline_river.river_job SET state = 'cancelled', finalized_at = now() WHERE id = $1`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	data, err := ws.DownloadDataPath(artifact.KindMRF, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(data), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(data, []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	staging, err := os.MkdirTemp(ws.StagingDir(), "mrf-download-"+strconv.FormatInt(sourceID, 10)+"-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, "partial"), []byte("y"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	svc := filepath.Join(t.TempDir(), "services.csv")
+	if err := os.WriteFile(svc, []byte("billing_code_type,billing_code\nCPT,99213\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RepairCancelledMaterialization(context.Background(), pool, client, ws, svc, jobs.NewLogger(io.Discard)); err != nil {
+		t.Fatal(err)
+	}
+	var download, parse, code string
+	if err := pool.QueryRow(context.Background(), `
+SELECT download_status, parse_status, failure_code FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&download, &parse, &code); err != nil {
+		t.Fatal(err)
+	}
+	if download != jobs.StatusFailed || parse != jobs.StatusBlocked || code != jobs.FailureRiverTerminalWithoutResult {
+		t.Fatalf("%s %s %s", download, parse, code)
+	}
+	state, err := ws.InspectDownloadState(artifact.KindMRF, sourceID)
+	if err != nil || state != artifact.DownloadAbsent {
+		t.Fatalf("download state %s %v", state, err)
+	}
+	has, err := ws.HasDownloadStaging(artifact.KindMRF, sourceID)
+	if err != nil || has {
+		t.Fatalf("staging %v %v", has, err)
+	}
+	var held int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_materialization_slots`).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Fatalf("held %d", held)
+	}
+}
+
+func TestIntegrationCancelledRunningMRFJobIsNotReplaced(t *testing.T) {
+	pool := testDB(t)
+	ws := workspace(t)
+	client, err := jobs.NewInsertClient(context.Background(), pool, jobs.NewLogger(io.Discard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceID := insertPendingMRFDownload(t, pool, true)
+	tx, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobID, err := jobs.InsertTx(context.Background(), client, tx, &jobs.MRFDownloadArgs{MRFSourceID: sourceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(context.Background(), `
+UPDATE mrfpipeline.mrf_sources SET download_status = 'running', download_river_job_id = $2 WHERE id = $1`, sourceID, jobID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(context.Background(), `
+UPDATE mrfpipeline_river.river_job SET state = 'running', attempted_at = now() WHERE id = $1`, jobID); err != nil {
+		t.Fatal(err)
+	}
+	svc := filepath.Join(t.TempDir(), "services.csv")
+	if err := os.WriteFile(svc, []byte("billing_code_type,billing_code\nCPT,99213\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RepairCancelledMaterialization(context.Background(), pool, client, ws, svc, jobs.NewLogger(io.Discard)); err != nil {
+		t.Fatal(err)
+	}
+	var download string
+	var current *int64
+	if err := pool.QueryRow(context.Background(), `
+SELECT download_status, download_river_job_id FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&download, &current); err != nil {
+		t.Fatal(err)
+	}
+	if download != jobs.StatusRunning || current == nil || *current != jobID {
+		t.Fatalf("running delivery replaced: %s %v", download, current)
+	}
+	var jobsCount int
+	if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload).Scan(&jobsCount); err != nil {
+		t.Fatal(err)
+	}
+	if jobsCount != 1 {
+		t.Fatalf("jobs %d", jobsCount)
+	}
+}
+
+func insertPendingMRFDownload(t *testing.T, pool *pgxpool.Pool, slot bool) int64 {
+	t.Helper()
+	ctx := context.Background()
+	month := "2026-08-01"
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_releases (payer_id, collection_month)
+VALUES ('uhc', $1) ON CONFLICT DO NOTHING`, month); err != nil {
+		t.Fatal(err)
+	}
+	var sourceID int64
+	if err := pool.QueryRow(ctx, `
+INSERT INTO mrfpipeline.mrf_sources
+    (source_url, collection_month, download_status, parse_status)
+VALUES ($1, $2, 'pending', 'blocked')
+RETURNING id`, uniqueURL("cancel-download"), month).Scan(&sourceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_snapshots
+    (mrf_source_id, payer_id, collection_month, consume_status)
+VALUES ($1, 'uhc', $2, 'blocked')`, sourceID, month); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.monthly_release_mrf_sources
+    (payer_id, collection_month, mrf_source_id)
+VALUES ('uhc', $2, $1)`, sourceID, month); err != nil {
+		t.Fatal(err)
+	}
+	if slot {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO mrfpipeline.mrf_materialization_slots (mrf_source_id)
+VALUES ($1)`, sourceID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return sourceID
+}
+
 func TestIntegrationRetryFailedStage(t *testing.T) {
 	pool := testDB(t)
 	toc := insertTOC(t, pool, jobs.StatusFailed, jobs.StatusBlocked, jobs.StatusBlocked)

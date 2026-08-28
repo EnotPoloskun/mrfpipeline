@@ -19,6 +19,7 @@ import (
 	"github.com/enotpoloskun/mrfpipeline/internal/tocdownload"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocimport"
 	"github.com/enotpoloskun/mrfpipeline/internal/tocparse"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 )
@@ -139,6 +140,7 @@ func (r Runtime) Run(ctx context.Context) error {
 	defer cancel()
 	var lost atomic.Bool
 	var watchDone chan struct{}
+	var cancelWatchDone chan struct{}
 	if lease != nil {
 		watchDone = make(chan struct{})
 		go func() {
@@ -150,6 +152,9 @@ func (r Runtime) Run(ctx context.Context) error {
 		cancel()
 		if watchDone != nil {
 			<-watchDone
+		}
+		if cancelWatchDone != nil {
+			<-cancelWatchDone
 		}
 	}()
 	if role == "control" {
@@ -199,7 +204,12 @@ func (r Runtime) Run(ctx context.Context) error {
 	}
 	workers := river.NewWorkers()
 	if role == "control" {
-		river.AddWorker(workers, &admission.Worker{Pool: r.Pool, Logger: logger})
+		river.AddWorker(workers, &admission.Worker{
+			Pool: r.Pool, Logger: logger,
+			BeforeSchedule: func(ctx context.Context, client *river.Client[pgx.Tx]) error {
+				return reconcile.RepairCancelledMaterialization(ctx, r.Pool, client, r.Workspace, r.ServicesPath, logger)
+			},
+		})
 		river.AddWorker(workers, &discovery.Worker{Pool: r.Pool, Discover: r.Discover, Logger: logger})
 		river.AddWorker(workers, &tocdownload.Worker{Pool: r.Pool, Downloader: downloader, Logger: logger})
 		river.AddWorker(workers, &tocparse.Worker{Pool: r.Pool, Workspace: r.Workspace, Parse: r.Parse, Progress: progress, Logger: logger})
@@ -239,6 +249,13 @@ func (r Runtime) Run(ctx context.Context) error {
 		return jobs.Failure("start")
 	}
 	logWorkerStarted(logger)
+	if role == "control" {
+		cancelWatchDone = make(chan struct{})
+		go func() {
+			defer close(cancelWatchDone)
+			reconcile.WatchMaterializationCancels(workCtx, r.Pool, logger)
+		}()
+	}
 	select {
 	case <-workCtx.Done():
 		if err := jobs.Shutdown(context.Background(), client); err != nil {

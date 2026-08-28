@@ -119,11 +119,12 @@ frozen plan batch rather than creating a new batch for its items.
 
 For mrf.parse, automatic retries reuse the raw file and resident slot. A
 terminal parse cleanup deletes unpublished parsed output, parser staging, and
-raw bytes, releases the slot, and keeps the source selected and failed. A
-parse retry reuses valid raw bytes when present; when bytes are gone it
-reopens download and waits for admission before redownloading. New
-mrf.parse jobs have four attempts including the first; other production
-stages retain eight.
+raw bytes, releases the slot, and keeps the source selected and failed.
+Cancelling mrf.download or mrf.parse from River UI uses that same terminal
+occupancy path. A parse retry reuses valid raw bytes when present; when bytes
+are gone it reopens download and waits for admission before redownloading. New
+mrf.parse, mrf.download, and toc.download jobs have four attempts including
+the first. HTTP 404 is not retried. Other production stages retain eight.
 
 Retries for active or inactive releases fail with
 sealed_release_retry_forbidden.

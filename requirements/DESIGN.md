@@ -2,11 +2,11 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–24 architecture. The
+This document describes the implemented Stories 01–25 architecture. The
 numbered requirement stories remain authoritative where they are more
 specific. Sections below the approved contract that are explicitly labeled
 historical version 1 are retained as background only; they are not current
-runtime guidance. The Stories 14–24 requirements and current README describe
+runtime guidance. The Stories 14–25 requirements and current README describe
 the rebuild-only feed-free contract and runnable local operation.
 
 The design records the implemented version 1 decisions that remain normative
@@ -30,7 +30,7 @@ except where the target addendum explicitly replaces them:
 - Use numeric database identities and exact database uniqueness. Do not add
   hashes as URL, artifact, job, plan, or output identity.
 
-## Active current architecture: Stories 14–24
+## Active current architecture: Stories 14–25
 
 The current contract is defined by:
 
@@ -45,6 +45,7 @@ The current contract is defined by:
 - [Story 22: Runnable local acceptance and test convergence](22-runnable-local-acceptance-and-test-convergence.md)
 - [Story 23: Terminal MRF parse slot release](23-terminal-parse-slot-release.md)
 - [Story 24: Nullable plan sponsor on TOC import](24-nullable-plan-sponsor-import.md)
+- [Story 25: River UI cancel of MRF occupancy](25-river-ui-cancel-slot-release.md)
 
 Stories 14–17 were one atomic breaking delivery batch. Consumer `2.0.0` is
 available, and there is no adapter,
@@ -173,7 +174,9 @@ cumulative stable prefix and the shared resident-slot table admits only as
 many raw/in-progress sources as capacity permits. A slot is held across MRF
 download and in-flight parse, and is released after successful parse cleanup
 or terminal-parse cleanup (and after terminal empty-download cleanup as today).
-The capacity is a source count, not a byte quota.
+River UI cancel of `mrf.download` or `mrf.parse` is that same terminal occupancy:
+the stage fails, files are removed, and the slot is released. Worker recreate
+stays an interruption. The capacity is a source count, not a byte quota.
 
 Terminal parse failure remains selected and blocks activation, but after
 unpublished parsed output, parser staging, and raw bytes are removed the source
@@ -421,8 +424,9 @@ synchronously. `retry` requires the worker to be stopped.
 Optional River UI is not a pipeline command. Operators may run River's
 open-source UI as a separate process against `MRFPIPELINE_DATABASE_URL` with
 schema `mrfpipeline_river` to inspect queues and pause them. Pause stops
-fetching new jobs; it does not cancel in-flight work. Do not cancel, retry, or
-delete jobs from that UI.
+fetching new jobs; it does not cancel in-flight work. Cancelling `mrf.download`
+or `mrf.parse` from that UI fails the stage and releases the slot after Story 23
+cleanup. Do not retry or delete jobs from the UI; do not cancel other kinds.
 
 Discovery is manually invoked or scheduled externally. The caller supplies
 the collection month as an operator-owned label for that listing; the pipeline
@@ -1315,7 +1319,7 @@ Stories 01–13 are the full version 1 implementation sequence:
 | 12 | Plan batch projection and additive consumer attachment worker. |
 | 13 | Reconciliation, operational acceptance, 1→2→5 TOC live progression, authorized URL-debug queries, retention guidance, and final documentation. |
 
-Stories 14–24 are the approved rebuild-only next sequence:
+Stories 14–25 are the approved rebuild-only next sequence:
 
 | Story | Deliverable |
 |---:|---|
@@ -1330,6 +1334,7 @@ Stories 14–24 are the approved rebuild-only next sequence:
 | 22 | Make the local topology buildable, converge PostgreSQL integration tests, align operator contracts, and validate a reproducible bounded first run. |
 | 23 | Release resident slots after terminal MRF parse cleanup, rematerialize parse retries when raw bytes are gone, and reconcile pre-existing terminal parses. |
 | 24 | Allow nullable EIN sponsors through TOC import, preserve sponsor provenance, and emit JSON-null EIN sponsors. |
+| 25 | Treat River UI cancel of `mrf.download` and `mrf.parse` as terminal occupancy so the slot is released. |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC
@@ -1376,3 +1381,5 @@ reported without repair or fallback. Worker lifecycle records use fixed safe
 codes and phases/outcomes only; stalled-work SQL is diagnostic and does not
 cancel or retry jobs. Lease loss is reported once by the runtime, and normal
 operator cancellation remains an interruption rather than a failed stage.
+Worker recreate remains an interruption. River UI cancel of `mrf.download` or
+`mrf.parse` is a terminal occupancy failure; other kinds stay interruptions.

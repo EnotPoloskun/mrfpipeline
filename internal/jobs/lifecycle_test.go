@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 )
 
 func TestLockForSucceedRunsPreLockFirst(t *testing.T) {
@@ -141,6 +142,168 @@ func TestRunCanceledWorkDoesNotMutate(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("want nil to River, got %v", err)
+	}
+}
+
+func TestRunShutdownCancelDoesNotFailMRFOccupancy(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	var terminal int
+	err := Run(ctx, RunParams{
+		Kind:       KindMRFParse,
+		DomainID:   1,
+		RiverJobID: 2,
+		Attempt:    1,
+		Claim: func(context.Context) (ClaimResult, error) {
+			return ClaimResult{Action: ClaimWork}, nil
+		},
+		Work: func(context.Context) error {
+			cancel()
+			return context.Canceled
+		},
+		Terminal: func(context.Context) error {
+			terminal++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("want nil to River, got %v", err)
+	}
+	if terminal != 0 {
+		t.Fatal("shutdown cancel ran terminal occupancy cleanup")
+	}
+}
+
+func TestRunRemoteCancelFailsMRFOccupancy(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	var terminal int
+	var failed string
+	err := Run(ctx, RunParams{
+		Kind:       KindMRFParse,
+		Spec:       MRFParseStage,
+		DomainID:   1,
+		RiverJobID: 2,
+		Attempt:    1,
+		Claim: func(context.Context) (ClaimResult, error) {
+			return ClaimResult{Action: ClaimWork}, nil
+		},
+		Work: func(context.Context) error {
+			cancel(river.ErrJobCancelledRemotely)
+			return context.Canceled
+		},
+		Fail: func(_ context.Context, code string) error {
+			failed = code
+			return nil
+		},
+		Terminal: func(context.Context) error {
+			terminal++
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("remote MRF cancel must not look like interruption")
+	}
+	if failed != FailureRiverTerminalWithoutResult {
+		t.Fatalf("failure %q", failed)
+	}
+	if terminal != 1 {
+		t.Fatal("remote cancel skipped terminal occupancy cleanup")
+	}
+}
+
+func TestRunRemoteCancelUsesCancelTerminal(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	var terminal, cancelTerm int
+	err := Run(ctx, RunParams{
+		Kind:       KindMRFDownload,
+		Spec:       MRFDownloadStage,
+		DomainID:   1,
+		RiverJobID: 2,
+		Attempt:    1,
+		Claim: func(context.Context) (ClaimResult, error) {
+			return ClaimResult{Action: ClaimWork}, nil
+		},
+		Work: func(context.Context) error {
+			cancel(river.ErrJobCancelledRemotely)
+			return context.Canceled
+		},
+		Fail: func(context.Context, string) error { return nil },
+		Terminal: func(context.Context) error {
+			terminal++
+			return nil
+		},
+		CancelTerminal: func(context.Context) error {
+			cancelTerm++
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("remote MRF cancel must not look like interruption")
+	}
+	if cancelTerm != 1 {
+		t.Fatal("remote download cancel skipped CancelTerminal")
+	}
+	if terminal != 0 {
+		t.Fatal("ordinary terminal ran on remote cancel")
+	}
+}
+
+func TestRunRemoteCancelLeavesTOCAsInterruption(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	var terminal int
+	err := Run(ctx, RunParams{
+		Kind:       KindTOCDownload,
+		DomainID:   1,
+		RiverJobID: 2,
+		Attempt:    1,
+		Claim: func(context.Context) (ClaimResult, error) {
+			return ClaimResult{Action: ClaimWork}, nil
+		},
+		Work: func(context.Context) error {
+			cancel(river.ErrJobCancelledRemotely)
+			return context.Canceled
+		},
+		Terminal: func(context.Context) error {
+			terminal++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("want nil to River, got %v", err)
+	}
+	if terminal != 0 {
+		t.Fatal("TOC remote cancel ran MRF occupancy cleanup")
+	}
+}
+
+func TestRemoteJobCancelCause(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(river.ErrJobCancelledRemotely)
+	if !isRemoteJobCancel(ctx) {
+		t.Fatal("remote cancel cause")
+	}
+	plain, stop := context.WithCancel(context.Background())
+	stop()
+	if isRemoteJobCancel(plain) {
+		t.Fatal("plain cancel is not remote job cancel")
+	}
+	if isResidentSlotKind(KindTOCDownload) || !isResidentSlotKind(KindMRFDownload) || !isResidentSlotKind(KindMRFParse) {
+		t.Fatal("slot kinds")
+	}
+}
+
+func TestRemoteJobCancelCausePropagatesThroughWithCancel(t *testing.T) {
+	t.Parallel()
+	parent, cancel := context.WithCancelCause(context.Background())
+	child, stop := context.WithCancel(parent)
+	defer stop()
+	cancel(river.ErrJobCancelledRemotely)
+	if !isRemoteJobCancel(child) {
+		t.Fatal("execution lock WithCancel must keep remote cancel cause")
 	}
 }
 
