@@ -3,6 +3,7 @@ package tocdownload
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -66,6 +67,10 @@ func TestMapDownloadError(t *testing.T) {
 	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "72") {
 		t.Fatalf("exposed: %v", err)
 	}
+	err = mapDownloadError(fmt.Errorf("%w: %w", artifact.ErrDownload, artifact.ErrHTTPNotFound))
+	if !jobs.IsFailure(err, jobs.FailureTOCDownloadNotFound) {
+		t.Fatalf("not found: %v", err)
+	}
 	err = mapDownloadError(errors.Join(artifact.ErrArtifact, errors.New("/tmp/artifacts/toc/toc-72/download")))
 	if !jobs.IsFailure(err, jobs.FailureTOCDownload) {
 		t.Fatalf("artifact: %v", err)
@@ -81,7 +86,7 @@ func TestWorkerRegistration(t *testing.T) {
 	if args.Kind() != jobs.KindTOCDownload {
 		t.Fatal("kind")
 	}
-	if args.InsertOpts().Queue != jobs.QueueTOCDownload {
+	if args.InsertOpts().Queue != jobs.QueueTOCDownload || args.InsertOpts().MaxAttempts != 4 {
 		t.Fatal("queue")
 	}
 	workers := river.NewWorkers()

@@ -92,7 +92,7 @@ type TOCDownloadArgs struct {
 
 func (TOCDownloadArgs) Kind() string { return KindTOCDownload }
 func (TOCDownloadArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{Queue: QueueTOCDownload}
+	return river.InsertOpts{Queue: QueueTOCDownload, MaxAttempts: 4}
 }
 func (a *TOCDownloadArgs) UnmarshalJSON(data []byte) error {
 	return unmarshalOnePositiveInt64(data, FieldTOCFileID, &a.TOCFileID)
@@ -131,7 +131,7 @@ type MRFDownloadArgs struct {
 
 func (MRFDownloadArgs) Kind() string { return KindMRFDownload }
 func (MRFDownloadArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{Queue: QueueMRFDownload}
+	return river.InsertOpts{Queue: QueueMRFDownload, MaxAttempts: 4}
 }
 func (a *MRFDownloadArgs) UnmarshalJSON(data []byte) error {
 	return unmarshalOnePositiveInt64(data, FieldMRFSourceID, &a.MRFSourceID)

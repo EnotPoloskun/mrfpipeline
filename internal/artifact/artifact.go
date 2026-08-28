@@ -15,6 +15,9 @@ var ErrArtifact = errors.New("artifact operation failed")
 // HTTP-status, copy, content-length, and body-close failures.
 var ErrDownload = errors.New("download failed")
 
+// ErrHTTPNotFound is a 404 after redirects. Workers must not retry it.
+var ErrHTTPNotFound = errors.New("not found")
+
 // ErrPlanBatchInput is a preserved, mismatched, or unsafe plan-batch leaf.
 var ErrPlanBatchInput = errors.New("plan batch input")
 

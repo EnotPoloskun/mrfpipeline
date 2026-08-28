@@ -22,7 +22,9 @@ const (
 	FailureDiscoveryResultInvalid        = "discovery_result_invalid"
 	FailureDiscoveryDatabase             = "discovery_database_failed"
 	FailureTOCDownload                   = "toc_download_failed"
+	FailureTOCDownloadNotFound           = "toc_download_not_found"
 	FailureMRFDownload                   = "mrf_download_failed"
+	FailureMRFDownloadNotFound           = "mrf_download_not_found"
 	FailureTOCParseInputInvalid          = "toc_parse_input_invalid"
 	FailureTOCParseResourceFailed        = "toc_parse_resource_failed"
 	FailureTOCParseOutputFailed          = "toc_parse_output_failed"
@@ -112,7 +114,7 @@ func allowedFailureCode(code string) bool {
 	switch code {
 	case FailureInvalidArguments, FailureMissingRecord, FailureDomainInvariant, FailureAttemptsExhausted,
 		FailureDiscoveryListing, FailureDiscoveryResultInvalid, FailureDiscoveryDatabase,
-		FailureTOCDownload, FailureMRFDownload,
+		FailureTOCDownload, FailureTOCDownloadNotFound, FailureMRFDownload, FailureMRFDownloadNotFound,
 		FailureTOCParseInputInvalid, FailureTOCParseResourceFailed, FailureTOCParseOutputFailed,
 		FailureTOCParseOutputInvalid, FailureTOCParseCleanupFailed,
 		FailureMRFParseExecutionFailed, FailureMRFParseOutputInvalid, FailureMRFParseSelectorChanged,
@@ -141,6 +143,8 @@ func isImmediateFail(err error) bool {
 	return isFailure(err, FailureInvalidArguments) ||
 		isFailure(err, FailureMissingRecord) ||
 		isFailure(err, FailureDomainInvariant) ||
+		isFailure(err, FailureTOCDownloadNotFound) ||
+		isFailure(err, FailureMRFDownloadNotFound) ||
 		isFailure(err, FailureSealedReleaseInconsistent) ||
 		isFailure(err, FailureSealedReleaseRetryForbidden)
 }

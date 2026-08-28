@@ -564,7 +564,7 @@ func TestIntegrationEighthFailureLeavesSnapshots(t *testing.T) {
 	startDownloadRuntime(t, pool, hookDownloader(ws, ts), 1)
 	waitDownload(t, pool, sourceID, jobs.StatusFailed)
 	download, parse, parseJob, fail := sourceRow(t, pool, sourceID)
-	if download != jobs.StatusFailed || parse != jobs.StatusBlocked || parseJob != nil || fail == nil || *fail != jobs.FailureMRFDownload {
+	if download != jobs.StatusFailed || parse != jobs.StatusBlocked || parseJob != nil || fail == nil || *fail != jobs.FailureMRFDownloadNotFound {
 		t.Fatalf("terminal %s %s job=%v fail=%v", download, parse, parseJob, fail)
 	}
 	var consume string

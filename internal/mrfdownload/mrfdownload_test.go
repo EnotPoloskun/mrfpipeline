@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -72,6 +73,10 @@ func TestMapDownloadError(t *testing.T) {
 	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "151") {
 		t.Fatalf("exposed: %v", err)
 	}
+	err = mapDownloadError(fmt.Errorf("%w: %w", artifact.ErrDownload, artifact.ErrHTTPNotFound))
+	if !jobs.IsFailure(err, jobs.FailureMRFDownloadNotFound) {
+		t.Fatalf("not found: %v", err)
+	}
 	err = mapDownloadError(errors.Join(artifact.ErrArtifact, errors.New("/tmp/artifacts/mrf/mrf-source-151/download")))
 	if !jobs.IsFailure(err, jobs.FailureMRFDownload) {
 		t.Fatalf("artifact: %v", err)
@@ -84,7 +89,7 @@ func TestMapDownloadError(t *testing.T) {
 func TestArgsAndGeneratedPath(t *testing.T) {
 	t.Parallel()
 	args := jobs.MRFDownloadArgs{MRFSourceID: 151}
-	if args.Kind() != jobs.KindMRFDownload || args.InsertOpts().Queue != jobs.QueueMRFDownload {
+	if args.Kind() != jobs.KindMRFDownload || args.InsertOpts().Queue != jobs.QueueMRFDownload || args.InsertOpts().MaxAttempts != 4 {
 		t.Fatal("args")
 	}
 	if (jobs.MRFParseArgs{MRFSourceID: 151}).Kind() != jobs.KindMRFParse {

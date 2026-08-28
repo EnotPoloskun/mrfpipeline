@@ -236,6 +236,45 @@ func TestDownloadStatusAndNoRetry(t *testing.T) {
 	}
 }
 
+func TestDownloadNotFoundIsDistinct(t *testing.T) {
+	t.Parallel()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/gone", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("<html lang=\"en\">secret 404 body</html>"))
+	})
+	mux.HandleFunc("/forbidden", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("secret 403 body"))
+	})
+	mux.HandleFunc("/redir", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/gone", http.StatusSeeOther)
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+	ws := mustInit(t, filepath.Join(t.TempDir(), "ws"))
+	d := hookDownloader(t, ws, ts, 0, nil)
+	_, err := d.Download(context.Background(), KindTOC, 1, testURL("/gone"), testProg())
+	if !errors.Is(err, ErrDownload) || !errors.Is(err, ErrHTTPNotFound) {
+		t.Fatalf("404: %v", err)
+	}
+	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "<html") {
+		t.Fatalf("leaked 404: %v", err)
+	}
+	_, err = d.Download(context.Background(), KindTOC, 2, testURL("/redir"), testProg())
+	if !errors.Is(err, ErrHTTPNotFound) {
+		t.Fatalf("redirected 404: %v", err)
+	}
+	_, err = d.Download(context.Background(), KindTOC, 3, testURL("/forbidden"), testProg())
+	if !errors.Is(err, ErrDownload) || errors.Is(err, ErrHTTPNotFound) {
+		t.Fatalf("403: %v", err)
+	}
+	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "403") {
+		t.Fatalf("leaked 403: %v", err)
+	}
+}
+
 func TestDownloadCancelAndHeaderTimeout(t *testing.T) {
 	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

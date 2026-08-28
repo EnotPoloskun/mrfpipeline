@@ -2,6 +2,7 @@ package artifact
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -158,6 +159,10 @@ func (d *Downloader) transfer(ctx context.Context, staging, rawURL string, prog 
 		return 0, classifyDL(ctx, "request", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		_ = f.Close()
+		return 0, fmt.Errorf("%w: %w", ErrDownload, ErrHTTPNotFound)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return closeFail(f, statusClass(resp.StatusCode))
 	}

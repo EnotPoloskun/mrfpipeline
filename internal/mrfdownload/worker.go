@@ -125,5 +125,8 @@ func mapDownloadError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return context.DeadlineExceeded
 	}
+	if errors.Is(err, artifact.ErrHTTPNotFound) {
+		return jobs.Failure(jobs.FailureMRFDownloadNotFound)
+	}
 	return jobs.Failure(jobs.FailureMRFDownload)
 }
