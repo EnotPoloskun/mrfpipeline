@@ -163,8 +163,9 @@ build, Story 31 rejects the stale catalog.
 - If the exact current generation already has a published catalog, build is an
   idempotent no-op and returns it.
 - If migration/cutover left the current active generation without a catalog,
-  build backfills that exact generation and may make it `ready`; Story 31 owns
-  its one-time publication/cutover.
+  build backfills that exact generation and may make it `ready`. Any exact
+  current-generation ready catalog is eligible for Story 31 promotion when
+  activation finds no new output; no hidden cutover flag/state is required.
 
 ### Inactive release
 
@@ -182,26 +183,36 @@ Fail without catalog mutation when:
 - release does not exist;
 - target set is empty;
 - existing release status is outside building/active/inactive;
+- an active or inactive release has publication generation `0`;
 - first-publication inventory requirements fail;
 - consumer or attachment publication failure exists;
 - target rows violate output identity/uniqueness; or
-- existing published membership is inconsistent.
+- existing published membership fails consumed, plan-ready, warehouse-valid,
+  or catalog lexical invariants.
 
 Terminal TOC/MRF download/parse failures retain Story 27 behavior and do not by
 themselves block a candidate.
 
 ## Build serialization
 
-Use one new fixed advisory-lock namespace dedicated to catalog builds and one
-stable signed 64-bit lock key derived from exact payer/month through a small
-purpose-specific function. It must not collide with per-MRF or consumer output
-locks and must not reuse a snapshot ID as release identity.
+Use a domain-separated stable 64-bit hash for one session advisory lock per
+exact payer/month. Hash the UTF-8 bytes
+`mrfpipeline/filter-catalog`, unit separator, payer, unit separator, and
+`YYYY-MM` with SHA-256; interpret the first eight digest bytes as signed
+big-endian `int64`. It does not reuse snapshot IDs or the existing MRF/consumer
+execution-lock keys.
+
+A mathematical hash collision is allowed to cause a false
+`filter_catalog_busy`; it can never permit concurrent mutation or incorrect
+publication. Do not claim the mapping is collision-free and do not hold a
+database transaction for extraction merely to avoid that safe false-busy case.
 
 The build obtains one pool connection, tries the session advisory lock, and
-retains that same connection until completion. A second live build for the
-same payer/month fails immediately with fixed `filter_catalog_busy`; it does
-not wait, poll, cancel, or replace the live build. Different payer/month builds
-may proceed independently, although one CLI process starts only one build.
+retains that same connection until completion. A second live build with the
+same lock key fails immediately with fixed `filter_catalog_busy`; it does not
+wait, poll, cancel, or replace the live build. Different payer/month builds
+normally proceed independently but a hash collision may conservatively
+serialize them. One CLI process starts only one build.
 
 A crashed process releases the advisory lock. On the next build, an existing
 unpublished `building` header is treated as an abandoned attempt and replaced.
@@ -213,17 +224,20 @@ No heartbeat, lease-renewal row, timeout scanner, or cleanup daemon is added.
 
 Under the advisory lock:
 
-1. calculate candidate from PostgreSQL;
-2. validate candidate identity and fingerprint;
-3. run existing warehouse/catalog/path recognition and activation preflight on
+1. calculate the complete database candidate from PostgreSQL;
+2. reject active/inactive generation `0` and validate candidate identity,
+   separate ASCII-output fingerprint copy, and historical membership
+   invariants without repairing membership;
+3. capture the exact sorted semantic plan snapshot described below;
+4. run existing warehouse/catalog/path recognition and activation preflight on
    every candidate target;
-4. inspect and fully validate an existing catalog for target generation;
-5. return an exact published/ready match as idempotent success without
+5. inspect and fully validate an existing catalog for target generation;
+6. return an exact published/ready match as idempotent success without
    resolving or invoking DuckDB;
-6. reject any attempt to replace a published mismatch;
-7. only when a new build is required, resolve DuckDB and complete the exact
+7. reject any attempt to replace a published mismatch;
+8. only when a new build is required, resolve DuckDB and complete the exact
    Story 29 version probe before inserting a catalog header; and
-8. in one short transaction, delete a replaceable unpublished catalog for that
+9. in one short transaction, delete a replaceable unpublished catalog for that
    generation and insert a new `building` header plus exact `release_outputs`.
 
 At this point no filter child row exists. `building` is never visible through
@@ -235,31 +249,52 @@ Run Story 29 outside a database transaction while retaining the advisory lock.
 The candidate output relation and fingerprint are immutable inputs to the
 extractor.
 
-If extraction fails or the command is canceled:
+If extraction fails or the command is gracefully canceled:
 
-- begin a short transaction;
-- lock the building header;
-- delete any child rows defensively;
-- set status `failed`, fixed sanitized `failure_code`, and `completed_at`;
-- commit; and
-- return the fixed failure/nonzero CLI result.
+- terminate and wait for the DuckDB process first;
+- create a detached `context.Background()` cleanup context with a fixed
+  five-second timeout;
+- under that cleanup context, begin a short transaction, lock the building
+  header, delete child rows defensively, set status `failed`, set
+  `completed_at`, and record the fixed extraction or
+  `filter_catalog_cancelled` code;
+- return the original fixed failure/nonzero CLI result; and
+- if detached cleanup cannot connect or commit, leave the header `building`.
 
-Do not delete the failed header until a later explicit retry replaces it.
+A process crash or uncatchable termination always leaves `building` and cannot
+be expected to record a failure code. The next explicit build replaces that
+abandoned header after the session advisory lock is released. Do not add a
+cleanup worker or heartbeat.
 
 ### Phase 3: plan projection
 
-Read `mrfpipeline.mrf_plans` for exactly the candidate snapshot IDs. Recheck
-for each candidate output:
+The Phase 1 semantic plan snapshot is the exact sorted relation:
 
-- at least one plan exists;
-- every plan is assigned through a succeeded attachment batch;
-- no pending/running/failed attachment batch exists; and
-- no plan/attachment mutation violates published output sealing.
+```text
+output_id
+plan_name
+issuer_name
+plan_id_type
+plan_id
+plan_market_type
+```
 
-Deduplicate the sponsor-independent five-field tuple across candidate outputs.
-For each canonical plan, retain every candidate output that supplied that same
-tuple. Sponsor is validated by existing pipeline ingestion but is not read into
-catalog identity.
+plus, per output, the boolean/count facts proving at least one plan, every plan
+assigned through a succeeded attachment batch, and no pending/running/failed
+batch. It is derived semantically from current rows, never from timestamps or a
+new plan-set revision column.
+
+After DuckDB extraction, reread the same relation/readiness for exactly the
+candidate snapshots. If any row or readiness fact differs from Phase 1, fail
+the complete build with `filter_catalog_plan_invalid` and perform the same
+detached short failure cleanup. This detects a meaningful concurrent change
+without treating an irrelevant timestamp update as stale.
+
+Validate every exact plan identity field as nonempty, valid UTF-8, free of CR/LF,
+and compliant with Story 28 lexical constraints before insertion. Deduplicate
+the sponsor-independent five-field tuple across candidate outputs. For each
+canonical plan, retain every candidate output that supplied that tuple.
+Sponsor remains outside catalog identity.
 
 Build `search_text` exactly as Story 28 specifies. Sort canonical plans by the
 five identity fields using Go `strings.Compare` field-by-field, which is UTF-8
@@ -267,13 +302,9 @@ byte lexical order, and sort plan/output rows by that identity then ASCII
 output ID before persistence. PostgreSQL catalog pagination/order uses
 `COLLATE "C"` so locale does not change the result.
 
-A plan-readiness change after Phase 1 fails the complete build. In one short
-transaction, lock the building header, delete every child row defensively, set
-the fixed plan failure code plus `completed_at`, and change status to `failed`.
-Story 31 rechecks target membership and exact authoritative
-`(output_id, canonical plan tuple)` equality at activation. A plan/attachment
-change after ready publication therefore makes the catalog stale rather than
-publishing outdated plan relationships.
+Story 31 compares the exact current authoritative plan/output relation and
+attachment readiness again under activation locks. A semantic change after
+ready publication therefore makes the catalog stale.
 
 ### Phase 4: atomic population and readiness
 
@@ -303,9 +334,11 @@ After insertion, query exact database counts and validate:
 - header output rows/count/fingerprint still equal candidate;
 - at least one billing code and plan exist;
 - no duplicate key was repaired or ignored; and
-- provider catalog identity equals the recognized warehouse identity.
+- provider catalog schema version and exact `YYYY-MM-01` release-month date
+  equal the recognized warehouse identity.
 
-Update header counts and provider-catalog identity, set status `ready`, set
+Update header standard fact count, child counts, and provider-catalog identity
+from the exact extraction result; set status `ready`, set
 `completed_at = transaction_timestamp()`, and commit. No reader can observe a
 ready partial catalog.
 
@@ -318,18 +351,22 @@ lock.
 ## Idempotency and replacement
 
 An `exact match` means exact catalog header identity, candidate fingerprint,
-provider-catalog identity, and `(output_id, mrf_snapshot_id)` set equality plus
-the same actual child-count and referential validation required before
-publication. Header/fingerprint equality alone is insufficient. An inconsistent
-ready unpublished catalog is replaceable; an inconsistent published catalog
-fails `filter_catalog_inconsistent` and is never rebuilt or repaired.
+provider-catalog identity, `(output_id, mrf_snapshot_id)` set equality, exact
+current semantic plan/readiness snapshot equality, and the same actual
+child-count/referential validation required before publication.
+Header/fingerprint equality alone is insufficient. An inconsistent ready
+unpublished catalog is replaceable; an inconsistent published catalog fails
+`filter_catalog_inconsistent` and is never rebuilt or repaired.
 
 - Exact published match: return `unchanged`; no DuckDB or database mutation.
 - Exact ready match for an unpublished target: return `unchanged`; no DuckDB.
 - Failed/building unpublished target: replace and rebuild.
 - Ready unpublished target with different output fingerprint: replace and
   rebuild.
-- Published target with any mismatch: fail `filter_catalog_published_mismatch`.
+- Internally consistent published target whose exact candidate output/plan set
+  differs: fail `filter_catalog_published_mismatch`. Internal
+  header/child/count/referential corruption always takes the preceding
+  `filter_catalog_inconsistent` classification.
 - A catalog for another generation is never deleted by this build.
 - Repeating a successful build returns the same catalog ID and counts.
 
@@ -347,6 +384,7 @@ publication_generation
 catalog_id
 catalog_status
 output_count
+standard_fact_count
 billing_code_count
 code_filter_value_count
 plan_count
@@ -374,7 +412,8 @@ current_publication_generation
 current_catalog_id nullable
 current_catalog_status nullable
 current_catalog_output_count nullable
-prospective_publication_generation
+prospective_candidate_valid
+prospective_publication_generation nullable
 prospective_catalog_id nullable
 prospective_catalog_status nullable
 prospective_catalog_output_count nullable
@@ -383,11 +422,21 @@ prospective_catalog_output_count nullable
 Definitions:
 
 - current catalog means exact current stored publication generation;
-- prospective generation is current plus one only when database-only candidate
-  inspection sees at least one currently publishable unpublished output;
-- otherwise prospective equals current;
-- status does not calculate an output fingerprint, inspect warehouse, run
-  DuckDB, or claim that a candidate will survive activation locks; and
+- active/inactive generation `0` is an invariant failure, not a null catalog;
+- a building/active prospective candidate is valid only when the complete
+  database candidate gate succeeds, including target selection,
+  discovery/TOC requirements where applicable, publication-failure checks,
+  output identity, plan readiness, and a nonempty exact target set;
+- when that complete gate succeeds with new outputs, prospective generation is
+  current plus one;
+- active with no new output and an inactive release report current generation
+  only when their complete database candidate gate succeeds;
+- when any building/active/inactive database candidate gate fails,
+  `prospective_candidate_valid` is false and every prospective
+  generation/catalog field is JSON null;
+- status is explicitly database-only: it does not calculate a warehouse
+  fingerprint, inspect filesystem/catalog files, run DuckDB, or validate a
+  PostgreSQL/warehouse restore; and
 - absent catalog fields are JSON null, not omitted or fabricated.
 
 For a nonexistent release, return the existing release-not-found failure rather
@@ -404,6 +453,7 @@ filter_catalog_published_mismatch
 filter_catalog_plan_invalid
 filter_catalog_population_failed
 filter_catalog_database_failed
+filter_catalog_inconsistent
 ```
 
 Reuse Story 29 fixed extraction failures. Map errors through existing sanitized

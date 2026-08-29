@@ -142,7 +142,7 @@ Do not invoke a shell. Use `exec.CommandContext` with an argument vector.
 
 ## Candidate output relation
 
-Input is a nonempty sorted slice containing exactly:
+Input is a nonempty slice containing exactly:
 
 ```text
 payer_id
@@ -156,11 +156,13 @@ Requirements:
 - all rows have one exact payer and collection month matching the catalog;
 - output IDs and month already satisfy pipeline lexical contracts;
 - output ID is exactly `mrf-<snapshot-id>`;
-- snapshot IDs and output IDs are unique;
-- rows are sorted by ASCII `output_id`; numeric snapshot ID does not determine
-  fingerprint order; and
-- the caller supplies the Story 28 output fingerprint calculated over these
-  rows.
+- snapshot IDs and output IDs are unique; and
+- the caller supplies or verifies the Story 28 output fingerprint.
+
+The extractor never sorts the release package's numeric target slice in place.
+It copies candidate rows, sorts that copy by UTF-8/ASCII `output_id`, calculates
+the fingerprint from the copy, and uses the same order for the selected-output
+protocol. Numeric snapshot ordering is unrelated to fingerprint order.
 
 The extractor rechecks structural invariants before starting DuckDB. It does
 not query release status or choose outputs. Story 30 owns candidate selection.
@@ -181,12 +183,21 @@ Before DuckDB:
 
 - normalize the configured local warehouse path through existing pipeline path
   rules;
-- inspect exact consumer warehouse version `2.0.0`;
-- capture provider-catalog schema version and release month;
-- require all candidate output snapshots and positive plan parts through the
-  existing activation preflight boundary; and
+- use the existing pipeline `InspectWarehouse`/activation-preflight boundaries
+  to recognize exact consumer warehouse `2.0.0`, provider-catalog identity,
+  candidate snapshots, and positive plan parts;
+- convert provider catalog release month from exact `YYYY-MM` text to the
+  PostgreSQL-compatible first-of-month date `YYYY-MM-01`; and
 - reject a missing, malformed, unsupported, symlinked, or inconsistent
   publication with existing sanitized warehouse/publication failures.
+
+The pre-DuckDB inspection is intentionally not a second full provider-catalog
+row/relationship validator. `mrfconsumer` remains unchanged and exports no
+filter-specific or new validation API; the pipeline does not duplicate its
+private validator. Fixed DuckDB reads validate the schemas and relationships
+required by extraction. A read/schema/lexical/semantic violation fails the
+complete build through the fixed Story 29 failure classification rather than
+weakening or rewriting the value.
 
 Render the checked-in SQL token for the warehouse root using the consumer's
 established DuckDB glob-literal rules:
@@ -230,6 +241,19 @@ views/tables are allowed only for selected outputs and fixed extraction work.
 
 ## Exact extraction datasets
 
+### `summary`
+
+Emit exactly one first protocol row:
+
+```text
+dataset = summary
+standard_fact_count
+```
+
+`standard_fact_count` is the nonnegative count of candidate facts satisfying
+the exact standard population. It must be positive because an empty standard
+catalog is invalid. The row has no labels, rates, or output identifiers.
+
 Every output protocol row starts with a fixed `dataset` discriminator. Dataset
 rows are sorted by their complete logical primary key. The Go decoder rejects
 unknown or out-of-order datasets and duplicate keys.
@@ -262,11 +286,14 @@ unmodified_observation_count
 
 For version, service name, and description independently:
 
-1. trim outer ASCII whitespace for candidate-label emptiness only;
-2. ignore null or empty candidate labels;
-3. count facts carrying each remaining exact stored label;
-4. choose the greatest count; and
-5. break ties by UTF-8 byte lexical order.
+1. reject the complete extraction if any non-null candidate label contains CR
+   or LF; this lexical validation precedes emptiness selection;
+2. trim outer ASCII whitespace for candidate-label emptiness only, using
+   exactly space, tab, CR, LF, vertical tab, and form feed;
+3. ignore null or empty candidate labels;
+4. count facts carrying each remaining exact stored label;
+5. choose the greatest count; and
+6. break ties by UTF-8 byte lexical order (`COLLATE "C"` semantics).
 
 Store the chosen exact label, not the trimmed or lowercased candidate. If no
 usable value exists, emit null. These are source-provided warehouse labels, not
@@ -359,7 +386,11 @@ Definitions:
 
 - taxonomy: distinct reachable NPIs per exact nonempty taxonomy code;
 - state: distinct reachable NPIs per exact nonempty state;
-- city: distinct reachable NPIs per exact `(state, lowercase city)` pair;
+- city: distinct reachable NPIs per exact `(state, city)` pair, requiring the
+  stored city to equal Go `strings.ToLower(city)`;
+- a non-lowercase stored city fails the complete extraction with
+  `filter_catalog_value_invalid`; never lowercase, merge, or preserve it as a
+  second case-sensitive identity;
 - omit a city when state is null/empty because the UI cascades state → city;
 - omit null/empty taxonomy/state/city values; and
 - do not read or emit postal code or provider name.
@@ -373,8 +404,11 @@ queries remain authoritative.
 The Go result is one concrete typed aggregate containing:
 
 ```text
-provider catalog identity
+warehouse schema version
+provider catalog schema version
+provider catalog release-month date
 candidate output fingerprint
+standard fact count
 []BillingCode
 []CodeFilterValue
 []OutputCodeNetwork
@@ -387,6 +421,7 @@ compact extracted rows and must be deterministically sorted before return.
 
 The extractor validates before return:
 
+- exactly one summary row exists and standard fact count is positive;
 - at least one billing code;
 - all counts positive/nonnegative according to Story 28;
 - every code-filter/network code exists in billing codes;
@@ -434,8 +469,10 @@ filter_catalog_protocol_invalid
 filter_catalog_cancelled
 ```
 
-Exact naming may follow the existing `jobs.Failure...` convention, but each
-public branch maps to one fixed code. Errors and logs never include:
+The eight listed lowercase strings are the exact externally observable failure
+codes. Go constant names may follow existing `jobs.Failure...` style, but their
+serialized values may not differ. Each public branch maps to one code. Errors
+and logs never include:
 
 - warehouse/provider/artifact paths;
 - SQL text;
@@ -459,6 +496,7 @@ A consumer-owned-style synthetic exact `2.0.0` warehouse must prove:
 - percentage/derived/null-rate rows never enter any catalog count;
 - expiration dates do not filter rows;
 - billing counts and no-modifier counts are exact;
+- one exact summary row reports the hand-computed standard fact count;
 - repeated modifier/POS elements count a fact once;
 - `CSTM-00` label is exact;
 - scalar null/empty context values are omitted;
@@ -467,6 +505,11 @@ A consumer-owned-style synthetic exact `2.0.0` warehouse must prove:
 - taxonomy/state/city counts use distinct reachable NPIs;
 - taxonomy and geography do not cross-match different members; and
 - ZIP is never emitted.
+- non-lowercase stored city fails rather than being normalized or preserved;
+- provider catalog release month becomes exact first-of-month date;
+- extraction relies on existing shallow warehouse identity/preflight plus
+  required DuckDB schema/semantic reads, without a new consumer API or copied
+  full provider validator;
 
 ### Labels
 

@@ -82,6 +82,27 @@ payer-b / 2026-07
   output E published generation 1
 ```
 
+Fixture construction deliberately separates orchestration rows from publication
+bytes:
+
+- filters/release commands accept any valid lower-ASCII payer identifier;
+- create synthetic monthly releases, sources, selected membership, snapshots,
+  plans, and attachment state for `payer-a`/`payer-b` directly in the
+  disposable test database; do not invent a non-UHC discovery adapter;
+- produce A, B, D, and E through real public parser → consumer publication and
+  plan-attachment paths, using output IDs derived from their inserted pipeline
+  snapshot IDs; and
+- produce C by calling public standalone `mrfconsumer.Ingest` with payer-a,
+  August, and an unrelated valid output ID, then public
+  `mrfconsumer.AttachPlans` for that same output; C therefore has real warehouse
+  facts/plan-association parts but no pipeline snapshot, `mrf_plans` row, or
+  `monthly_release_outputs` membership.
+
+Tests may construct domain prerequisites directly but never hand-write final
+consumer Parquet. This preserves multi-payer release coverage and proves that
+an unrelated warehouse output is excluded without expanding production
+discovery beyond UHC.
+
 The provider catalog contains several exact NPIs proving:
 
 - one NPI with psychiatry taxonomy in FL/miami;
@@ -172,6 +193,132 @@ catalog/output relation while every filter query remains catalog-scoped.
 Execute these through read-only PostgreSQL transactions using only `mrfweb`
 serving tables/views.
 
+Direct parameterized SQL over the published catalog tables is the normative
+serving surface; do not add one view per filter. Every query first obtains
+`catalog_id` from globally fail-closed `active_release_catalogs` and binds that
+ID. SQL never accepts a caller-provided column, table, operator, order, or raw
+fragment.
+
+Required query/result contracts follow.
+
+### Active catalog and outputs
+
+```sql
+SELECT catalog_id, payer_id, collection_month, publication_generation,
+       provider_catalog_schema_version, provider_catalog_release_month
+FROM mrfweb.active_release_catalogs
+WHERE ($1::text IS NULL OR payer_id = $1)
+ORDER BY payer_id COLLATE "C";
+```
+
+Then read exact outputs from `active_release_outputs` by bound `catalog_id`,
+ordered by `output_id COLLATE "C"`. Zero rows always produce the public
+unavailable state, both when no payer is active and when global fail-closed
+suppression detects one inconsistent active payer. The web role does not
+distinguish those causes and never serves remaining payers.
+
+### Billing-code lookup
+
+```sql
+SELECT billing_code_type, billing_code, billing_code_type_version,
+       warehouse_service_name, warehouse_service_description,
+       observation_count, unmodified_observation_count
+FROM mrfweb.release_billing_codes
+WHERE catalog_id = $1
+  AND ($2::text IS NULL OR billing_code_type = $2)
+  AND billing_code LIKE $3 || '%'
+ORDER BY billing_code_type COLLATE "C", billing_code COLLATE "C"
+LIMIT $4;
+```
+
+`$3` is a validated alphanumeric code prefix without SQL wildcard characters;
+`$4` is a positive bounded result limit. Result columns are exact table types.
+
+### Code option lookup
+
+```sql
+SELECT filter_kind, filter_value, display_label, observation_count
+FROM mrfweb.release_code_filter_values
+WHERE catalog_id = $1
+  AND billing_code_type = $2
+  AND billing_code = $3
+  AND filter_kind = $4
+ORDER BY filter_value COLLATE "C";
+```
+
+`filter_kind` is one of Story 28's five fixed values.
+
+### Plan prefix pagination
+
+```sql
+SELECT id, plan_name, issuer_name, plan_id_type, plan_id, plan_market_type,
+       search_text
+FROM mrfweb.release_plans
+WHERE catalog_id = $1
+  AND search_text COLLATE "C" LIKE ($2 || '%') ESCAPE E'\\'
+  AND (search_text COLLATE "C", id) >
+      ($3::text COLLATE "C", $4::bigint)
+ORDER BY search_text COLLATE "C", id
+LIMIT $5;
+```
+
+Search prefix and cursor text are normalized with Story 28's exact Go
+`strings.ToLower`/ASCII-trim rules. Before binding `$2`, escape backslash as
+`\\`, percent as `\%`, and underscore as `\_`; those characters remain literal
+search text. First page uses empty cursor text and `0`; later pages return the
+last `(search_text, id)` as cursor. Limit is positive and bounded. No OFFSET,
+fuzzy search, wildcard input, or locale order is normative.
+
+### Networks without selected plans
+
+```sql
+SELECT network_name, SUM(observation_count)::bigint AS observation_count
+FROM mrfweb.release_output_code_networks
+WHERE catalog_id = $1
+  AND billing_code_type = $2
+  AND billing_code = $3
+GROUP BY network_name
+ORDER BY network_name COLLATE "C";
+```
+
+### Networks for selected plans
+
+```sql
+WITH selected_outputs AS (
+    SELECT DISTINCT output_id
+    FROM mrfweb.release_plan_outputs
+    WHERE catalog_id = $1
+      AND plan_id = ANY($4::bigint[])
+)
+SELECT n.network_name,
+       SUM(n.observation_count)::bigint AS observation_count
+FROM selected_outputs AS selected
+JOIN mrfweb.release_output_code_networks AS n
+  ON n.catalog_id = $1 AND n.output_id = selected.output_id
+WHERE n.billing_code_type = $2
+  AND n.billing_code = $3
+GROUP BY n.network_name
+ORDER BY n.network_name COLLATE "C";
+```
+
+The selected plan-ID array is nonempty, deduplicated, and resolved within the
+same catalog. The distinct-output CTE prevents one output reached through
+several plans from multiplying counts.
+
+### Provider filter lookup
+
+```sql
+SELECT filter_value, provider_count
+FROM mrfweb.release_provider_filter_values
+WHERE catalog_id = $1
+  AND filter_kind = $2
+  AND parent_value = $3
+ORDER BY filter_value COLLATE "C";
+```
+
+Taxonomy/state bind empty parent; city binds the exact selected state. Result
+city identity remains lowercase.
+
 ### Billing codes
 
 - exact code pair identity;
@@ -226,6 +373,8 @@ network rows. Assert:
 - taxonomy/state/city values include only release-reachable NPIs;
 - provider counts are distinct NPIs despite repeated paths;
 - city uses exact lowercase and state parent;
+- a non-lowercase stored city fails extraction and is never normalized or
+  preserved as another identity;
 - cross-NPI taxonomy/geography does not invent a value relationship;
 - unreachable catalog providers are absent; and
 - postal code/NPI/expiration rows do not exist.
@@ -238,17 +387,25 @@ Permanent tests cover each externally meaningful boundary:
 - invalid/unsupported/damaged warehouse;
 - candidate output missing/mismatched;
 - DuckDB nonzero/malformed/truncated output;
-- context cancellation and process cleanup;
+- graceful context cancellation terminates/waits for DuckDB, uses a detached
+  five-second cleanup context, and records failed/cancelled when cleanup can
+  commit;
+- cancellation cleanup database failure and simulated process death leave a
+  replaceable `building` header with no required failure code;
 - PostgreSQL failure before header, after building header, during COPY, before
   ready, and during activation;
-- process crash leaving building catalog with released advisory lock;
-- concurrent build busy;
+- process crash releases the advisory lock and next explicit build replaces
+  abandoned building state;
+- same-release concurrent build returns busy;
 - failed retry replacement;
 - stale ready replacement;
 - published replacement rejection;
-- activation missing/building/failed/stale/inconsistent catalog;
-- active handoff missing published catalog;
-- reconciliation sealed catalog mismatch; and
+- catalog error precedence exactly follows missing → not-ready → inconsistent
+  → stale → existing warehouse/preflight classification;
+- activation rejects missing/building/failed/stale/inconsistent catalog;
+- one invalid active payer makes the complete no-payer handoff fail closed;
+- reconciliation reports exact backfill-required and sealed-inconsistency
+  counts without command failure or repair; and
 - CLI interruption/recreate behavior without automatic retry.
 
 For each case assert exact database rows/timestamps, release/output membership,
@@ -264,17 +421,26 @@ Before and after each DuckDB extraction, compare:
 - plan association part inventory; and
 - absence of new files below warehouse root.
 
-PostgreSQL read-only serving-query tests run under a role granted only:
+Provision one disposable non-owner/non-superuser test role with:
 
 ```text
 CONNECT
 USAGE ON SCHEMA mrfweb
-SELECT on required mrfweb views/tables
+SELECT ON mrfweb.active_release_catalogs
+SELECT ON mrfweb.active_release_outputs
+SELECT ON mrfweb.release_billing_codes
+SELECT ON mrfweb.release_code_filter_values
+SELECT ON mrfweb.release_plans
+SELECT ON mrfweb.release_plan_outputs
+SELECT ON mrfweb.release_output_code_networks
+SELECT ON mrfweb.release_provider_filter_values
 ```
 
-Prove INSERT/UPDATE/DELETE/DDL and direct access to operational tables are
-rejected. Role/password provisioning remains test/deployment setup, not a
-hard-coded production credential or migration secret.
+Run every fixed serving query above through this role. Prove direct SELECT on
+`mrfweb.release_catalogs`, `mrfweb.release_outputs`, every `mrfpipeline`/River
+operational table, and every INSERT/UPDATE/DELETE/DDL operation is rejected.
+Role/password provisioning remains test/deployment setup, not a hard-coded
+production credential or migration secret.
 
 ## Docker and Compose acceptance
 
@@ -296,30 +462,65 @@ accepts existing normalized pipeline database/warehouse/provider/services
 configuration and an exact payer/month. It never accepts a raw SQL string,
 output list override, or alternate publication membership.
 
-The operator runs it against an unmodified private warehouse only after taking
-or selecting a disposable PostgreSQL database/catalog schema. It may build a
-real ready catalog but must not activate a release unless the operator runs the
-separate activation command.
+The operator runs it against an unmodified private warehouse and a disposable
+PostgreSQL database/catalog schema with no catalog for the target generation.
+An existing ready/published target is a precondition failure; the metric run
+never replaces it. The command performs one fresh build and must not activate a
+release unless the operator runs separate activation.
 
-Sanitized output contains only:
+Sanitized output is one JSON object with these exact fields, types, and units:
 
 ```text
-warehouse schema version
-provider catalog schema/release month
-candidate output count
-standard fact count
-billing code count
-code filter value count
-plan count
-plan/output count
-output/code/network count
-provider filter value count
-DuckDB wall time
-PostgreSQL population wall time
-total wall time
-peak RSS
-catalog database bytes
+warehouse_schema_version            string
+provider_catalog_schema_version     integer
+provider_catalog_release_month      string YYYY-MM
+publication_generation              integer
+candidate_output_count              integer rows
+standard_fact_count                 integer rows
+billing_code_count                  integer rows
+code_filter_value_count             integer rows
+plan_count                          integer rows
+plan_output_count                   integer rows
+output_code_network_count           integer rows
+provider_filter_value_count         integer rows
+duckdb_wall_time_ms                 integer milliseconds
+postgres_population_wall_time_ms    integer milliseconds
+total_wall_time_ms                  integer milliseconds
+peak_rss_bytes                      integer bytes
+catalog_database_bytes              integer bytes
 ```
+
+All integers are JSON numbers representing nonnegative signed 64-bit values;
+durations and byte sizes never use floating point or formatted unit strings.
+Every field is required and no additional field is allowed.
+
+Metric scope is exact:
+
+- `duckdb_wall_time_ms` is monotonic elapsed time from starting the one
+  extraction process through successful `Wait`; it excludes the version probe;
+- `postgres_population_wall_time_ms` is monotonic elapsed time from beginning
+  Story 30 Phase 4 through the ready transaction commit;
+- `total_wall_time_ms` is monotonic elapsed time immediately before the
+  advisory-lock attempt through successful ready commit, including candidate
+  selection, preflight, version probe, extraction, plan projection, and
+  population;
+- `peak_rss_bytes` is maximum resident set for the complete wrapped build
+  command including waited child processes, reported by GNU `/usr/bin/time -v`
+  on Linux (KiB multiplied by 1024) or `/usr/bin/time -l` on Darwin (bytes);
+  unsupported platforms fail the opt-in measurement rather than inventing a
+  value; and
+- `catalog_database_bytes` is the nonnegative before/after delta of
+  `SUM(pg_total_relation_size(c.oid))` over base/partitioned tables
+  (`relkind IN ('r','p')`) in schema `mrfweb`. `pg_total_relation_size`
+  includes each table's indexes and TOAST, so indexes are not separately summed.
+  The disposable database permits no concurrent catalog write during this
+  measurement.
+
+`standard_fact_count` is persisted in the ready catalog header by Stories
+28–30 and must equal the Story 29 summary row. After recording the fresh-build
+JSON, run ordinary `filters build` once more and assert `unchanged:true`, same
+catalog/counts, and no DuckDB extraction. The repeated no-op is correctness
+evidence only and does not emit another performance JSON object.
 
 Do not print paths, output IDs, labels, plan/network/provider/filter values,
 rates, source URLs, SQL, credentials, or DuckDB stderr.
@@ -361,14 +562,23 @@ PostgreSQL evidence requires a later story.
 
 - Backup PostgreSQL and warehouse after two published generations.
 - Restore both into a disposable environment.
-- Run catalog-aware reconciliation/status.
-- Verify active views and exact catalog queries match pre-backup values.
-- Restoring PostgreSQL without matching warehouse fails warehouse/catalog
-  validation and does not mutate serving state.
+- Run catalog-aware reconciliation, then targeted `month status` and exact
+  catalog queries; verify values match pre-backup state.
+- After a PostgreSQL-only restore against a wrong/missing warehouse, `filters
+  status` may still succeed because it is intentionally database-only and is
+  not restore validation.
+- In that mismatch state, reconciliation with full filesystem configuration
+  remains a successful command but increments
+  `sealed_release_inconsistency_count`; `month activate` rejects through
+  existing warehouse/catalog failure classification. Neither path mutates
+  release, catalog, or warehouse state.
 - Restoring warehouse without PostgreSQL remains insufficient because release
   and catalog identity live in PostgreSQL.
 
-No automatic backup, retention, or catalog deletion is added.
+Documentation identifies reconciliation plus warehouse-aware activation—not
+`filters status`—as the restore consistency check. No automatic backup,
+retention, or catalog deletion is added.
+
 
 ## Documentation convergence
 
@@ -399,6 +609,12 @@ DuckDB/filter acceptance uses the final image or exact pinned binary and a
 fresh disposable database. Database integration tests remain serialized
 according to existing project convention and never target a populated operator
 database.
+
+Database integration setup resets the new `mrfweb` schema together with
+application/River test schemas. Migration assertions advance the contiguous
+latest application migration from version 8 to 9. CLI parsing tests explicitly
+reject duplicate `--payer` and `--collection-month` in separate and
+`--flag=value` forms. Release tests reject active/inactive generation `0`.
 
 The exact new focused scripts/test names are implementation choices, but one CI
 path must execute the complete synthetic extraction/population/publication

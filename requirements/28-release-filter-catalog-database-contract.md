@@ -89,6 +89,20 @@ combination is materialized.
 - Option counts are standard negotiated-price observation counts, not provider
   counts, unless a column is explicitly named `provider_count`.
 
+## Exact text and ordering rules
+
+`ASCII whitespace` means exactly the six bytes space (`0x20`), horizontal tab
+(`0x09`), line feed (`0x0a`), carriage return (`0x0d`), vertical tab (`0x0b`),
+and form feed (`0x0c`). A requirement to trim outer ASCII whitespace removes
+only those bytes from both ends. Identity values remain exact unless a field
+explicitly defines another transformation.
+
+All deterministic catalog text ordering uses UTF-8 byte lexical order,
+equivalent to PostgreSQL `COLLATE "C"`. Output fingerprints always sort a
+separate candidate copy by ASCII/UTF-8 `output_id`; they never reuse numeric
+snapshot ordering. Go `strings.ToLower` is used only where a story explicitly
+requires it, currently plan `search_text` and lowercase-city validation.
+
 ## Publication-generation identity
 
 For a monthly release currently at generation `N`:
@@ -132,6 +146,7 @@ publication_generation          bigint not null
 status                          text not null default 'building'
 output_fingerprint              text not null
 output_count                    bigint not null
+standard_fact_count             bigint
 provider_catalog_schema_version bigint
 provider_catalog_release_month  date
 billing_code_count              bigint
@@ -159,7 +174,8 @@ Constraints:
 - output count is positive;
 - provider catalog schema version is positive when non-null;
 - provider catalog release month is a first-of-month date when non-null;
-- every optional row-count column is nonnegative when non-null;
+- standard fact count is positive when non-null;
+- every other optional row-count column is nonnegative when non-null;
 - `building` has null `failure_code`, `completed_at`, and `published_at`;
 - `ready` has null `failure_code`, non-null `completed_at`, null
   `published_at`, complete provider-catalog identity, and all count columns
@@ -283,13 +299,15 @@ Constraints:
 - unique canonical five-field tuple within one catalog;
 - every text value is nonempty and contains no CR/LF;
 - plan ID type is exactly `ein` or `hios`;
-- market type is exactly `group` or `individual`; and
-- `search_text` is the single-space concatenation of plan name, issuer name,
-  plan ID type, plan ID, and market type after trimming only outer ASCII
-  whitespace from each source field, then applying Go 1.26
-  `strings.ToLower`. Source identity fields themselves remain exact and are
-  not lowercased or otherwise normalized. Future callers normalize the search
-  prefix with the same operation.
+- market type is exactly `group` or `individual`.
+
+`search_text` derivation is an application invariant, not a PostgreSQL check:
+it is the single-space concatenation of plan name, issuer name, plan ID type,
+plan ID, and market type after trimming only outer ASCII whitespace from each
+source field, then applying Go 1.26 `strings.ToLower`. Source identity fields
+remain exact. Story 30 computes/rechecks it before insertion; focused tests and
+catalog reconciliation detect a mismatch. Future callers normalize the search
+prefix with the same operation.
 
 Add indexes suitable for catalog-scoped deterministic pagination and prefix
 search:
@@ -397,6 +415,7 @@ collection_month
 publication_generation
 output_fingerprint
 output_count
+standard_fact_count
 provider_catalog_schema_version
 provider_catalog_release_month
 published_at
@@ -407,6 +426,12 @@ The view is gated by symmetric exact set equality between authoritative
 using both `(mrf_snapshot_id, output_id)`. A missing or extra row on either
 side suppresses the catalog completely. Header output count/fingerprint alone
 cannot satisfy the view.
+
+The gate is global across active payers. If any active payer lacks one exact
+published current-generation catalog, or either side of that payer's output set
+differs, `active_release_catalogs` and `active_release_outputs` both return zero
+rows for the complete call. They never omit only the invalid payer and expose a
+partial multi-payer active relation.
 
 Do not select a latest catalog, repair a missing generation, or fall back to a
 ready/building/failed catalog.
@@ -429,11 +454,26 @@ infer membership from all snapshots or from `mrfweb.release_outputs` alone.
 Story 31 guarantees that authoritative membership and catalog outputs are the
 same set before publication.
 
-The migration grants no password and creates no login role. Deployment may
-grant a future web role `USAGE` on schema `mrfweb` and `SELECT` on its serving
-views/tables. The runtime web role must not receive `INSERT`, `UPDATE`,
-`DELETE`, `TRUNCATE`, DDL, or privileges on pipeline/River operational tables
-beyond an explicitly required stable view.
+The migration grants no password and creates no login role. Deployment creates
+a non-owner, non-superuser future web role outside migration and grants exactly:
+
+```text
+CONNECT ON DATABASE <pipeline_database>
+USAGE ON SCHEMA mrfweb
+SELECT ON mrfweb.active_release_catalogs
+SELECT ON mrfweb.active_release_outputs
+SELECT ON mrfweb.release_billing_codes
+SELECT ON mrfweb.release_code_filter_values
+SELECT ON mrfweb.release_plans
+SELECT ON mrfweb.release_plan_outputs
+SELECT ON mrfweb.release_output_code_networks
+SELECT ON mrfweb.release_provider_filter_values
+```
+
+Do not grant the web role direct `SELECT` on `release_catalogs`,
+`release_outputs`, pipeline/River operational tables, or any mutation/DDL
+privilege. Fixed Story 32 serving SQL obtains `catalog_id` only from the active
+views and applies it to every direct catalog-table query.
 
 ## Migration and existing data
 
@@ -450,6 +490,14 @@ After migration:
   active or inactive release; and
 - Story 31 defines cutover behavior before catalog-aware publication becomes
   mandatory.
+
+Migration 0008 backfilled every snapshot row for existing active/inactive
+monthly releases. The catalog sequence trusts the historical strict activation
+contract that made those snapshots consumed, plan-ready, and warehouse-valid,
+but Story 30 still revalidates every exact member. Any violation is
+`filter_catalog_inconsistent`; no story deletes, narrows, or repairs historical
+membership automatically. Operator remediation of genuinely invalid historical
+membership is outside Stories 28–32.
 
 Do not infer labels/counts in SQL migration, scan the warehouse from migration,
 or mark an empty catalog ready.
@@ -491,6 +539,12 @@ or mark an empty catalog ready.
 - Active output view membership equals `monthly_release_outputs`, including
   several outputs first published in different Story 27 generations.
 - Migration leaves existing release/output rows unchanged.
+- Test database reset drops/recreates both `mrfweb` and existing application
+  schemas so no catalog row leaks between integration tests.
+- Migration-set assertions advance the contiguous latest application migration
+  from version 8 to version 9 and retain rerun/ledger checks.
+- With several active payers, one missing or inconsistent catalog suppresses
+  the complete active view relation rather than returning valid payers only.
 
 ## Acceptance criteria
 
@@ -529,8 +583,10 @@ commands as currently available.
 Expected files when implemented:
 
 - `internal/database/migrations/0009_release_filter_catalog.sql`;
-- migration integration assertions in `internal/database`;
-- stable schema/view column assertions; and
+- migration integration assertions in `internal/database`, advanced from
+  latest version 8 to 9;
+- integration reset helpers that include schema `mrfweb`;
+- exact stable schema/view column and global fail-closed assertions; and
 - no new production dependency outside existing PostgreSQL for this story.
 
 Use concrete SQL and typed Go test fixtures. Do not introduce a schema builder,

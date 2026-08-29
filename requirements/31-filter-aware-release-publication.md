@@ -102,20 +102,22 @@ Rules:
 
 ### Active release with no new output
 
-- Expected generation remains current.
+- Expected generation remains current and must be positive.
 - If an exact `published` current catalog exists, activation retains Story 27
   idempotency: no generation, timestamp, membership, or catalog change.
-- During one-time cutover, an exact `ready` backfill for the current generation
-  may be promoted to `published` without changing generation, output
-  membership, `sealed_at`, or `last_activated_at`.
+- Any internally valid exact `ready` catalog for the stored current generation
+  may be promoted to `published` when authoritative outputs/plans are unchanged.
+  Exact equality is the authorization; there is no hidden one-time cutover flag
+  or durable cutover mode.
 - Missing/building/failed/mismatched catalog rejects the command.
 
 ### Inactive rollback/reactivation
 
 - Targets are exact persisted membership; no unpublished output is admitted.
-- Expected generation is the inactive release's stored current generation.
-- Require an exact `published` catalog, or allow a one-time exact `ready`
-  backfill to be promoted in the rollback transaction.
+- Stored current generation must be positive.
+- Require an exact `published` catalog, or allow any internally valid exact
+  `ready` current-generation catalog to be promoted in the rollback
+  transaction.
 - Reactivation restores the frozen membership/catalog and does not derive a
   next generation.
 
@@ -124,12 +126,14 @@ another month, or catalog sharing only a fingerprint.
 
 ## Exact catalog validation under lock
 
-Activation locks the selected `mrfweb.release_catalogs` row and requires:
+After release candidate gates succeed and exact expected generation is known,
+activation applies the catalog failure precedence below. It takes the selected
+catalog row lock with `NOWAIT` and requires:
 
+- active/inactive stored and expected generations are positive;
 - exact payer and collection month;
 - exact expected publication generation;
 - status allowed by the branch above;
-- exact provider-catalog identity matching the recognized warehouse;
 - header output count equal to target length;
 - header output fingerprint equal to the freshly calculated fingerprint;
 - exact `release_outputs` count equal to target length;
@@ -150,8 +154,10 @@ Use exact set-difference queries or sorted typed comparisons. Do not repair with
 `DISTINCT`, grouping, `ON CONFLICT DO NOTHING`, or partial intersection. A hash
 collision cannot cause acceptance because rows are compared.
 
-Run existing warehouse/plan-part preflight against the same `targets` before
-catalog publication. A catalog does not replace filesystem validation.
+Only after catalog header/internal/candidate equality succeeds, run existing
+warehouse/plan-part preflight against the same `targets`. Require the catalog's
+provider-catalog schema version and exact release-month date to match the
+recognized warehouse. A catalog does not replace filesystem validation.
 
 Story 27 stage claims use the same release-row ordering. The locked activation
 recheck therefore closes the plan/attachment race: a batch that is already
@@ -163,9 +169,11 @@ locked release boundary before membership/catalog publication commits.
 For a checkpoint with new outputs:
 
 1. retain Story 27 payer release-row lock order;
-2. calculate targets/generation under lock;
-3. run existing warehouse preflight on those targets;
-4. lock and validate exact ready catalog;
+2. calculate the complete targets/generation under lock and reject
+   active/inactive generation `0`;
+3. locate/lock the exact catalog with `NOWAIT` and apply missing/not-ready,
+   internal-consistency, and exact candidate output/plan comparison;
+4. run existing warehouse preflight and provider-catalog identity comparison;
 5. insert only new `monthly_release_outputs` with expected generation;
 6. require inserted count to equal the computed new-target count;
 7. switch the payer's previous active month inactive when applicable;
@@ -207,23 +215,27 @@ ready catalog for that prospective generation, then retries activation.
 Do not automatically launch a rebuild, ignore the new output, publish only the
 catalog intersection, or delete the stale catalog from activation.
 
-## Missing and failed catalog behavior
+## Catalog error-code precedence
 
-Use fixed failures:
+After existing release candidate/readiness checks produce an exact expected
+generation, activation uses this order:
 
-```text
-filter_catalog_missing
-filter_catalog_not_ready
-filter_catalog_stale
-filter_catalog_inconsistent
-```
+1. no header for exact payer/month/generation → `filter_catalog_missing`;
+2. exact header is `building` or `failed`, or its row lock is busy →
+   `filter_catalog_not_ready`;
+3. header/children contradict their own counts, keys, provider identity format,
+   or referential invariants; a published catalog differs from authoritative
+   sealed output/plan semantics; or a well-formed catalog provider identity
+   differs from the successfully recognized warehouse identity →
+   `filter_catalog_inconsistent`;
+4. internally valid `ready` catalog differs from current candidate outputs or
+   current canonical plan/output semantics → `filter_catalog_stale`; and
+5. actual warehouse recognition/filesystem/preflight defects retain their
+   existing artifact/release failure classification.
 
-- missing: no exact generation header;
-- not ready: exact header is building or failed where ready/published is
-  required;
-- stale: complete header identity/output set differs from current targets;
-- inconsistent: a ready/published header contradicts its child rows/counts or
-  immutable database invariants.
+Do not let a later category mask an earlier one. Existing release-not-found,
+release-not-ready, invalid status, and generation-zero invariant failures occur
+before this catalog-specific precedence.
 
 All errors are sanitized. Do not include raw catalog values, output IDs, SQL,
 paths, DuckDB details, or credentials.
@@ -240,15 +252,23 @@ After cutover, one active release is publicly handoff-ready only when:
 `mrfweb.active_release_catalogs` and
 `mrfweb.active_release_outputs` remain the stable read-only web contract.
 
-Update `release.ListActiveOutputs` and no-selector `month status` to fail closed
-with fixed catalog inconsistency when an active monthly release lacks an exact
-published catalog or set equality. They may still return the existing exact
-`Target`/`active_outputs` public shape; do not add catalog child values. The
-future web process reads catalog ID/generation directly from `mrfweb` views.
+Update `release.ListActiveOutputs` and no-selector `month status` to validate
+every active payer before returning any row. If one of several active payers
+lacks an exact published catalog or has output/catalog inequality, fail the
+entire call with fixed catalog inconsistency. Never omit only that payer and
+return a partial global relation.
 
-Payers with no active release remain valid and contribute no rows. A database
-with an active release but no matching catalog is invalid cutover state, not an
-empty active relation.
+The commands may retain the existing exact `Target`/`active_outputs` public
+shape; do not add catalog child values. The future web process reads catalog
+ID/generation directly from globally fail-closed `mrfweb` views.
+
+Payers with no active release remain valid and contribute no rows. If no payer
+has an active release, the stable views return zero rows and the future public
+query service shows its agreed unavailable state. The same unavailable outcome
+applies to globally suppressed inconsistent state; the web role does not need
+to distinguish those two zero-row causes. A database with some active release
+but no matching catalog remains invalid operator state and is reported by
+status/reconciliation.
 
 ## Status behavior
 
@@ -257,15 +277,22 @@ Extend targeted `month status` JSON with:
 ```text
 filter_catalog_ready              boolean
 filter_catalog_id                 integer or null
-filter_catalog_generation         integer
+filter_catalog_generation         integer or null
 filter_catalog_status             string or null
 filter_catalog_output_count       integer or null
+prospective_candidate_valid       boolean
 ```
 
-`filter_catalog_generation` is the generation required for the next checkpoint
-when currently publishable new outputs exist; otherwise current generation.
+Targeted status runs the same complete database candidate gate as `filters
+status`. Any building/active/inactive release that fails
+discovery/TOC/selection where applicable, publication-failure,
+output-identity, plan-readiness, positive-generation, or nonempty-target gates
+has `prospective_candidate_valid:false`, null catalog generation/fields, and
+retains its existing non-catalog blockers. A valid inactive release and valid
+active release with no new output target their positive current generation.
 
-Add at most one targeted blocker from this ordered catalog group:
+Only a valid candidate receives at most one blocker from this ordered catalog
+group:
 
 ```text
 filter_catalog_missing
@@ -275,15 +302,17 @@ filter_catalog_stale
 filter_catalog_inconsistent
 ```
 
-Status uses database candidate/catalog rows only and does not run DuckDB or
-warehouse extraction. `filter_catalog_ready` means an exact ready prospective
-catalog or exact published current catalog exists according to database state;
-activation still recomputes and validates under lock.
+Status is explicitly database-only. It does not inspect warehouse files, run
+DuckDB, or prove a database restore matches the configured filesystem.
+`filter_catalog_ready` means an exact ready prospective catalog or exact
+published current catalog exists according to database state; activation
+performs stronger locked plan and warehouse validation.
 
-Strict `database_ready` requires filter catalog readiness in addition to its
-existing all-work conditions. Incremental activation may still succeed while
-`database_ready:false` for Story 27-permitted pending/terminal upstream work,
-but it never succeeds with a catalog blocker.
+Strict `database_ready` requires filter catalog readiness only when the complete
+candidate gate is valid, in addition to existing all-work conditions.
+Incremental activation may still succeed while `database_ready:false` for
+Story 27-permitted pending/terminal upstream work, but never with a valid
+candidate's catalog blocker.
 
 ## Activation result
 
@@ -302,29 +331,35 @@ backfill promotion, return the promoted catalog ID.
 
 ## Cutover for existing release state
 
-Migration 0009 is additive and may be deployed while an existing Story 27
-release is active without a catalog. The sequential story landing provides a
-simple cutover without a compatibility flag:
+Migration 0009 may be deployed while a Story 27 release is active without a
+catalog. Use one simple quiesced cutover; do not add a special backfill mode:
 
-1. deploy through Story 30 so migration, DuckDB, and `filters build` are
-   available while Story 27 activation/listing behavior is still current;
-2. build an exact ready catalog for every active release's current generation;
-3. stop the control role for the short Story 31 binary cutover;
-4. deploy the Story 31 binary;
-5. run `month activate` for each same active payer/month to promote its exact
-   backfill without changing output membership, generation, or activation
-   timestamps;
-6. verify catalog-aware active views/status;
-7. optionally build catalogs for inactive releases before rollback is needed;
+1. deploy through Story 30 while Story 27 activation/listing behavior remains;
+2. stop control, MRF, and consumer roles so candidate membership/plans cannot
+   progress during cutover;
+3. using the Story 30 binary's still-current Story 27 activation, run one final
+   `month activate` checkpoint for each active payer to publish every already
+   ready output;
+4. verify no publishable unpublished output remains while roles are stopped;
+5. run `filters build` for each active release, which now builds its exact
+   current generation rather than current+1;
+6. deploy the Story 31 binary;
+7. run `month activate` for each same active payer/month to promote any exact
+   current-generation ready catalog without changing membership, generation,
+   `sealed_at`, or `last_activated_at`;
+8. verify globally fail-closed active views/status;
+9. optionally build catalogs for inactive releases before rollback is needed;
    and
-8. restart control.
+10. restart roles.
 
-A fresh database simply builds before first activation.
+If step 3 legitimately publishes new outputs, step 5 simply catalogs that new
+current generation. A fresh database builds before first activation.
 
 Do not auto-mark existing releases/catalogs published in migration, infer
-filter rows, or temporarily let the web read a catalog-less active generation.
-The current live Compose stack is not migrated as part of tests or source
-landing.
+filter rows, repair migration-0008 membership, or let the future web process
+read catalog-less active state. Any historical membership violation found by
+build/preflight is `filter_catalog_inconsistent` and requires out-of-scope
+operator remediation.
 
 ## Repeated activation and rollback
 
@@ -341,31 +376,47 @@ landing.
 
 ## Reconciliation and audits
 
-Extend reconciliation with read-only catalog audits:
+Extend the successful reconciliation report with exact nonnegative fields:
+
+```text
+filter_catalog_backfill_required_count
+sealed_release_inconsistency_count
+```
+
+Behavior:
 
 - every active release requires a matching published current-generation
-  header;
+  catalog; missing/corrupt active state increments
+  `sealed_release_inconsistency_count`;
 - an inactive release with a published current-generation catalog is audited
   by the same exact membership/fingerprint/count rules;
-- an inactive legacy release with no published current-generation catalog, or
-  only an exact ready backfill, is reported through a sanitized
-  `filter_catalog_backfill_required` count and is not a sealed inconsistency
-  until rollback is attempted;
-- authoritative output membership equals catalog outputs;
-- catalog plans reference only catalog outputs;
-- output/code/networks reference valid catalog output/code rows; and
-- provider-catalog identity matches warehouse recognition where existing
-  reconciliation already has the warehouse open.
+- inactive legacy state with no published catalog, or only an exact ready
+  backfill, increments `filter_catalog_backfill_required_count`;
+- any mismatch in an existing published catalog increments
+  `sealed_release_inconsistency_count`;
+- authoritative output membership and canonical PostgreSQL plan/output
+  semantics are audited;
+- catalog child counts, fingerprint, search-text invariant, and internal
+  output/code/network/provider referential relationships are audited against
+  PostgreSQL rows, not re-derived warehouse facts;
+- for each active release and each inactive release with a published catalog,
+  reconciliation uses existing shallow warehouse recognition/preflight against
+  configured files; a missing/wrong warehouse or provider identity increments
+  `sealed_release_inconsistency_count`, returns the successful report, and
+  performs no mutation; and
+- building releases/unpublished prospective catalogs are not sealed failures.
 
-A mismatch in any existing published catalog returns one fixed sealed/catalog
-inconsistency and does not mutate release, membership, catalog, plans, or
-warehouse. Reconciliation never builds, promotes, deletes, or repairs a
-catalog. Missing inactive backfill remains an explicit operator condition;
-rollback still rejects until `filters build` supplies an exact ready catalog.
+Reconciliation never invokes Story 29 DuckDB extraction and does not compare
+billing/filter/network/provider catalog values back to Parquet. Exact extraction
+was proven before ready publication and published catalogs are immutable;
+recomputing every catalog would turn routine reconciliation into another full
+build.
 
-Building releases and their unpublished catalogs are not sealed audit
-failures. Failed/building abandoned catalogs remain operator-visible through
-`filters status` and are replaced only by explicit `filters build`.
+Reconcile remains a successful report with nonzero counts, matching existing
+sealed-inconsistency reporting. It never builds, promotes, deletes, repairs, or
+narrows a catalog/membership. Targeted status and activation still fail closed.
+Rollback rejects until an inactive release has an exact ready or published
+catalog.
 
 ## Concurrency and request consistency contract
 

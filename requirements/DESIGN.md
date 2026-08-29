@@ -179,6 +179,12 @@ release membership, plan readiness, PostgreSQL writes, and warehouse
 preflight, so it owns catalog construction. A future `mrfweb` receives
 read-only PostgreSQL and warehouse access.
 
+Pre-DuckDB validation reuses the pipeline's existing warehouse recognition and
+activation preflight. It does not export a new consumer validator or duplicate
+the consumer's private full provider-catalog validation. DuckDB fixed
+schema/relationship reads and exact extraction checks fail any required
+catalog defect. This keeps `mrfconsumer` independent from web-filter behavior.
+
 The existing PostgreSQL database gains a separate `mrfweb` schema. A second
 database is deliberately avoided: output generation and catalog publication
 must commit in one transaction. Runtime credentials, passwords, and the future
@@ -206,6 +212,13 @@ may be explicitly replaced for the same prospective generation. A published
 catalog is immutable. Older generations and inactive-month catalogs remain for
 in-flight future queries, exact rollback, and audit until a later retention
 story exists.
+
+All text normalization is explicit: outer ASCII whitespace is only space, tab,
+CR, LF, vertical tab, and form feed; ordering is UTF-8 byte order/`COLLATE
+"C"`; fingerprints sort a separate copy by ASCII output ID; and Go
+`strings.ToLower` is used only for plan search text and lowercase-city
+validation. A non-lowercase stored city is a warehouse contract violation, not
+a value to normalize or preserve.
 
 ### Catalog contents
 
@@ -262,7 +275,8 @@ Provider choices are release-reachable distinct NPI relationships:
 
 ```text
 selected output
-  -> rate/provider-group link
+  -> standard negotiated/non-null-rate fact
+  -> rate/provider-group link for the same output/rate group
   -> provider-group membership
   -> taxonomy / provider state + lowercase city
 ```
@@ -301,21 +315,27 @@ mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
 
 They are not current commands until Stories 28–32 are implemented.
 
-`filters build` uses the same published/publishable release predicates as
-activation, acquires one purpose-specific PostgreSQL advisory lock for the
-payer/month, records the exact prospective output relation, and runs one
-pinned DuckDB `v1.5.5` process against fixed read-only SQL. The pipeline binary
-remains `CGO_ENABLED=0`; Docker packages the verified official CLI for Linux
-amd64/arm64. DuckDB never runs in control, MRF, or consumer River workers and
-never downloads an extension or writes the warehouse.
+`filters build` uses the complete database candidate gate and the same
+published/publishable predicates as activation. It copies/sorts outputs for the
+fingerprint and captures the exact semantic plan/output plus attachment
+readiness relation before extraction, then rereads it before ready publication.
+Timestamp-only changes do not matter; semantic changes fail the build, and
+activation compares the relation once more under release locks.
 
-The build does not hold a release-row transaction across extraction and does
-not freeze ordinary MRF progress. It writes child rows only beneath a
-non-serving building catalog, validates all counts/relationships, then changes
-the header to ready in one short transaction. A process crash releases the
-session advisory lock. Explicit retry replaces an unpublished abandoned or
-failed build; no River job, worker, heartbeat, scheduler, or repair daemon is
-added.
+One domain-separated stable 64-bit advisory-lock hash serializes a build per
+payer/month. A mathematical collision may conservatively return false busy but
+cannot permit concurrent mutation. The build runs one pinned DuckDB `v1.5.5`
+extraction process against fixed read-only SQL. The pipeline remains
+`CGO_ENABLED=0`; Docker packages the verified official CLI for Linux
+amd64/arm64. DuckDB never runs in River workers, downloads an extension, or
+writes the warehouse.
+
+No release-row transaction spans extraction. Children remain beneath a
+non-serving building catalog until one atomic ready transaction. Graceful
+cancellation terminates DuckDB and gets one detached five-second failed-state
+cleanup attempt; a crash or cleanup failure may leave replaceable `building`
+state. Explicit retry replaces it after the session lock releases. No River
+job, heartbeat, scheduler, plan revision column, or repair daemon is added.
 
 ### Filter-aware publication
 
@@ -327,40 +347,48 @@ month activate
 future mrfweb switch
 ```
 
-Activation never runs DuckDB. Under Story 27's existing release locks it
-recomputes exact targets. A missing, building, failed, stale, or inconsistent
-catalog rejects the checkpoint without changing active month, generation,
-membership, catalog status, or warehouse files. A worker completing another
-output after catalog build makes the ready catalog stale; the operator rebuilds
-and retries.
+Activation never runs DuckDB. Under Story 27 release locks it applies the fixed
+order missing → not-ready → internally inconsistent → candidate-stale, then
+runs existing warehouse preflight. A worker completing another output or a
+semantic plan/readiness change makes the catalog stale. No active state changes
+until the operator rebuilds.
 
-One successful transaction inserts new durable output membership, updates the
-release generation/status pointer, and promotes the matching ready catalog to
-published. Active no-op publication reuses the current published catalog.
-Inactive rollback reuses the inactive month's exact current-generation
-published catalog. Existing active/inactive Story 27 state requires explicit
-catalog backfill and promotion during deployment cutover; migration never
-fabricates catalog rows from warehouse data.
+One successful transaction inserts new membership, updates the release
+generation/status pointer, and promotes the exact ready catalog. Any exact
+ready catalog for an unchanged current generation may be promoted; no hidden
+cutover flag exists. Inactive rollback reuses its exact current generation.
 
-Stable `mrfweb.active_release_catalogs` and
-`mrfweb.active_release_outputs` views expose only exact active generations with
-published catalogs. Catalog-less or mismatched active state fails closed; no
-latest generation, greatest month, all-month warehouse output, or partial
-intersection fallback is supported.
+Existing Story 27 state uses a quiesced cutover: stop roles, run one final
+pre-Story-31 incremental checkpoint, verify no ready unpublished output, build
+the now-current catalog, deploy catalog-aware activation, promote it, and
+restart. Historical strict membership is trusted but revalidated; violation is
+catalog inconsistency with no automatic membership repair.
 
-The future web process will load one complete active catalog/output candidate,
-validate it against the warehouse, load matching filters, and replace one
-immutable serving-state pointer. Each request captures that state. Polling,
-LISTEN/NOTIFY, HTTP, UI, and the manual web control socket/switch command are
-not pipeline Stories 28–32.
+Stable active views are globally fail-closed. If any active payer lacks one
+exact published catalog or output equality, the complete no-payer relation is
+empty and `ListActiveOutputs`/no-selector status fail rather than omitting that
+payer. A future read-only role gets active views plus fixed parameterized
+SELECT access to published billing, option, plan, plan/output,
+output/code/network, and provider-filter tables—not staging headers/outputs or
+pipeline/River operational tables.
+
+`filters status` remains database-only and cannot validate a restored
+PostgreSQL database against warehouse files. Reconciliation with full
+filesystem configuration and activation perform that stronger check. The
+future web process loads one active candidate, validates it against the
+warehouse, loads matching filters through fixed SQL, and replaces one immutable
+serving-state pointer. Polling, LISTEN/NOTIFY, HTTP, UI, and the manual web
+control socket/switch command remain outside pipeline Stories 28–32.
 
 ### Failure, resource, and operational policy
 
 Catalog errors use fixed sanitized codes. Logs/results never expose warehouse
 paths, SQL, DuckDB stderr, source URLs, credentials, rates, NPIs, or plan/filter
-values. Failed extraction cannot expose ready rows. Reconciliation audits
-published active/inactive catalog/output equality but never repairs, builds,
-promotes, or deletes a catalog.
+values. Failed extraction cannot expose ready rows. Reconciliation remains a
+successful report: missing inactive legacy catalogs increment
+`filter_catalog_backfill_required_count`; corruption of a published active or
+inactive catalog increments `sealed_release_inconsistency_count`. It never
+repairs, builds, promotes, deletes, or narrows catalog membership.
 
 Permanent acceptance uses a small hand-computed synthetic warehouse. An
 opt-in real-warehouse run records only sanitized counts, wall times, peak RSS,

@@ -102,26 +102,42 @@ mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
 mrfweb switch
 ```
 
-`filters build` does not activate a release. It captures the exact candidate
-output set, stores a lowercase SHA-256 fingerprint, extracts filter values,
-projects canonical plans from pipeline PostgreSQL, and atomically marks one
-catalog `ready`. Activation recomputes targets under its existing release-row
-locks and requires exact catalog generation, fingerprint, and output-set
-equality. A worker finishing another output after the build makes the catalog
-stale; activation changes nothing, and the operator reruns `filters build`.
+`filters status` is database-only and is not a warehouse/restore validation
+command. `filters build` does not activate a release. It captures a separate
+ASCII-output-sorted candidate set, exact semantic plan/output readiness, and a
+lowercase SHA-256 fingerprint; extracts filter values; rereads plans to detect
+meaningful concurrent changes; and atomically marks one catalog `ready`.
+Activation recomputes targets and canonical plan/output semantics under its
+existing release-row locks, applies fixed missing/not-ready/inconsistent/stale
+precedence, then runs warehouse preflight. A worker finishing another output or
+changing plan readiness after build makes the catalog stale; activation changes
+nothing, and the operator reruns `filters build`.
 
-No transaction spans DuckDB extraction. A purpose-specific PostgreSQL advisory
-lock serializes one build per payer/month; no River job, worker, scheduler,
-heartbeat, Redis, search service, or automatic rebuild is added. Normal and
-incremental activation, terminal upstream failure omission, plan readiness,
-inactive rollback, and exact warehouse preflight retain Story 27 semantics.
+No transaction spans DuckDB extraction. A domain-separated stable 64-bit
+advisory-lock hash serializes one build per payer/month; a hash collision may
+only cause safe false-busy. Graceful cancellation gets one detached five-second
+failure-cleanup attempt, while a crash may leave replaceable `building` state.
+No River job, worker, scheduler, heartbeat, Redis, search service, plan-set
+revision column, or automatic rebuild is added. Normal and incremental
+activation, terminal upstream failure omission, plan readiness, inactive
+rollback, and exact warehouse preflight retain Story 27 semantics.
 
-The future web process will receive read-only access to stable `mrfweb` serving
-views. Output membership, publication generation, and matching catalog become
-visible atomically. The future process validates one complete candidate,
-loads its matching filters, and replaces one immutable serving-state pointer;
-the pipeline does not implement HTTP, HTML, public queries, polling, or that
-manual switch command in Stories 28–32.
+The future web process receives read-only access to globally fail-closed active
+views plus fixed parameterized SELECTs on published billing-code, option, plan,
+plan/output, output/code/network, and provider-filter tables. If any active
+payer lacks a valid catalog, no-selector handoff fails as a whole rather than
+omitting that payer. Output membership, publication generation, and matching
+catalog become visible atomically. The future process validates one complete
+candidate, loads matching filters, and replaces one immutable serving-state
+pointer; the pipeline does not implement HTTP, HTML, public queries, polling,
+or that manual switch command in Stories 28–32.
+
+Existing Story 27 state uses a quiesced cutover: stop roles, publish one final
+ready subset with the pre-Story-31 activation path, build the now-current
+catalog, deploy catalog-aware activation, promote the exact ready catalog, then
+restart roles. No special backfill/force mode or automatic membership repair is
+added. Historical strict activation membership is trusted but revalidated;
+violations fail as catalog inconsistency.
 
 The remaining sections describe the current feed-free commands and operational
 contract. Historical Story 01–13 databases and `mrfconsumer 1.5.0` warehouses
@@ -780,8 +796,12 @@ insufficient because active release mapping lives in PostgreSQL.
 ### Recovery procedures
 
 - **Cutover:** run `month status --payer <payer> --collection-month <month>`,
-  then `month activate` only when `database_ready` is true. Activation validates
-  base and plan-part publications before changing the active relation.
+  then `month activate` when discovery/TOC inventory is terminal, the source
+  target is selected, at least one output is plan-ready, consumer/attachment
+  publication has no failure, and warehouse preflight succeeds.
+  `database_ready` is the stricter all-work signal and is not required for a
+  Story 27 incremental checkpoint; numeric partial coverage, pending known MRF
+  work, and terminal TOC/MRF file failures may remain.
 - **Rollback/reactivation:** run `month activate` for the sealed historical
   month. A damaged publication is rejected and the current active pointer is
   left unchanged.
