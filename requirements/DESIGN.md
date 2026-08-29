@@ -2,12 +2,15 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–27 architecture. The
-numbered requirement stories remain authoritative where they are more
-specific. Sections below the approved contract that are explicitly labeled
-historical version 1 are retained as background only; they are not current
-runtime guidance. The Stories 14–27 requirements and current README describe
-the rebuild-only feed-free contract and runnable local operation.
+This document describes the implemented Stories 01–27 architecture and the
+approved, not-yet-implemented Stories 28–32 release-filter target. The numbered
+requirement stories remain authoritative where they are more specific.
+Sections below the approved contract that are explicitly labeled historical
+version 1 are retained as background only; they are not current runtime
+guidance. The Stories 14–27 requirements and current README describe the
+implemented rebuild-only feed-free operation. The planned section below
+describes Stories 28–32 without claiming their commands or database objects
+currently exist.
 
 The design records the implemented version 1 decisions that remain normative
 except where the target addendum explicitly replaces them:
@@ -133,6 +136,238 @@ The target keeps these version 1 invariants:
 The target remains UHC-only for production discovery. Generic payer columns
 and per-payer release state prepare the domain/query boundary for later payer
 adapters without claiming they exist now.
+
+## Planned release filter architecture: Stories 28–32
+
+The approved next sequence is:
+
+- [Story 28: Release filter catalog database contract](28-release-filter-catalog-database-contract.md)
+- [Story 29: Release filter warehouse extraction](29-release-filter-warehouse-extraction.md)
+- [Story 30: Release filter catalog population](30-release-filter-catalog-population.md)
+- [Story 31: Filter-aware release publication](31-filter-aware-release-publication.md)
+- [Story 32: Filter catalog operational acceptance](32-filter-catalog-operational-acceptance.md)
+
+These stories add no web server or query UI. They prepare one compact,
+generation-scoped PostgreSQL catalog that a future public Go/HTML process can
+read without expanding Parquet lists during an HTTP request.
+
+### Ownership and data flow
+
+```mermaid
+flowchart LR
+    Release["Pipeline release state<br/>published + publishable outputs"]
+    Warehouse["Consumer 2.0.0 Parquet warehouse"]
+    Plans["Pipeline canonical plan records"]
+    Builder["Explicit filters build command<br/>DuckDB 1.5.5, read-only"]
+    Catalog["PostgreSQL mrfweb schema<br/>ready/published catalog"]
+    Activate["month activate<br/>exact set comparison"]
+    FutureWeb["Future mrfweb<br/>read-only, manual switch"]
+
+    Release --> Builder
+    Warehouse --> Builder
+    Plans --> Builder
+    Builder --> Catalog
+    Catalog --> Activate
+    Release --> Activate
+    Activate --> FutureWeb
+```
+
+`mrfconsumer` remains responsible only for immutable provider-filtered
+warehouse publication and additive plan parts. It does not know about web
+filters and its warehouse stays exact `2.0.0`. `mrfpipeline` already owns
+release membership, plan readiness, PostgreSQL writes, and warehouse
+preflight, so it owns catalog construction. A future `mrfweb` receives
+read-only PostgreSQL and warehouse access.
+
+The existing PostgreSQL database gains a separate `mrfweb` schema. A second
+database is deliberately avoided: output generation and catalog publication
+must commit in one transaction. Runtime credentials, passwords, and the future
+web role are deployment concerns, not hard-coded migration state.
+
+### Generation identity
+
+Story 27 permits repeated publication to one active month. Catalog identity is
+therefore:
+
+```text
+payer_id + collection_month + publication_generation
+```
+
+A catalog for generation `N + 1` contains every output already published
+through `N` plus every currently publishable new output. It records the exact
+output rows and a deterministic lowercase SHA-256 fingerprint. Activation
+recomputes the set under its existing payer release-row locks and compares
+rows, count, generation, and fingerprint. A matching hash never repairs
+unequal rows.
+
+One private generated catalog ID supports staging. It is not another
+product-level release/revision. A pre-publication failed/building/ready catalog
+may be explicitly replaced for the same prospective generation. A published
+catalog is immutable. Older generations and inactive-month catalogs remain for
+in-flight future queries, exact rollback, and audit until a later retention
+story exists.
+
+### Catalog contents
+
+The normalized PostgreSQL contract contains:
+
+```text
+release_catalogs
+release_outputs
+release_billing_codes
+release_code_filter_values
+release_plans
+release_plan_outputs
+release_output_code_networks
+release_provider_filter_values
+```
+
+Billing-code identity is exact type + code, for example `CPT/99214` or
+`HCPCS/G2212`. Available codes, standard observation counts, no-modifier
+counts, and deterministic source-provided warehouse labels are release
+material. Null/empty labels are ignored; greatest observation count wins, with
+UTF-8 lexical tie-break. Labels are not presented as an authoritative external
+CPT/HCPCS dictionary. Licensed/reference definitions remain a separate future
+input.
+
+Code filter rows contain actual modifier, place-of-service, billing-class,
+setting, and negotiation-arrangement values. `No modifier`, `All
+observations`, and `Has any modifier` are future UI modes, not stored value
+rows. `CSTM-00` keeps exact identity and receives the display label `Broad or
+unspecified place of service`.
+
+Canonical plans use the full sponsor-independent tuple:
+
+```text
+plan_name
+issuer_name
+plan_id_type
+plan_id
+plan_market_type
+```
+
+Plans retain output relationships. Networks retain output and billing-code
+relationships:
+
+```text
+plan -> output -> billing code -> network
+```
+
+This lets a future plan/code selection discover only related networks. Several
+selected plans first deduplicate output IDs, then union networks and sum
+output-scoped observation counts. There is no direct materialized
+plan/network cross-product.
+
+Provider choices are release-reachable distinct NPI relationships:
+
+```text
+selected output
+  -> rate/provider-group link
+  -> provider-group membership
+  -> taxonomy / provider state + lowercase city
+```
+
+Taxonomy and state are top-level values. City is stored with its exact state
+parent. These lists are release-scoped, not billing-code-scoped. Postal code
+and exact NPI remain text inputs in the future web app; no ZIP/NPI directory is
+materialized. Expiration is neither a filter nor an automatic predicate.
+Statistics continue to represent payer-published standard observations in the
+active release.
+
+Every fact-derived catalog count uses:
+
+```sql
+negotiated_type = 'negotiated'
+AND negotiated_rate IS NOT NULL
+```
+
+Counts remain negotiated-price-observation weighted. A fact counts at most
+once for one distinct list value. Provider filter counts are explicitly
+distinct reachable NPIs.
+
+No negotiated-rate fact, average, median, percentile, distribution, provider
+count for arbitrary filters, or filter-combination cube is copied to
+PostgreSQL. Final analytical queries remain DuckDB/Parquet work in the future
+query service.
+
+### Explicit build boundary
+
+The proposed commands are:
+
+```text
+mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
+mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
+```
+
+They are not current commands until Stories 28–32 are implemented.
+
+`filters build` uses the same published/publishable release predicates as
+activation, acquires one purpose-specific PostgreSQL advisory lock for the
+payer/month, records the exact prospective output relation, and runs one
+pinned DuckDB `v1.5.5` process against fixed read-only SQL. The pipeline binary
+remains `CGO_ENABLED=0`; Docker packages the verified official CLI for Linux
+amd64/arm64. DuckDB never runs in control, MRF, or consumer River workers and
+never downloads an extension or writes the warehouse.
+
+The build does not hold a release-row transaction across extraction and does
+not freeze ordinary MRF progress. It writes child rows only beneath a
+non-serving building catalog, validates all counts/relationships, then changes
+the header to ready in one short transaction. A process crash releases the
+session advisory lock. Explicit retry replaces an unpublished abandoned or
+failed build; no River job, worker, heartbeat, scheduler, or repair daemon is
+added.
+
+### Filter-aware publication
+
+The operator sequence becomes:
+
+```text
+filters build
+month activate
+future mrfweb switch
+```
+
+Activation never runs DuckDB. Under Story 27's existing release locks it
+recomputes exact targets. A missing, building, failed, stale, or inconsistent
+catalog rejects the checkpoint without changing active month, generation,
+membership, catalog status, or warehouse files. A worker completing another
+output after catalog build makes the ready catalog stale; the operator rebuilds
+and retries.
+
+One successful transaction inserts new durable output membership, updates the
+release generation/status pointer, and promotes the matching ready catalog to
+published. Active no-op publication reuses the current published catalog.
+Inactive rollback reuses the inactive month's exact current-generation
+published catalog. Existing active/inactive Story 27 state requires explicit
+catalog backfill and promotion during deployment cutover; migration never
+fabricates catalog rows from warehouse data.
+
+Stable `mrfweb.active_release_catalogs` and
+`mrfweb.active_release_outputs` views expose only exact active generations with
+published catalogs. Catalog-less or mismatched active state fails closed; no
+latest generation, greatest month, all-month warehouse output, or partial
+intersection fallback is supported.
+
+The future web process will load one complete active catalog/output candidate,
+validate it against the warehouse, load matching filters, and replace one
+immutable serving-state pointer. Each request captures that state. Polling,
+LISTEN/NOTIFY, HTTP, UI, and the manual web control socket/switch command are
+not pipeline Stories 28–32.
+
+### Failure, resource, and operational policy
+
+Catalog errors use fixed sanitized codes. Logs/results never expose warehouse
+paths, SQL, DuckDB stderr, source URLs, credentials, rates, NPIs, or plan/filter
+values. Failed extraction cannot expose ready rows. Reconciliation audits
+published active/inactive catalog/output equality but never repairs, builds,
+promotes, or deletes a catalog.
+
+Permanent acceptance uses a small hand-computed synthetic warehouse. An
+opt-in real-warehouse run records only sanitized counts, wall times, peak RSS,
+and database bytes. That evidence is descriptive, not an HTTP latency or
+production capacity SLA. Measured problems may justify later focused tuning;
+the approved design does not preemptively add Redis, Elasticsearch, a generic
+spill layer, denormalized plan/network products, or a query server.
 
 ## Current Story 21 worker addendum
 
@@ -1309,7 +1544,7 @@ advances.
 
 ## Story sequence
 
-Stories 01–13 are the full version 1 implementation sequence:
+Stories 01–13 are the initial version 1 implementation sequence:
 
 | Story | Deliverable |
 |---:|---|
@@ -1327,7 +1562,7 @@ Stories 01–13 are the full version 1 implementation sequence:
 | 12 | Plan batch projection and additive consumer attachment worker. |
 | 13 | Reconciliation, operational acceptance, 1→2→5 TOC live progression, authorized URL-debug queries, retention guidance, and final documentation. |
 
-Stories 14–27 are the approved rebuild-only next sequence:
+Stories 14–27 are the implemented rebuild-only sequence:
 
 | Story | Deliverable |
 |---:|---|
@@ -1345,6 +1580,17 @@ Stories 14–27 are the approved rebuild-only next sequence:
 | 25 | Treat River UI cancel of `mrf.download` and `mrf.parse` as terminal occupancy so the slot is released. |
 | 26 | Delete leftover `mrf.download` and `toc.download` bytes on River UI cancel, retry exhaustion, and HTTP 404, then release an empty MRF slot. |
 | 27 | Persist additive active-output membership, publish numeric partial checkpoints, omit terminal file failures, and keep known MRF work running. |
+
+Stories 28–32 are the approved release-filter sequence and remain proposed
+until their implementations and Story 32 convergence land:
+
+| Story | Deliverable |
+|---:|---|
+| 28 | Add the versioned `mrfweb` PostgreSQL schema, immutable generation catalogs, exact outputs, code/filter/plan/network/provider tables, and fail-closed active serving views. |
+| 29 | Package pinned DuckDB 1.5.5 and extract deterministic release-scoped billing, option, output/code/network, and provider rows from exact consumer 2.0.0 outputs without warehouse mutation. |
+| 30 | Add explicit `filters build/status`, exact candidate fingerprints, canonical plan projection, advisory-lock serialization, atomic ready publication, and idempotent retry. |
+| 31 | Require an exact ready catalog in incremental activation, publish output membership and catalog atomically, support cutover/rollback, and audit fail-closed active handoff. |
+| 32 | Prove synthetic end-to-end semantics, failure/crash/redaction, read-only access, Docker packaging, rollback, and descriptive real-warehouse performance; converge operator documentation. |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC

@@ -3,7 +3,11 @@
 Operator executable for CMS Transparency in Coverage discovery, TOC and MRF
 processing, warehouse ingestion, and additive plan attachment.
 
-Version 1 is specified by Stories 01–27 in [`requirements/`](requirements/).
+Version 1 is implemented through Stories 01–27 in
+[`requirements/`](requirements/). Proposed Stories
+[28](requirements/28-release-filter-catalog-database-contract.md) through
+[32](requirements/32-filter-catalog-operational-acceptance.md) specify
+release-generation filter catalogs for a future public query service.
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
@@ -52,6 +56,72 @@ with no payer filter must apply every active output row, not one global month
 and not every warehouse output that happens to share an active payer/month.
 Query planning, partition pruning, and performance acceptance belong to that
 query service and the consumer.
+
+## Planned release filter catalogs: Stories 28–32
+
+Stories 28–32 are approved requirements, not current commands or runtime
+behavior. They keep `mrfconsumer` and its `2.0.0` warehouse unchanged. The
+pipeline will scan one exact current/prospective publication generation with a
+pinned read-only DuckDB `1.5.5` CLI, populate compact filter rows in an
+`mrfweb` schema in the existing PostgreSQL database, and require the matching
+catalog before publishing that generation.
+
+Story 27 publication remains incremental. A catalog is therefore keyed by
+`(payer_id, collection_month, publication_generation)`, not payer/month alone.
+Generation 1 may contain the first ready subset; a later explicit checkpoint
+builds generation 2 over every previously published output plus newly
+plan-ready outputs. Published catalogs remain immutable for rollback and
+in-flight future query state.
+
+The planned catalog contains:
+
+- exact catalog outputs and their fingerprint;
+- available CPT/HCPCS code pairs, source-provided warehouse labels, standard
+  observation counts, and no-modifier counts;
+- code-scoped modifiers, places of service, billing classes, settings, and
+  negotiation arrangements;
+- sponsor-independent canonical plans and plan-to-output relationships;
+- output- and code-scoped networks, so a future plan selection exposes only
+  related networks for the selected code; and
+- release-reachable taxonomy, state, and state/city choices.
+
+It deliberately contains no negotiated-rate facts, medians, averages,
+percentiles, distributions, arbitrary filter combinations, ZIP list, NPI
+directory, or expiration filter. ZIP and NPI remain exact text inputs in the
+future web application. Source-provided billing labels are selected
+deterministically; an external licensed CPT/HCPCS reference catalog remains a
+separate future concern.
+
+The proposed operator flow is:
+
+```text
+mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
+mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
+mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
+# future, outside this repository:
+mrfweb switch
+```
+
+`filters build` does not activate a release. It captures the exact candidate
+output set, stores a lowercase SHA-256 fingerprint, extracts filter values,
+projects canonical plans from pipeline PostgreSQL, and atomically marks one
+catalog `ready`. Activation recomputes targets under its existing release-row
+locks and requires exact catalog generation, fingerprint, and output-set
+equality. A worker finishing another output after the build makes the catalog
+stale; activation changes nothing, and the operator reruns `filters build`.
+
+No transaction spans DuckDB extraction. A purpose-specific PostgreSQL advisory
+lock serializes one build per payer/month; no River job, worker, scheduler,
+heartbeat, Redis, search service, or automatic rebuild is added. Normal and
+incremental activation, terminal upstream failure omission, plan readiness,
+inactive rollback, and exact warehouse preflight retain Story 27 semantics.
+
+The future web process will receive read-only access to stable `mrfweb` serving
+views. Output membership, publication generation, and matching catalog become
+visible atomically. The future process validates one complete candidate,
+loads its matching filters, and replaces one immutable serving-state pointer;
+the pipeline does not implement HTTP, HTML, public queries, polling, or that
+manual switch command in Stories 28–32.
 
 The remaining sections describe the current feed-free commands and operational
 contract. Historical Story 01–13 databases and `mrfconsumer 1.5.0` warehouses
