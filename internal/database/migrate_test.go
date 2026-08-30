@@ -93,7 +93,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 8 {
+	if len(files) != 9 {
 		t.Fatalf("got %d files", len(files))
 	}
 	if files[0].Version != 1 || files[0].Name != "0001_initial_domain.sql" {
@@ -105,7 +105,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if files[2].Version != 3 || files[2].Name != "0003_monthly_toc_captures.sql" {
 		t.Fatalf("got %+v", files[2])
 	}
-	if files[3].Version != 4 || files[3].Name != "0004_monthly_releases.sql" || files[4].Version != 5 || files[4].Name != "0005_bounded_worker_scaling.sql" || files[5].Version != 6 || files[5].Name != "0006_terminal_mrf_parse_slot_release.sql" || files[6].Version != 7 || files[6].Name != "0007_nullable_plan_sponsor.sql" || files[7].Version != 8 || files[7].Name != "0008_incremental_release_publication.sql" {
+	if files[3].Version != 4 || files[3].Name != "0004_monthly_releases.sql" || files[4].Version != 5 || files[4].Name != "0005_bounded_worker_scaling.sql" || files[5].Version != 6 || files[5].Name != "0006_terminal_mrf_parse_slot_release.sql" || files[6].Version != 7 || files[6].Name != "0007_nullable_plan_sponsor.sql" || files[7].Version != 8 || files[7].Name != "0008_incremental_release_publication.sql" || files[8].Version != 9 || files[8].Name != "0009_release_filter_catalog.sql" {
 		t.Fatalf("got %+v", files[3:])
 	}
 	if files[0].SQL == "" {
@@ -118,7 +118,7 @@ func TestEmbeddedMigrations(t *testing.T) {
 
 func TestValidateLedger(t *testing.T) {
 	t.Parallel()
-	files := []migrationFile{{Version: 1, Name: "0001_initial_domain.sql"}, {Version: 2, Name: "0002_feed_free_domain.sql"}, {Version: 3, Name: "0003_monthly_toc_captures.sql"}, {Version: 4, Name: "0004_monthly_releases.sql"}, {Version: 5, Name: "0005_bounded_worker_scaling.sql"}, {Version: 6, Name: "0006_terminal_mrf_parse_slot_release.sql"}, {Version: 7, Name: "0007_nullable_plan_sponsor.sql"}, {Version: 8, Name: "0008_incremental_release_publication.sql"}}
+	files := []migrationFile{{Version: 1, Name: "0001_initial_domain.sql"}, {Version: 2, Name: "0002_feed_free_domain.sql"}, {Version: 3, Name: "0003_monthly_toc_captures.sql"}, {Version: 4, Name: "0004_monthly_releases.sql"}, {Version: 5, Name: "0005_bounded_worker_scaling.sql"}, {Version: 6, Name: "0006_terminal_mrf_parse_slot_release.sql"}, {Version: 7, Name: "0007_nullable_plan_sponsor.sql"}, {Version: 8, Name: "0008_incremental_release_publication.sql"}, {Version: 9, Name: "0009_release_filter_catalog.sql"}}
 	if err := validateLedger(nil, files); err != nil {
 		t.Fatal(err)
 	}

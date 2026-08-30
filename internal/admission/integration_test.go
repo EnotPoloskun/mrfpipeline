@@ -33,7 +33,7 @@ func admissionTestDB(t *testing.T) *pgxpool.Pool {
 		t.Fatal("connect test database")
 	}
 	reset := func() {
-		for _, schema := range []string{database.RiverSchema, database.ApplicationSchema, "mrfpipeline_test"} {
+		for _, schema := range []string{"mrfweb", database.RiverSchema, database.ApplicationSchema, "mrfpipeline_test"} {
 			_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
 		}
 	}

@@ -2,15 +2,16 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–27 architecture and the
-approved, not-yet-implemented Stories 28–32 release-filter target. The numbered
+This document describes the implemented Stories 01–28 architecture and the
+approved, not-yet-implemented Stories 29–32 release-filter target. The numbered
 requirement stories remain authoritative where they are more specific.
 Sections below the approved contract that are explicitly labeled historical
 version 1 are retained as background only; they are not current runtime
 guidance. The Stories 14–27 requirements and current README describe the
-implemented rebuild-only feed-free operation. The planned section below
-describes Stories 28–32 without claiming their commands or database objects
-currently exist.
+implemented rebuild-only feed-free operation. Story 28 adds only its database
+contract; the planned section below describes Stories 29–32 without claiming
+their commands or catalog population, activation, or web behavior currently
+exist.
 
 The design records the implemented version 1 decisions that remain normative
 except where the target addendum explicitly replaces them:
@@ -137,18 +138,20 @@ The target remains UHC-only for production discovery. Generic payer columns
 and per-payer release state prepare the domain/query boundary for later payer
 adapters without claiming they exist now.
 
-## Planned release filter architecture: Stories 28–32
+## Release filter architecture: Story 28 implemented; Stories 29–32 planned
 
 The approved next sequence is:
 
-- [Story 28: Release filter catalog database contract](28-release-filter-catalog-database-contract.md)
-- [Story 29: Release filter warehouse extraction](29-release-filter-warehouse-extraction.md)
-- [Story 30: Release filter catalog population](30-release-filter-catalog-population.md)
-- [Story 31: Filter-aware release publication](31-filter-aware-release-publication.md)
-- [Story 32: Filter catalog operational acceptance](32-filter-catalog-operational-acceptance.md)
+- [Story 28: Release filter catalog database contract](28-release-filter-catalog-database-contract.md) (implemented schema and views)
+- [Story 29: Release filter warehouse extraction](29-release-filter-warehouse-extraction.md) (proposed)
+- [Story 30: Release filter catalog population](30-release-filter-catalog-population.md) (proposed)
+- [Story 31: Filter-aware release publication](31-filter-aware-release-publication.md) (proposed)
+- [Story 32: Filter catalog operational acceptance](32-filter-catalog-operational-acceptance.md) (proposed)
 
-These stories add no web server or query UI. They prepare one compact,
-generation-scoped PostgreSQL catalog that a future public Go/HTML process can
+Story 28 adds no web server, query UI, catalog population, or activation
+behavior. It provides the empty, generation-scoped PostgreSQL schema and
+fail-closed active views that later stories will populate and use. Stories
+29–32 prepare one compact catalog that a future public Go/HTML process can
 read without expanding Parquet lists during an HTTP request.
 
 ### Ownership and data flow
@@ -313,7 +316,7 @@ mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
 mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
 ```
 
-They are not current commands until Stories 28–32 are implemented.
+They remain unavailable until Stories 29–32 are implemented.
 
 `filters build` uses the complete database candidate gate and the same
 published/publishable predicates as activation. It copies/sorts outputs for the
@@ -1609,8 +1612,9 @@ Stories 14–27 are the implemented rebuild-only sequence:
 | 26 | Delete leftover `mrf.download` and `toc.download` bytes on River UI cancel, retry exhaustion, and HTTP 404, then release an empty MRF slot. |
 | 27 | Persist additive active-output membership, publish numeric partial checkpoints, omit terminal file failures, and keep known MRF work running. |
 
-Stories 28–32 are the approved release-filter sequence and remain proposed
-until their implementations and Story 32 convergence land:
+Story 28's schema contract is implemented. Stories 29–32 are the remaining
+approved release-filter sequence and remain proposed until their
+implementations and Story 32 convergence land:
 
 | Story | Deliverable |
 |---:|---|

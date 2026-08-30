@@ -64,7 +64,7 @@ func testDB(t *testing.T) *pgxpool.Pool {
 }
 
 func resetPipelineSchemas(ctx context.Context, pool *pgxpool.Pool) error {
-	for _, schema := range []string{database.RiverSchema, database.ApplicationSchema, "mrfpipeline_test"} {
+	for _, schema := range []string{"mrfweb", database.RiverSchema, database.ApplicationSchema, "mrfpipeline_test"} {
 		if _, err := pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil {
 			return err
 		}

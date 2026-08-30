@@ -43,7 +43,7 @@ func testMigrateEnv(t *testing.T) func(string) string {
 }
 
 func resetPipelineSchemas(ctx context.Context, pool *pgxpool.Pool) error {
-	for _, schema := range []string{database.RiverSchema, database.ApplicationSchema, "mrfpipeline_test"} {
+	for _, schema := range []string{"mrfweb", database.RiverSchema, database.ApplicationSchema, "mrfpipeline_test"} {
 		if _, err := pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE"); err != nil {
 			return err
 		}
@@ -60,7 +60,7 @@ func TestIntegrationMigrateCommand(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr %q", stderr)
 	}
-	if stdout != "{\"application_version\":8,\"applied_migration_count\":8,\"river_version\":6,\"applied_river_migration_count\":6}\n" {
+	if stdout != "{\"application_version\":9,\"applied_migration_count\":9,\"river_version\":6,\"applied_river_migration_count\":6}\n" {
 		t.Fatalf("stdout %q", stdout)
 	}
 	var obj map[string]any
@@ -75,7 +75,7 @@ func TestIntegrationMigrateCommand(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("repeat exit %d stderr=%q", code, stderr)
 	}
-	if stdout != "{\"application_version\":8,\"applied_migration_count\":0,\"river_version\":6,\"applied_river_migration_count\":0}\n" {
+	if stdout != "{\"application_version\":9,\"applied_migration_count\":0,\"river_version\":6,\"applied_river_migration_count\":0}\n" {
 		t.Fatalf("repeat stdout %q", stdout)
 	}
 

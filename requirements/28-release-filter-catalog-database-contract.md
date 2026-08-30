@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+Implemented.
 
 ## User story
 
@@ -574,13 +574,14 @@ or mark an empty catalog ready.
 
 ## Documentation
 
-Update `README.md` and `requirements/DESIGN.md` to describe this as a planned
-Stories 28–32 contract until implementation is complete. Do not list proposed
-commands as currently available.
+`README.md` and `requirements/DESIGN.md` describe Story 28's implemented
+database schema and stable views, while Stories 29–32 remain proposed. They
+do not list the proposed filter commands, population, activation, DuckDB, or
+web behavior as currently available.
 
 ## Implementation notes
 
-Expected files when implemented:
+Implemented files and assertions:
 
 - `internal/database/migrations/0009_release_filter_catalog.sql`;
 - migration integration assertions in `internal/database`, advanced from

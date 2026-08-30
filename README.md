@@ -4,10 +4,12 @@ Operator executable for CMS Transparency in Coverage discovery, TOC and MRF
 processing, warehouse ingestion, and additive plan attachment.
 
 Version 1 is implemented through Stories 01–27 in
-[`requirements/`](requirements/). Proposed Stories
-[28](requirements/28-release-filter-catalog-database-contract.md) through
-[32](requirements/32-filter-catalog-operational-acceptance.md) specify
-release-generation filter catalogs for a future public query service.
+[`requirements/`](requirements/). Story 28's versioned `mrfweb` database
+schema and stable active views are implemented; proposed Stories
+[29](requirements/29-release-filter-warehouse-extraction.md) through
+[32](requirements/32-filter-catalog-operational-acceptance.md) specify the
+remaining release-generation filter-catalog behavior for a future public
+query service.
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
@@ -57,14 +59,15 @@ and not every warehouse output that happens to share an active payer/month.
 Query planning, partition pruning, and performance acceptance belong to that
 query service and the consumer.
 
-## Planned release filter catalogs: Stories 28–32
+## Release filter catalogs: Story 28 implemented; Stories 29–32 planned
 
-Stories 28–32 are approved requirements, not current commands or runtime
-behavior. They keep `mrfconsumer` and its `2.0.0` warehouse unchanged. The
-pipeline will scan one exact current/prospective publication generation with a
-pinned read-only DuckDB `1.5.5` CLI, populate compact filter rows in an
-`mrfweb` schema in the existing PostgreSQL database, and require the matching
-catalog before publishing that generation.
+Story 28's additive migration implements the empty `mrfweb` schema, catalog
+tables, and stable active views. Stories 29–32 remain approved requirements,
+not current commands or runtime behavior. They keep `mrfconsumer` and its
+`2.0.0` warehouse unchanged. The later stories will scan one exact
+current/prospective publication generation with a pinned read-only DuckDB
+`1.5.5` CLI, populate compact filter rows, and require the matching catalog
+before publishing that generation. No catalog rows are populated by Story 28.
 
 Story 27 publication remains incremental. A catalog is therefore keyed by
 `(payer_id, collection_month, publication_generation)`, not payer/month alone.
