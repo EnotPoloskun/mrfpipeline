@@ -71,6 +71,37 @@ func decodeCatalogIdentity(dec *json.Decoder) (catalogIdentity, error) {
 	return ident, nil
 }
 
+func decodeProviderCatalogManifest(data []byte) (catalogIdentity, error) {
+	var zero catalogIdentity
+	if !utf8.Valid(data) || rejectUnpairedSurrogates(data) != nil {
+		return zero, errOutputInvalid
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var identity catalogIdentity
+	if err := readSnapshotObject(dec, map[string]jsonField{
+		"schema_version": func(d *json.Decoder) error {
+			n, err := readCanonicalInt64(d)
+			identity.SchemaVersion = n
+			return err
+		},
+		"release_month": func(d *json.Decoder) error {
+			s, err := readStrictString(d)
+			identity.ReleaseMonth = s
+			return err
+		},
+	}); err != nil {
+		return zero, err
+	}
+	if err := requireEOF(dec, data); err != nil {
+		return zero, err
+	}
+	if identity.SchemaVersion != catalogSchema || !validCatalogMonth(identity.ReleaseMonth) {
+		return zero, errOutputInvalid
+	}
+	return identity, nil
+}
+
 func decodeSnapshotManifest(data []byte) (snapshotManifest, error) {
 	var zero snapshotManifest
 	if !utf8.Valid(data) || rejectUnpairedSurrogates(data) != nil {

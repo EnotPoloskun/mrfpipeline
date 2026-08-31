@@ -1,0 +1,379 @@
+.mode jsonlines
+
+CREATE TEMPORARY TABLE selected_outputs AS
+SELECT *
+FROM (VALUES
+__SELECTED_OUTPUT_VALUES__
+) AS selected(payer_id, collection_month, output_id, mrf_snapshot_id);
+
+CREATE TEMPORARY TABLE providers_source AS
+SELECT npi, state, city
+FROM read_parquet('__WAREHOUSE_ROOT__/provider_catalog/providers/*.parquet', hive_partitioning = false, union_by_name = false);
+
+CREATE TEMPORARY TABLE provider_taxonomies_source AS
+SELECT npi, taxonomy_code
+FROM read_parquet('__WAREHOUSE_ROOT__/provider_catalog/provider_taxonomies/*.parquet', hive_partitioning = false, union_by_name = false);
+
+CREATE TEMPORARY TABLE selected_facts AS
+SELECT
+    fact.output_id,
+    fact.payer_id,
+    fact.collection_month,
+    fact.rate_group_id,
+    fact.price_id,
+    fact.negotiation_arrangement,
+    fact.service_name,
+    fact.billing_code_type,
+    fact.billing_code_type_version,
+    fact.billing_code,
+    fact.service_description,
+    fact.service_codes,
+    fact.billing_class,
+    fact.setting,
+    fact.negotiated_type,
+    fact.billing_code_modifiers,
+    fact.network_names,
+    fact.negotiated_rate
+FROM read_parquet('__WAREHOUSE_ROOT__/snapshots/collection_month=*/payer_id=*/output_id=*/rate_facts/*.parquet', hive_partitioning = false, union_by_name = false) AS fact
+JOIN selected_outputs AS selected
+  ON fact.output_id = selected.output_id
+ AND fact.payer_id = selected.payer_id
+ AND fact.collection_month = selected.collection_month;
+
+CREATE TEMPORARY TABLE standard_facts AS
+SELECT *
+FROM selected_facts
+WHERE billing_code_type IS NOT NULL
+  AND billing_code IS NOT NULL
+  AND negotiated_type = 'negotiated'
+  AND negotiated_rate IS NOT NULL;
+
+CREATE TEMPORARY TABLE selected_links AS
+SELECT
+    link.output_id,
+    link.rate_group_id,
+    link.provider_group_id
+FROM read_parquet('__WAREHOUSE_ROOT__/snapshots/collection_month=*/payer_id=*/output_id=*/rate_provider_groups/*.parquet', hive_partitioning = false, union_by_name = false) AS link
+JOIN selected_outputs AS selected
+  ON link.output_id = selected.output_id;
+
+CREATE TEMPORARY TABLE selected_memberships AS
+SELECT
+    membership.output_id,
+    membership.provider_group_id,
+    membership.npi
+FROM read_parquet('__WAREHOUSE_ROOT__/snapshots/collection_month=*/payer_id=*/output_id=*/provider_group_memberships/*.parquet', hive_partitioning = false, union_by_name = false) AS membership
+JOIN selected_outputs AS selected
+  ON membership.output_id = selected.output_id;
+
+CREATE TEMPORARY TABLE reachable_links AS
+SELECT DISTINCT
+    fact.output_id,
+    fact.rate_group_id,
+    link.provider_group_id
+FROM standard_facts AS fact
+JOIN selected_links AS link
+  ON link.output_id = fact.output_id
+ AND link.rate_group_id = fact.rate_group_id;
+
+CREATE TEMPORARY TABLE reachable_npis AS
+SELECT DISTINCT membership.npi
+FROM reachable_links AS link
+JOIN selected_memberships AS membership
+  ON membership.output_id = link.output_id
+ AND membership.provider_group_id = link.provider_group_id;
+
+CREATE TEMPORARY TABLE warehouse_guard AS
+WITH violations AS (
+    SELECT 1 AS violation
+    FROM selected_facts
+    GROUP BY output_id, price_id
+    HAVING COUNT(*) > 1
+    UNION ALL
+    SELECT 1
+    FROM selected_links
+    GROUP BY output_id, rate_group_id, provider_group_id
+    HAVING COUNT(*) > 1
+    UNION ALL
+    SELECT 1
+    FROM selected_memberships
+    GROUP BY output_id, provider_group_id, npi
+    HAVING COUNT(*) > 1
+    UNION ALL
+    SELECT 1
+    FROM reachable_npis AS reachable
+    JOIN providers_source AS provider ON provider.npi = reachable.npi
+    GROUP BY provider.npi
+    HAVING COUNT(*) > 1
+    UNION ALL
+    SELECT 1
+    FROM reachable_npis AS reachable
+    JOIN provider_taxonomies_source AS taxonomy ON taxonomy.npi = reachable.npi
+    GROUP BY taxonomy.npi, taxonomy.taxonomy_code
+    HAVING COUNT(*) > 1
+    UNION ALL
+    SELECT 1
+    FROM standard_facts AS fact
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM selected_links AS link
+        WHERE link.output_id = fact.output_id
+          AND link.rate_group_id = fact.rate_group_id
+    )
+    UNION ALL
+    SELECT 1
+    FROM reachable_links AS link
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM selected_memberships AS membership
+        WHERE membership.output_id = link.output_id
+          AND membership.provider_group_id = link.provider_group_id
+    )
+    UNION ALL
+    SELECT 1
+    FROM reachable_npis AS reachable
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM providers_source AS provider
+        WHERE provider.npi = reachable.npi
+    )
+    UNION ALL
+    SELECT 1
+    FROM reachable_npis AS reachable
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM provider_taxonomies_source AS taxonomy
+        WHERE taxonomy.npi = reachable.npi
+    )
+)
+SELECT CASE
+    WHEN EXISTS (SELECT 1 FROM violations)
+    THEN error('filter_catalog_warehouse_invalid')
+    ELSE 1
+END AS ok;
+
+CREATE TEMPORARY TABLE value_guard AS
+WITH invalid_values AS (
+    SELECT 1 AS violation
+    FROM standard_facts
+    WHERE strpos(billing_code_type, chr(13)) > 0
+       OR strpos(billing_code_type, chr(10)) > 0
+       OR strpos(billing_code, chr(13)) > 0
+       OR strpos(billing_code, chr(10)) > 0
+       OR (billing_code_type_version IS NOT NULL AND (strpos(billing_code_type_version, chr(13)) > 0 OR strpos(billing_code_type_version, chr(10)) > 0))
+       OR (service_name IS NOT NULL AND (strpos(service_name, chr(13)) > 0 OR strpos(service_name, chr(10)) > 0))
+       OR (service_description IS NOT NULL AND (strpos(service_description, chr(13)) > 0 OR strpos(service_description, chr(10)) > 0))
+       OR (billing_class IS NOT NULL AND (strpos(billing_class, chr(13)) > 0 OR strpos(billing_class, chr(10)) > 0))
+       OR (setting IS NOT NULL AND (strpos(setting, chr(13)) > 0 OR strpos(setting, chr(10)) > 0))
+       OR (negotiation_arrangement IS NOT NULL AND (strpos(negotiation_arrangement, chr(13)) > 0 OR strpos(negotiation_arrangement, chr(10)) > 0))
+    UNION ALL
+    SELECT 1
+    FROM standard_facts AS fact
+    CROSS JOIN UNNEST(fact.billing_code_modifiers) AS item(value)
+    WHERE item.value IS NOT NULL
+      AND (strpos(item.value, chr(13)) > 0 OR strpos(item.value, chr(10)) > 0)
+    UNION ALL
+    SELECT 1
+    FROM standard_facts AS fact
+    CROSS JOIN UNNEST(fact.service_codes) AS item(value)
+    WHERE item.value IS NOT NULL
+      AND (strpos(item.value, chr(13)) > 0 OR strpos(item.value, chr(10)) > 0)
+    UNION ALL
+    SELECT 1
+    FROM standard_facts AS fact
+    CROSS JOIN UNNEST(fact.network_names) AS item(value)
+    WHERE item.value IS NOT NULL
+      AND (strpos(item.value, chr(13)) > 0 OR strpos(item.value, chr(10)) > 0)
+    UNION ALL
+    SELECT 1
+    FROM reachable_npis AS reachable
+    JOIN provider_taxonomies_source AS taxonomy ON taxonomy.npi = reachable.npi
+    WHERE taxonomy.taxonomy_code IS NOT NULL
+      AND (strpos(taxonomy.taxonomy_code, chr(13)) > 0 OR strpos(taxonomy.taxonomy_code, chr(10)) > 0)
+    UNION ALL
+    SELECT 1
+    FROM reachable_npis AS reachable
+    JOIN providers_source AS provider ON provider.npi = reachable.npi
+    WHERE (provider.state IS NOT NULL AND (strpos(provider.state, chr(13)) > 0 OR strpos(provider.state, chr(10)) > 0))
+       OR (provider.city IS NOT NULL AND (strpos(provider.city, chr(13)) > 0 OR strpos(provider.city, chr(10)) > 0))
+       OR (provider.city IS NOT NULL AND provider.city <> '' AND provider.city <> lower(provider.city))
+)
+SELECT CASE
+    WHEN EXISTS (SELECT 1 FROM invalid_values)
+    THEN error('filter_catalog_value_invalid')
+    ELSE 1
+END AS ok;
+
+SELECT
+    'summary' AS dataset,
+    CAST(COUNT(*) AS BIGINT) AS standard_fact_count
+FROM standard_facts
+CROSS JOIN warehouse_guard
+CROSS JOIN value_guard;
+
+WITH labels AS (
+    SELECT billing_code_type, billing_code, 'version' AS label_kind, billing_code_type_version AS label
+    FROM standard_facts
+    WHERE billing_code_type_version IS NOT NULL
+      AND trim(billing_code_type_version, chr(32) || chr(9) || chr(13) || chr(10) || chr(11) || chr(12)) <> ''
+    UNION ALL
+    SELECT billing_code_type, billing_code, 'name', service_name
+    FROM standard_facts
+    WHERE service_name IS NOT NULL
+      AND trim(service_name, chr(32) || chr(9) || chr(13) || chr(10) || chr(11) || chr(12)) <> ''
+    UNION ALL
+    SELECT billing_code_type, billing_code, 'description', service_description
+    FROM standard_facts
+    WHERE service_description IS NOT NULL
+      AND trim(service_description, chr(32) || chr(9) || chr(13) || chr(10) || chr(11) || chr(12)) <> ''
+), label_counts AS (
+    SELECT billing_code_type, billing_code, label_kind, label, COUNT(*) AS label_count
+    FROM labels
+    GROUP BY billing_code_type, billing_code, label_kind, label
+), ranked_labels AS (
+    SELECT *, ROW_NUMBER() OVER (
+        PARTITION BY billing_code_type, billing_code, label_kind
+        ORDER BY label_count DESC, label COLLATE "C"
+    ) AS rank
+    FROM label_counts
+), codes AS (
+    SELECT
+        billing_code_type,
+        billing_code,
+        COUNT(*) AS observation_count,
+        SUM(CASE WHEN billing_code_modifiers IS NULL OR len(billing_code_modifiers) = 0 THEN 1 ELSE 0 END) AS unmodified_observation_count
+    FROM standard_facts
+    GROUP BY billing_code_type, billing_code
+)
+SELECT
+    'billing_codes' AS dataset,
+    codes.billing_code_type,
+    codes.billing_code,
+    version.label AS billing_code_type_version,
+    name.label AS warehouse_service_name,
+    description.label AS warehouse_service_description,
+    CAST(codes.observation_count AS BIGINT) AS observation_count,
+    CAST(codes.unmodified_observation_count AS BIGINT) AS unmodified_observation_count
+FROM codes
+LEFT JOIN ranked_labels AS version
+  ON version.billing_code_type = codes.billing_code_type
+ AND version.billing_code = codes.billing_code
+ AND version.label_kind = 'version'
+ AND version.rank = 1
+LEFT JOIN ranked_labels AS name
+  ON name.billing_code_type = codes.billing_code_type
+ AND name.billing_code = codes.billing_code
+ AND name.label_kind = 'name'
+ AND name.rank = 1
+LEFT JOIN ranked_labels AS description
+  ON description.billing_code_type = codes.billing_code_type
+ AND description.billing_code = codes.billing_code
+ AND description.label_kind = 'description'
+ AND description.rank = 1
+CROSS JOIN warehouse_guard
+CROSS JOIN value_guard
+ORDER BY codes.billing_code_type COLLATE "C", codes.billing_code COLLATE "C";
+
+WITH modifier_values AS (
+    SELECT DISTINCT output_id, price_id, billing_code_type, billing_code, item.value AS filter_value
+    FROM standard_facts AS fact
+    CROSS JOIN UNNEST(fact.billing_code_modifiers) AS item(value)
+    WHERE item.value IS NOT NULL AND item.value <> ''
+), place_values AS (
+    SELECT DISTINCT output_id, price_id, billing_code_type, billing_code, item.value AS filter_value
+    FROM standard_facts AS fact
+    CROSS JOIN UNNEST(fact.service_codes) AS item(value)
+    WHERE item.value IS NOT NULL AND item.value <> ''
+), class_values AS (
+    SELECT DISTINCT output_id, price_id, billing_code_type, billing_code, billing_class AS filter_value
+    FROM standard_facts
+    WHERE billing_class IS NOT NULL AND billing_class <> ''
+), setting_values AS (
+    SELECT DISTINCT output_id, price_id, billing_code_type, billing_code, setting AS filter_value
+    FROM standard_facts
+    WHERE setting IS NOT NULL AND setting <> ''
+), arrangement_values AS (
+    SELECT DISTINCT output_id, price_id, billing_code_type, billing_code, negotiation_arrangement AS filter_value
+    FROM standard_facts
+    WHERE negotiation_arrangement IS NOT NULL AND negotiation_arrangement <> ''
+), values_by_kind AS (
+    SELECT billing_code_type, billing_code, 'modifier' AS filter_kind, filter_value FROM modifier_values
+    UNION ALL
+    SELECT billing_code_type, billing_code, 'place_of_service', filter_value FROM place_values
+    UNION ALL
+    SELECT billing_code_type, billing_code, 'billing_class', filter_value FROM class_values
+    UNION ALL
+    SELECT billing_code_type, billing_code, 'setting', filter_value FROM setting_values
+    UNION ALL
+    SELECT billing_code_type, billing_code, 'negotiation_arrangement', filter_value FROM arrangement_values
+)
+SELECT
+    'code_filter_values' AS dataset,
+    billing_code_type,
+    billing_code,
+    filter_kind,
+    filter_value,
+    CASE WHEN filter_kind = 'place_of_service' AND filter_value = 'CSTM-00'
+         THEN 'Broad or unspecified place of service'
+         ELSE filter_value
+    END AS display_label,
+    CAST(COUNT(*) AS BIGINT) AS observation_count
+FROM values_by_kind
+CROSS JOIN warehouse_guard
+CROSS JOIN value_guard
+GROUP BY billing_code_type, billing_code, filter_kind, filter_value
+ORDER BY billing_code_type COLLATE "C", billing_code COLLATE "C", filter_kind COLLATE "C", filter_value COLLATE "C";
+
+WITH network_values AS (
+    SELECT DISTINCT output_id, price_id, billing_code_type, billing_code, item.value AS network_name
+    FROM standard_facts AS fact
+    CROSS JOIN UNNEST(fact.network_names) AS item(value)
+    WHERE item.value IS NOT NULL AND item.value <> ''
+)
+SELECT
+    'output_code_networks' AS dataset,
+    output_id,
+    billing_code_type,
+    billing_code,
+    network_name,
+    CAST(COUNT(*) AS BIGINT) AS observation_count
+FROM network_values
+CROSS JOIN warehouse_guard
+CROSS JOIN value_guard
+GROUP BY output_id, billing_code_type, billing_code, network_name
+ORDER BY output_id COLLATE "C", billing_code_type COLLATE "C", billing_code COLLATE "C", network_name COLLATE "C";
+
+WITH taxonomy_values AS (
+    SELECT DISTINCT reachable.npi, taxonomy.taxonomy_code AS filter_value
+    FROM reachable_npis AS reachable
+    JOIN provider_taxonomies_source AS taxonomy ON taxonomy.npi = reachable.npi
+    WHERE taxonomy.taxonomy_code IS NOT NULL AND taxonomy.taxonomy_code <> ''
+), state_values AS (
+    SELECT DISTINCT reachable.npi, provider.state AS filter_value
+    FROM reachable_npis AS reachable
+    JOIN providers_source AS provider ON provider.npi = reachable.npi
+    WHERE provider.state IS NOT NULL AND provider.state <> ''
+), city_values AS (
+    SELECT DISTINCT reachable.npi, provider.state AS parent_value, provider.city AS filter_value
+    FROM reachable_npis AS reachable
+    JOIN providers_source AS provider ON provider.npi = reachable.npi
+    WHERE provider.state IS NOT NULL AND provider.state <> ''
+      AND provider.city IS NOT NULL AND provider.city <> ''
+), provider_values AS (
+    SELECT 'taxonomy' AS filter_kind, '' AS parent_value, filter_value, npi FROM taxonomy_values
+    UNION ALL
+    SELECT 'state', '', filter_value, npi FROM state_values
+    UNION ALL
+    SELECT 'city', parent_value, filter_value, npi FROM city_values
+)
+SELECT
+    'provider_filter_values' AS dataset,
+    filter_kind,
+    parent_value,
+    filter_value,
+    CAST(COUNT(DISTINCT npi) AS BIGINT) AS provider_count
+FROM provider_values
+CROSS JOIN warehouse_guard
+CROSS JOIN value_guard
+GROUP BY filter_kind, parent_value, filter_value
+ORDER BY filter_kind COLLATE "C", parent_value COLLATE "C", filter_value COLLATE "C";

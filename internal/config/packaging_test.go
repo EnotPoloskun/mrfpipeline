@@ -28,9 +28,38 @@ func readRepositoryFile(t *testing.T, name string) string {
 
 func TestLocalPackagingContract(t *testing.T) {
 	dockerfile := readRepositoryFile(t, "Dockerfile")
-	for _, fragment := range []string{"--mount=type=ssh", "CGO_ENABLED=0 go build", "/usr/local/bin/mrfpipeline"} {
+	for _, fragment := range []string{
+		"--mount=type=ssh",
+		"CGO_ENABLED=0 go build",
+		"/usr/local/bin/mrfpipeline",
+		"FROM debian:bookworm-slim AS duckdb",
+		"ARG TARGETARCH",
+		"duckdb_cli-linux-amd64.zip",
+		"duckdb_cli-linux-arm64.zip",
+		"08c0ca117111fcede14239d0093792352befdc174218c344d232c13279643d05",
+		"02163197027a42149147364d31fa67cac82108517a4be43304a1cc226eaef07a",
+		"sha256sum --check --status",
+		"duckdb_version='v1.5.5'",
+		"duckdb_reported_version",
+		"install -d /out",
+		"/out/duckdb",
+		"COPY --from=duckdb /out/duckdb /usr/local/bin/duckdb",
+		"apt-get install --no-install-recommends --yes ca-certificates",
+		"apt-get clean",
+		"rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*",
+	} {
 		if !strings.Contains(dockerfile, fragment) {
 			t.Fatalf("Dockerfile missing %q", fragment)
+		}
+	}
+	runtimeStart := strings.LastIndex(dockerfile, "\nFROM debian:bookworm-slim\n")
+	if runtimeStart < 0 {
+		t.Fatal("Dockerfile missing final slim runtime stage")
+	}
+	runtime := dockerfile[runtimeStart:]
+	for _, forbidden := range []string{"curl", "unzip", "sha256sum", "github.com/duckdb/duckdb/releases"} {
+		if strings.Contains(runtime, forbidden) {
+			t.Fatalf("runtime stage retains build-only content %q", forbidden)
 		}
 	}
 

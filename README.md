@@ -59,15 +59,16 @@ and not every warehouse output that happens to share an active payer/month.
 Query planning, partition pruning, and performance acceptance belong to that
 query service and the consumer.
 
-## Release filter catalogs: Story 28 implemented; Stories 29–32 planned
+## Release filter catalogs: Stories 28–29 implemented; Stories 30–32 planned
 
 Story 28's additive migration implements the empty `mrfweb` schema, catalog
-tables, and stable active views. Stories 29–32 remain approved requirements,
-not current commands or runtime behavior. They keep `mrfconsumer` and its
-`2.0.0` warehouse unchanged. The later stories will scan one exact
-current/prospective publication generation with a pinned read-only DuckDB
-`1.5.5` CLI, populate compact filter rows, and require the matching catalog
-before publishing that generation. No catalog rows are populated by Story 28.
+tables, and stable active views. Story 29 adds the concrete read-only
+`internal/filtercatalog` boundary: it resolves the pinned DuckDB `1.5.5` CLI,
+reads one exact `2.0.0` warehouse output relation, and returns deterministic
+typed filter rows. Stories 30–32 remain approved requirements, not current
+commands or runtime behavior. Story 29 keeps `mrfconsumer` and its warehouse
+unchanged and does not populate catalog rows. Control, MRF, and consumer River
+workers never invoke this boundary.
 
 Story 27 publication remains incremental. A catalog is therefore keyed by
 `(payer_id, collection_month, publication_generation)`, not payer/month alone.

@@ -65,6 +65,24 @@ func InspectCatalog(path string) (CatalogID, error) {
 	return id, nil
 }
 
+// InspectCatalogIdentity reads the pinned provider-catalog identity from its
+// manifest after validating the catalog directory and manifest file boundary.
+func InspectCatalogIdentity(path string) (schemaVersion int64, releaseMonth string, err error) {
+	catalog, err := InspectCatalog(path)
+	if err != nil {
+		return 0, "", err
+	}
+	data, err := readRegularFile(filepath.Join(catalog.Path, fileManifest))
+	if err != nil {
+		return 0, "", err
+	}
+	identity, err := decodeProviderCatalogManifest(data)
+	if err != nil {
+		return 0, "", err
+	}
+	return identity.SchemaVersion, identity.ReleaseMonth, nil
+}
+
 func (c CatalogID) same(other CatalogID) bool {
 	if !c.ok || !other.ok || c.Path != other.Path {
 		return false

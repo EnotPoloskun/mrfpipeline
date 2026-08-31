@@ -2,16 +2,16 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–28 architecture and the
-approved, not-yet-implemented Stories 29–32 release-filter target. The numbered
+This document describes the implemented Stories 01–29 architecture and the
+approved, not-yet-implemented Stories 30–32 release-filter target. The numbered
 requirement stories remain authoritative where they are more specific.
 Sections below the approved contract that are explicitly labeled historical
 version 1 are retained as background only; they are not current runtime
 guidance. The Stories 14–27 requirements and current README describe the
-implemented rebuild-only feed-free operation. Story 28 adds only its database
-contract; the planned section below describes Stories 29–32 without claiming
-their commands or catalog population, activation, or web behavior currently
-exist.
+implemented rebuild-only feed-free operation. Stories 28–29 add the database
+contract and concrete read-only extraction boundary; the planned section below
+describes Stories 30–32 without claiming their commands or catalog population,
+activation, or web behavior currently exist.
 
 The design records the implemented version 1 decisions that remain normative
 except where the target addendum explicitly replaces them:
@@ -138,20 +138,20 @@ The target remains UHC-only for production discovery. Generic payer columns
 and per-payer release state prepare the domain/query boundary for later payer
 adapters without claiming they exist now.
 
-## Release filter architecture: Story 28 implemented; Stories 29–32 planned
+## Release filter architecture: Stories 28–29 implemented; Stories 30–32 planned
 
 The approved next sequence is:
 
 - [Story 28: Release filter catalog database contract](28-release-filter-catalog-database-contract.md) (implemented schema and views)
-- [Story 29: Release filter warehouse extraction](29-release-filter-warehouse-extraction.md) (proposed)
+- [Story 29: Release filter warehouse extraction](29-release-filter-warehouse-extraction.md) (implemented typed read-only boundary)
 - [Story 30: Release filter catalog population](30-release-filter-catalog-population.md) (proposed)
 - [Story 31: Filter-aware release publication](31-filter-aware-release-publication.md) (proposed)
 - [Story 32: Filter catalog operational acceptance](32-filter-catalog-operational-acceptance.md) (proposed)
 
 Story 28 adds no web server, query UI, catalog population, or activation
-behavior. It provides the empty, generation-scoped PostgreSQL schema and
-fail-closed active views that later stories will populate and use. Stories
-29–32 prepare one compact catalog that a future public Go/HTML process can
+behavior. Story 29 adds no command or worker stage: its concrete extractor
+resolves DuckDB only when called by a future explicit build operation. Stories
+30–32 will prepare one compact catalog that a future public Go/HTML process can
 read without expanding Parquet lists during an HTTP request.
 
 ### Ownership and data flow
@@ -316,7 +316,7 @@ mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
 mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
 ```
 
-They remain unavailable until Stories 29–32 are implemented.
+They remain unavailable until Stories 30–32 are implemented.
 
 `filters build` uses the complete database candidate gate and the same
 published/publishable predicates as activation. It copies/sorts outputs for the
@@ -1612,14 +1612,14 @@ Stories 14–27 are the implemented rebuild-only sequence:
 | 26 | Delete leftover `mrf.download` and `toc.download` bytes on River UI cancel, retry exhaustion, and HTTP 404, then release an empty MRF slot. |
 | 27 | Persist additive active-output membership, publish numeric partial checkpoints, omit terminal file failures, and keep known MRF work running. |
 
-Story 28's schema contract is implemented. Stories 29–32 are the remaining
-approved release-filter sequence and remain proposed until their
-implementations and Story 32 convergence land:
+Stories 28–29 are implemented. Stories 30–32 are the remaining approved
+release-filter sequence and remain proposed until their implementations and
+Story 32 convergence land:
 
 | Story | Deliverable |
 |---:|---|
 | 28 | Add the versioned `mrfweb` PostgreSQL schema, immutable generation catalogs, exact outputs, code/filter/plan/network/provider tables, and fail-closed active serving views. |
-| 29 | Package pinned DuckDB 1.5.5 and extract deterministic release-scoped billing, option, output/code/network, and provider rows from exact consumer 2.0.0 outputs without warehouse mutation. |
+| 29 | Package pinned DuckDB 1.5.5 and extract deterministic release-scoped billing, option, output/code/network, and provider rows from exact consumer 2.0.0 outputs without warehouse mutation. (Implemented.) |
 | 30 | Add explicit `filters build/status`, exact candidate fingerprints, canonical plan projection, advisory-lock serialization, atomic ready publication, and idempotent retry. |
 | 31 | Require an exact ready catalog in incremental activation, publish output membership and catalog atomically, support cutover/rollback, and audit fail-closed active handoff. |
 | 32 | Prove synthetic end-to-end semantics, failure/crash/redaction, read-only access, Docker packaging, rollback, and descriptive real-warehouse performance; converge operator documentation. |

@@ -34,6 +34,15 @@ func (c catalogIdentity) equal(other catalogIdentity) bool {
 	return c.SchemaVersion == other.SchemaVersion && c.ReleaseMonth == other.ReleaseMonth
 }
 
+// RecognizedCatalog returns the pinned provider-catalog identity for a
+// recognized consumer warehouse.
+func (ws WarehouseState) RecognizedCatalog() (schemaVersion int64, releaseMonth string, ok bool) {
+	if ws.Kind != warehouseRecognized {
+		return 0, "", false
+	}
+	return ws.Catalog.SchemaVersion, ws.Catalog.ReleaseMonth, true
+}
+
 // InspectWarehouse accepts absent, empty real dir, or a real dir whose
 // warehouse.json is exact consumer 2.0.0. It does not require catalog copy or seed.
 func InspectWarehouse(path string) (WarehouseState, error) {
