@@ -35,6 +35,10 @@ var allowedPhases = map[string]bool{
 	"provider_relationships":   true,
 	"rate_facts":               true,
 	"publishing":               true,
+	"catalog_candidate":        true,
+	"catalog_extraction":       true,
+	"catalog_plans":            true,
+	"catalog_population":       true,
 }
 
 type safeHandler struct {

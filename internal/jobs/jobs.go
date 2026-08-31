@@ -80,6 +80,13 @@ const (
 	FailureFilterCatalogValueInvalid         = "filter_catalog_value_invalid"
 	FailureFilterCatalogProtocolInvalid      = "filter_catalog_protocol_invalid"
 	FailureFilterCatalogCancelled            = "filter_catalog_cancelled"
+	FailureFilterCatalogBusy                 = "filter_catalog_busy"
+	FailureFilterCatalogReleaseNotReady      = "filter_catalog_release_not_ready"
+	FailureFilterCatalogPublishedMismatch    = "filter_catalog_published_mismatch"
+	FailureFilterCatalogPlanInvalid          = "filter_catalog_plan_invalid"
+	FailureFilterCatalogPopulationFailed     = "filter_catalog_population_failed"
+	FailureFilterCatalogDatabaseFailed       = "filter_catalog_database_failed"
+	FailureFilterCatalogInconsistent         = "filter_catalog_inconsistent"
 	// FailureJobBookkeeping is emitted only in logs when retry or terminal
 	// bookkeeping cannot be persisted. It is not a domain failure code.
 	FailureJobBookkeeping = "job_bookkeeping_failed"
@@ -142,7 +149,9 @@ func allowedFailureCode(code string) bool {
 		FailureRuntimeRootMismatch, FailureSourceTargetDecrease, FailureSourceTargetConflict, FailureSourceTargetUnset,
 		FailureFilterCatalogConfigInvalid, FailureFilterCatalogWarehouseInvalid, FailureFilterCatalogDuckDBUnavailable,
 		FailureFilterCatalogDuckDBVersionInvalid, FailureFilterCatalogQueryFailed, FailureFilterCatalogValueInvalid,
-		FailureFilterCatalogProtocolInvalid, FailureFilterCatalogCancelled:
+		FailureFilterCatalogProtocolInvalid, FailureFilterCatalogCancelled, FailureFilterCatalogBusy,
+		FailureFilterCatalogReleaseNotReady, FailureFilterCatalogPublishedMismatch, FailureFilterCatalogPlanInvalid,
+		FailureFilterCatalogPopulationFailed, FailureFilterCatalogDatabaseFailed, FailureFilterCatalogInconsistent:
 
 		return true
 	default:

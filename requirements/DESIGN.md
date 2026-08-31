@@ -2,16 +2,16 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–29 architecture and the
-approved, not-yet-implemented Stories 30–32 release-filter target. The numbered
+This document describes the implemented Stories 01–30 architecture and the
+approved, not-yet-implemented Stories 31–32 release-filter target. The numbered
 requirement stories remain authoritative where they are more specific.
 Sections below the approved contract that are explicitly labeled historical
 version 1 are retained as background only; they are not current runtime
 guidance. The Stories 14–27 requirements and current README describe the
-implemented rebuild-only feed-free operation. Stories 28–29 add the database
-contract and concrete read-only extraction boundary; the planned section below
-describes Stories 30–32 without claiming their commands or catalog population,
-activation, or web behavior currently exist.
+implemented rebuild-only feed-free operation. Stories 28–30 add the database
+contract, concrete read-only extraction boundary, and explicit catalog
+population/status boundary; the planned section below describes the remaining
+Story 31–32 publication and web behavior.
 
 The design records the implemented version 1 decisions that remain normative
 except where the target addendum explicitly replaces them:
@@ -138,21 +138,21 @@ The target remains UHC-only for production discovery. Generic payer columns
 and per-payer release state prepare the domain/query boundary for later payer
 adapters without claiming they exist now.
 
-## Release filter architecture: Stories 28–29 implemented; Stories 30–32 planned
+## Release filter architecture: Stories 28–30 implemented; Stories 31–32 planned
 
-The approved next sequence is:
+The approved sequence is:
 
 - [Story 28: Release filter catalog database contract](28-release-filter-catalog-database-contract.md) (implemented schema and views)
 - [Story 29: Release filter warehouse extraction](29-release-filter-warehouse-extraction.md) (implemented typed read-only boundary)
-- [Story 30: Release filter catalog population](30-release-filter-catalog-population.md) (proposed)
+- [Story 30: Release filter catalog population](30-release-filter-catalog-population.md) (implemented build/status boundary)
 - [Story 31: Filter-aware release publication](31-filter-aware-release-publication.md) (proposed)
 - [Story 32: Filter catalog operational acceptance](32-filter-catalog-operational-acceptance.md) (proposed)
 
-Story 28 adds no web server, query UI, catalog population, or activation
-behavior. Story 29 adds no command or worker stage: its concrete extractor
-resolves DuckDB only when called by a future explicit build operation. Stories
-30–32 will prepare one compact catalog that a future public Go/HTML process can
-read without expanding Parquet lists during an HTTP request.
+Story 28 adds no web server or query UI. Story 29 adds no command or worker
+stage. Story 30 adds only explicit synchronous `filters build` and
+database-only `filters status`; it does not activate releases. Stories 31–32
+will complete the catalog-aware publication and future public process without
+expanding Parquet lists during an HTTP request.
 
 ### Ownership and data flow
 
@@ -309,21 +309,30 @@ query service.
 
 ### Explicit build boundary
 
-The proposed commands are:
+The implemented Story 30 commands are:
 
 ```text
 mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
 mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
 ```
 
-They remain unavailable until Stories 30–32 are implemented.
-
+They remain an explicit build-before-activate runbook until Story 31 makes
+catalog readiness part of publication. `filters status` is database-only.
 `filters build` uses the complete database candidate gate and the same
-published/publishable predicates as activation. It copies/sorts outputs for the
-fingerprint and captures the exact semantic plan/output plus attachment
+published/publishable predicates as activation. It copies/sorts outputs for
+the fingerprint and captures the exact semantic plan/output plus attachment
 readiness relation before extraction, then rereads it before ready publication.
 Timestamp-only changes do not matter; semantic changes fail the build, and
 activation compares the relation once more under release locks.
+
+Until Story 31 lands, the operator runbook is:
+
+1. Finish discovery/TOC inventory and resolve consumer or attachment
+   publication failures.
+2. Inspect the database-only candidate with `filters status`.
+3. Run `filters build` and confirm a sanitized `ready` result.
+4. Run the existing `month activate`; Story 31 will later require and promote
+   the exact ready catalog.
 
 One domain-separated stable 64-bit advisory-lock hash serializes a build per
 payer/month. A mathematical collision may conservatively return false busy but

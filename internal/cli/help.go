@@ -16,16 +16,19 @@ Usage:
   mrfpipeline month status [--payer <payer> --collection-month <YYYY-MM>]
   mrfpipeline month sources set-total --payer <payer> --collection-month <YYYY-MM> --total <N|all>
   mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
   mrfpipeline --help
   mrfpipeline --version
 
 Commands:
-  migrate    Apply application and River database migrations
-  work       Run background workers
-  discover   Enqueue one bounded UHC discovery run
-  reconcile  Repair building-release gaps and report sealed inconsistencies
-  retry      Reopen one exact failed stage with a fresh River series
-  month      Inspect and activate monthly serving releases
+  migrate   Apply application and River database migrations
+  work      Run background workers
+  discover  Enqueue one bounded UHC discovery run
+  reconcile Repair building-release gaps and report sealed inconsistencies
+  retry     Reopen one exact failed stage with a fresh River series
+  month     Inspect and activate monthly serving releases
+  filters   Build and inspect release filter catalogs
 `
 
 const migrateHelp = `Usage:
@@ -177,6 +180,33 @@ Increase the cumulative MRF source admission target for a building release.
 The target cannot be decreased and all cannot be changed back to a number.
 `
 
+const filtersHelp = `Usage:
+  mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline filters --help
+
+Build or inspect the exact filter catalog for a release publication
+generation. Build is synchronous and does not activate the release.
+`
+
+const filtersBuildHelp = `Usage:
+  mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline filters build --help
+
+Build one complete ready PostgreSQL filter catalog for the exact current or
+prospective publication generation. The command does not activate a release.
+It requires the database, artifact root, warehouse, provider catalog, and
+services paths.
+`
+
+const filtersStatusHelp = `Usage:
+  mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline filters status --help
+
+Read current publication and filter-catalog state from PostgreSQL only.
+This command does not inspect warehouse files or run DuckDB.
+`
+
 func helpFor(command string) string {
 	switch command {
 	case cmdMigrate:
@@ -191,6 +221,8 @@ func helpFor(command string) string {
 		return retryHelp
 	case cmdMonth:
 		return monthHelp
+	case cmdFilters:
+		return filtersHelp
 	default:
 		return rootHelp
 	}

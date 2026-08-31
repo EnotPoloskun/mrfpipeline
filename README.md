@@ -5,11 +5,11 @@ processing, warehouse ingestion, and additive plan attachment.
 
 Version 1 is implemented through Stories 01–27 in
 [`requirements/`](requirements/). Story 28's versioned `mrfweb` database
-schema and stable active views are implemented; proposed Stories
-[29](requirements/29-release-filter-warehouse-extraction.md) through
-[32](requirements/32-filter-catalog-operational-acceptance.md) specify the
-remaining release-generation filter-catalog behavior for a future public
-query service.
+schema and stable active views, Story 29's typed warehouse extractor, and
+Story 30's explicit filter catalog build/status commands are implemented.
+Proposed Stories
+31 and 32 specify filter-aware publication and final operational acceptance
+for a future public query service.
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
@@ -59,16 +59,17 @@ and not every warehouse output that happens to share an active payer/month.
 Query planning, partition pruning, and performance acceptance belong to that
 query service and the consumer.
 
-## Release filter catalogs: Stories 28–29 implemented; Stories 30–32 planned
+## Release filter catalogs: Stories 28–30 implemented; Stories 31–32 planned
 
 Story 28's additive migration implements the empty `mrfweb` schema, catalog
 tables, and stable active views. Story 29 adds the concrete read-only
 `internal/filtercatalog` boundary: it resolves the pinned DuckDB `1.5.5` CLI,
 reads one exact `2.0.0` warehouse output relation, and returns deterministic
-typed filter rows. Stories 30–32 remain approved requirements, not current
-commands or runtime behavior. Story 29 keeps `mrfconsumer` and its warehouse
-unchanged and does not populate catalog rows. Control, MRF, and consumer River
-workers never invoke this boundary.
+typed filter rows. Story 30 adds explicit synchronous `filters build` and
+database-only `filters status`; Story 31–32 remain approved requirements for
+filter-aware publication and operational acceptance. Story 29 keeps
+`mrfconsumer` and its warehouse unchanged. Control, MRF, and consumer River
+workers never invoke the extractor or catalog builder.
 
 Story 27 publication remains incremental. A catalog is therefore keyed by
 `(payer_id, collection_month, publication_generation)`, not payer/month alone.
@@ -76,8 +77,7 @@ Generation 1 may contain the first ready subset; a later explicit checkpoint
 builds generation 2 over every previously published output plus newly
 plan-ready outputs. Published catalogs remain immutable for rollback and
 in-flight future query state.
-
-The planned catalog contains:
+The Story 30 catalog contains:
 
 - exact catalog outputs and their fingerprint;
 - available CPT/HCPCS code pairs, source-provided warehouse labels, standard
@@ -134,14 +134,22 @@ omitting that payer. Output membership, publication generation, and matching
 catalog become visible atomically. The future process validates one complete
 candidate, loads matching filters, and replaces one immutable serving-state
 pointer; the pipeline does not implement HTTP, HTML, public queries, polling,
-or that manual switch command in Stories 28–32.
+or that manual web control in Stories 30–32.
 
-Existing Story 27 state uses a quiesced cutover: stop roles, publish one final
-ready subset with the pre-Story-31 activation path, build the now-current
-catalog, deploy catalog-aware activation, promote the exact ready catalog, then
-restart roles. No special backfill/force mode or automatic membership repair is
-added. Historical strict activation membership is trusted but revalidated;
-violations fail as catalog inconsistency.
+Until Story 31's catalog-aware activation is implemented, treat the following
+as a planned build-before-activate runbook rather than a complete publication
+command:
+
+1. Finish the intended discovery/TOC inventory and resolve consumer and plan
+   attachment failures.
+2. Inspect database-only state with `filters status`.
+3. Run `filters build` and confirm its sanitized JSON reports `ready`.
+4. Run the existing `month activate` command; Story 31 will later require and
+   promote the exact ready catalog.
+
+No special backfill/force mode or automatic membership repair is added.
+Historical strict activation membership is trusted but revalidated; violations
+fail as catalog inconsistency.
 
 The remaining sections describe the current feed-free commands and operational
 contract. Historical Story 01–13 databases and `mrfconsumer 1.5.0` warehouses

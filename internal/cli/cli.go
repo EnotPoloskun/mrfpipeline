@@ -19,6 +19,7 @@ import (
 	"github.com/enotpoloskun/mrfpipeline/internal/consumeringest"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/discovery"
+	"github.com/enotpoloskun/mrfpipeline/internal/filtercatalog"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/mrfparse"
 	"github.com/enotpoloskun/mrfpipeline/internal/reconcile"
@@ -37,10 +38,13 @@ const (
 	cmdReconcile         = "reconcile"
 	cmdRetry             = "retry"
 	cmdMonth             = "month"
+	cmdFilters           = "filters"
 	monthStatus          = "status"
 	monthActivate        = "activate"
 	monthSources         = "sources"
 	monthSourcesSetTotal = "set-total"
+	filtersBuild         = "build"
+	filtersStatus        = "status"
 )
 
 // Main is the process entry: signals, os.Args, and standard streams.
@@ -98,8 +102,15 @@ func execute(ctx context.Context, args []string, getenv func(string) string) (st
 			text, opErr = runMonthActivate(ctx, getenv, parsed.payer, parsed.month)
 		case monthSourcesSetTotal:
 			text, opErr = runMonthSetTotal(ctx, getenv, parsed.payer, parsed.month, parsed.total)
+		}
+	case cmdFilters:
+		switch parsed.filtersAction {
+		case filtersBuild:
+			text, opErr = runFiltersBuild(ctx, getenv, parsed.payer, parsed.month)
+		case filtersStatus:
+			text, opErr = runFiltersStatus(ctx, getenv, parsed.payer, parsed.month)
 		default:
-			return "", &usageError{command: cmdMonth, reason: "missing subcommand"}
+			return "", &usageError{command: cmdFilters, reason: "missing subcommand"}
 		}
 	default:
 		return "", &usageError{reason: "unknown command"}
@@ -551,6 +562,113 @@ func runMonthActivate(ctx context.Context, getenv func(string) string, payer, mo
 	return encodeJSON(result)
 }
 
+func runFiltersStatus(ctx context.Context, getenv func(string) string, payer, month string) (string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
+		return "", err
+	}
+	if err := config.ValidatePayerIdentifier(payer); err != nil {
+		return "", err
+	}
+	monthDate, err := parseMonthDate(month)
+	if err != nil {
+		return "", err
+	}
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.OperatorMaxConns)
+	if err != nil {
+		return "", err
+	}
+	defer pool.Close()
+	if err := database.ValidateCurrent(ctx, pool); err != nil {
+		return "", err
+	}
+	result, err := filtercatalog.Status(ctx, pool, payer, monthDate)
+	if err != nil {
+		return "", err
+	}
+	return encodeJSON(result)
+}
+
+func runFiltersBuild(ctx context.Context, getenv func(string) string, payer, month string) (string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
+		return "", err
+	}
+	if err := config.ValidatePayerIdentifier(payer); err != nil {
+		return "", err
+	}
+	monthDate, err := parseMonthDate(month)
+	if err != nil {
+		return "", err
+	}
+	art, err := config.NormalizeLocalPath(config.EnvArtifactRoot, getenv(config.EnvArtifactRoot))
+	if err != nil {
+		return "", err
+	}
+	warehouse, err := config.NormalizeLocalPath(config.EnvWarehousePath, getenv(config.EnvWarehousePath))
+	if err != nil {
+		return "", err
+	}
+	catalogPath, err := config.NormalizeLocalPath(config.EnvProviderCatalogPath, getenv(config.EnvProviderCatalogPath))
+	if err != nil {
+		return "", err
+	}
+	servicesPath, err := config.NormalizeLocalPath(config.EnvServicesPath, getenv(config.EnvServicesPath))
+	if err != nil {
+		return "", err
+	}
+	services, err := mrfparse.InspectServices(servicesPath)
+	if err != nil {
+		return "", err
+	}
+	catalog, err := consumeringest.InspectCatalog(catalogPath)
+	if err != nil {
+		return "", err
+	}
+	warehouseState, err := consumeringest.InspectWarehouse(warehouse)
+	if err != nil {
+		if consumeringest.IsPublicationUnreadable(err) {
+			return "", jobs.Failure(jobs.FailureArtifactReconciliationFailed)
+		}
+		return "", err
+	}
+	if err := artifact.CheckOverlap(art, warehouse, catalogPath, servicesPath); err != nil {
+		return "", err
+	}
+	if err := consumeringest.CheckWarehouseCatalog(warehouseState, catalog, art, services.Path); err != nil {
+		return "", err
+	}
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.OperatorMaxConns)
+	if err != nil {
+		return "", err
+	}
+	defer pool.Close()
+	if err := database.ValidateCurrent(ctx, pool); err != nil {
+		return "", err
+	}
+	result, err := filtercatalog.Build(ctx, filtercatalog.BuildParams{
+		Pool: pool, PayerID: payer, CollectionMonth: monthDate,
+		WarehousePath: warehouse, ProviderCatalogPath: catalogPath,
+		Preflight: func(targets []release.Target) error {
+			return reconcile.ValidateActivationTargets(ctx, pool, warehouse, payer, monthDate, targets)
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return encodeJSON(result)
+}
+
 func parseMonthDate(raw string) (time.Time, error) {
 	if err := config.ValidateCollectionMonth(raw); err != nil {
 		return time.Time{}, err
@@ -571,19 +689,20 @@ func encodeJSON(value any) (string, error) {
 }
 
 type parsed struct {
-	command     string
-	help        bool
-	helpText    string
-	version     bool
-	payer       string
-	month       string
-	limit       string
-	mrfLimit    string
-	total       string
-	role        string
-	stage       string
-	id          string
-	monthAction string
+	command       string
+	help          bool
+	helpText      string
+	version       bool
+	payer         string
+	month         string
+	limit         string
+	mrfLimit      string
+	total         string
+	role          string
+	stage         string
+	id            string
+	monthAction   string
+	filtersAction string
 }
 
 func parse(args []string) (parsed, error) {
@@ -603,7 +722,7 @@ func parse(args []string) (parsed, error) {
 		return parsed{version: true}, nil
 	}
 	switch args[0] {
-	case cmdMigrate, cmdWork, cmdDiscover, cmdReconcile, cmdRetry, cmdMonth:
+	case cmdMigrate, cmdWork, cmdDiscover, cmdReconcile, cmdRetry, cmdMonth, cmdFilters:
 		return parseCommand(args[0], args[1:])
 	default:
 		return parsed{}, &usageError{reason: "unknown command"}
@@ -640,9 +759,78 @@ func parseCommand(command string, rest []string) (parsed, error) {
 		return parsed{command: command, stage: stage, id: id}, nil
 	case cmdMonth:
 		return parseMonthCommand(rest)
+	case cmdFilters:
+		return parseFiltersCommand(rest)
 	default:
 		return parsed{}, &usageError{reason: "unknown command"}
 	}
+}
+
+func parseFiltersCommand(rest []string) (parsed, error) {
+	if len(rest) == 1 && rest[0] == "--help" {
+		return parsed{command: cmdFilters, help: true, helpText: filtersHelp}, nil
+	}
+	if len(rest) == 0 {
+		return parsed{}, &usageError{command: cmdFilters, reason: "missing subcommand"}
+	}
+	action := rest[0]
+	if len(rest) == 2 && rest[1] == "--help" {
+		switch action {
+		case filtersBuild:
+			return parsed{command: cmdFilters, filtersAction: action, help: true, helpText: filtersBuildHelp}, nil
+		case filtersStatus:
+			return parsed{command: cmdFilters, filtersAction: action, help: true, helpText: filtersStatusHelp}, nil
+		}
+	}
+	switch action {
+	case filtersBuild, filtersStatus:
+		payer, month, err := parseFiltersFlags("filters "+action, rest[1:])
+		if err != nil {
+			return parsed{}, err
+		}
+		return parsed{command: cmdFilters, filtersAction: action, payer: payer, month: month}, nil
+	default:
+		return parsed{}, &usageError{command: cmdFilters, reason: "unknown subcommand"}
+	}
+}
+
+func parseFiltersFlags(command string, rest []string) (payer, month string, err error) {
+	var havePayer, haveMonth bool
+	for i := 0; i < len(rest); {
+		arg := rest[i]
+		if arg == "--" || isSingleDash(arg) || !strings.HasPrefix(arg, "--") {
+			return "", "", &usageError{command: command, reason: "invalid argument"}
+		}
+		name, value, next, ferr := takeFlag(command, rest, i)
+		if ferr != nil {
+			return "", "", ferr
+		}
+		if value == "" {
+			return "", "", &usageError{command: command, reason: "empty flag argument"}
+		}
+		switch name {
+		case "payer":
+			if havePayer {
+				return "", "", &usageError{command: command, reason: "duplicate flag --payer"}
+			}
+			payer, havePayer = value, true
+		case "collection-month":
+			if haveMonth {
+				return "", "", &usageError{command: command, reason: "duplicate flag --collection-month"}
+			}
+			month, haveMonth = value, true
+		default:
+			return "", "", &usageError{command: command, reason: "unsupported flag"}
+		}
+		i = next
+	}
+	if !havePayer {
+		return "", "", &usageError{command: command, reason: "missing required flag --payer"}
+	}
+	if !haveMonth {
+		return "", "", &usageError{command: command, reason: "missing required flag --collection-month"}
+	}
+	return payer, month, nil
 }
 
 func parseMonthCommand(rest []string) (parsed, error) {
@@ -962,10 +1150,16 @@ func hint(command string) string {
 		return "Try 'mrfpipeline retry --help'."
 	case cmdMonth:
 		return "Try 'mrfpipeline month --help'."
+	case cmdFilters:
+		return "Try 'mrfpipeline filters --help'."
 	case "month status":
 		return "Try 'mrfpipeline month status --help'."
 	case "month activate":
 		return "Try 'mrfpipeline month activate --help'."
+	case "filters build":
+		return "Try 'mrfpipeline filters build --help'."
+	case "filters status":
+		return "Try 'mrfpipeline filters status --help'."
 	default:
 		return "Try 'mrfpipeline --help'."
 	}
