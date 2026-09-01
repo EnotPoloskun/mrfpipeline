@@ -4,12 +4,10 @@ Operator executable for CMS Transparency in Coverage discovery, TOC and MRF
 processing, warehouse ingestion, and additive plan attachment.
 
 Version 1 is implemented through Stories 01–27 in
-[`requirements/`](requirements/). Story 28's versioned `mrfweb` database
-schema and stable active views, Story 29's typed warehouse extractor, and
-Story 30's explicit filter catalog build/status commands are implemented.
-Proposed Stories
-31 and 32 specify filter-aware publication and final operational acceptance
-for a future public query service.
+[`requirements/`](requirements/). Stories 28–31 implement the versioned
+`mrfweb` schema, typed DuckDB extraction, explicit filter catalog
+build/status, and catalog-aware release publication. Proposed Story 32
+specifies final operational acceptance for a future public query service.
 [`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
 decisions that stay consistent across those stories.
 
@@ -59,44 +57,22 @@ and not every warehouse output that happens to share an active payer/month.
 Query planning, partition pruning, and performance acceptance belong to that
 query service and the consumer.
 
-## Release filter catalogs: Stories 28–30 implemented; Stories 31–32 planned
+## Release filter catalogs: Stories 28–31 implemented; Story 32 planned
 
-Story 28's additive migration implements the empty `mrfweb` schema, catalog
-tables, and stable active views. Story 29 adds the concrete read-only
-`internal/filtercatalog` boundary: it resolves the pinned DuckDB `1.5.5` CLI,
-reads one exact `2.0.0` warehouse output relation, and returns deterministic
-typed filter rows. Story 30 adds explicit synchronous `filters build` and
-database-only `filters status`; Story 31–32 remain approved requirements for
-filter-aware publication and operational acceptance. Story 29 keeps
-`mrfconsumer` and its warehouse unchanged. Control, MRF, and consumer River
-workers never invoke the extractor or catalog builder.
+Stories 28–31 implement the versioned `mrfweb` schema, typed read-only
+DuckDB extraction, explicit filter catalog build/status commands, and
+catalog-aware release publication. Story 32 remains the planned operational
+acceptance story.
 
-Story 27 publication remains incremental. A catalog is therefore keyed by
-`(payer_id, collection_month, publication_generation)`, not payer/month alone.
-Generation 1 may contain the first ready subset; a later explicit checkpoint
-builds generation 2 over every previously published output plus newly
-plan-ready outputs. Published catalogs remain immutable for rollback and
-in-flight future query state.
-The Story 30 catalog contains:
+The catalog is keyed by `(payer_id, collection_month, publication_generation)`.
+It stores exact output membership and fingerprint, source-provided billing
+labels and negotiated observation counts, code-scoped filter values,
+sponsor-independent canonical plans and plan/output relationships,
+output/code/network relationships, and release-reachable provider taxonomy,
+state, and state/city values. It stores no rates, ZIP/NPI directory,
+expiration filter, external code dictionary, or aggregate cube.
 
-- exact catalog outputs and their fingerprint;
-- available CPT/HCPCS code pairs, source-provided warehouse labels, standard
-  observation counts, and no-modifier counts;
-- code-scoped modifiers, places of service, billing classes, settings, and
-  negotiation arrangements;
-- sponsor-independent canonical plans and plan-to-output relationships;
-- output- and code-scoped networks, so a future plan selection exposes only
-  related networks for the selected code; and
-- release-reachable taxonomy, state, and state/city choices.
-
-It deliberately contains no negotiated-rate facts, medians, averages,
-percentiles, distributions, arbitrary filter combinations, ZIP list, NPI
-directory, or expiration filter. ZIP and NPI remain exact text inputs in the
-future web application. Source-provided billing labels are selected
-deterministically; an external licensed CPT/HCPCS reference catalog remains a
-separate future concern.
-
-The proposed operator flow is:
+The required operator flow is:
 
 ```text
 mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
@@ -106,55 +82,26 @@ mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
 mrfweb switch
 ```
 
-`filters status` is database-only and is not a warehouse/restore validation
-command. `filters build` does not activate a release. It captures a separate
-ASCII-output-sorted candidate set, exact semantic plan/output readiness, and a
-lowercase SHA-256 fingerprint; extracts filter values; rereads plans to detect
-meaningful concurrent changes; and atomically marks one catalog `ready`.
-Activation recomputes targets and canonical plan/output semantics under its
-existing release-row locks, applies fixed missing/not-ready/inconsistent/stale
-precedence, then runs warehouse preflight. A worker finishing another output or
-changing plan readiness after build makes the catalog stale; activation changes
-nothing, and the operator reruns `filters build`.
+`filters status` is database-only. `filters build` selects the exact current
+or prospective Story 27 checkpoint, snapshots plans/readiness, extracts
+deterministic values through pinned DuckDB, and atomically marks one catalog
+`ready`. Activation requires that exact ready catalog, compares complete
+output/plan sets under release locks, and commits membership, generation,
+release pointer, and catalog publication together. A stale race leaves all
+state unchanged; rerun `filters build` explicitly. Published generations are
+immutable and retained for rollback/in-flight query state. Inactive rollback
+reuses its exact current-generation catalog.
 
-No transaction spans DuckDB extraction. A domain-separated stable 64-bit
-advisory-lock hash serializes one build per payer/month; a hash collision may
-only cause safe false-busy. Graceful cancellation gets one detached five-second
-failure-cleanup attempt, while a crash may leave replaceable `building` state.
-No River job, worker, scheduler, heartbeat, Redis, search service, plan-set
-revision column, or automatic rebuild is added. Normal and incremental
-activation, terminal upstream failure omission, plan readiness, inactive
-rollback, and exact warehouse preflight retain Story 27 semantics.
-
-The future web process receives read-only access to globally fail-closed active
-views plus fixed parameterized SELECTs on published billing-code, option, plan,
-plan/output, output/code/network, and provider-filter tables. If any active
-payer lacks a valid catalog, no-selector handoff fails as a whole rather than
-omitting that payer. Output membership, publication generation, and matching
-catalog become visible atomically. The future process validates one complete
-candidate, loads matching filters, and replaces one immutable serving-state
-pointer; the pipeline does not implement HTTP, HTML, public queries, polling,
-or that manual web control in Stories 30–32.
-
-Until Story 31's catalog-aware activation is implemented, treat the following
-as a planned build-before-activate runbook rather than a complete publication
-command:
-
-1. Finish the intended discovery/TOC inventory and resolve consumer and plan
-   attachment failures.
-2. Inspect database-only state with `filters status`.
-3. Run `filters build` and confirm its sanitized JSON reports `ready`.
-4. Run the existing `month activate` command; Story 31 will later require and
-   promote the exact ready catalog.
-
-No special backfill/force mode or automatic membership repair is added.
-Historical strict activation membership is trusted but revalidated; violations
-fail as catalog inconsistency.
-
-The remaining sections describe the current feed-free commands and operational
-contract. Historical Story 01–13 databases and `mrfconsumer 1.5.0` warehouses
-are rebuild-only and are not migrated in place.
-
+Existing releases use the explicit quiesced cutover: stop workers, perform a
+final Story 27 checkpoint, build the now-current catalog, deploy catalog-aware
+activation, promote it, verify fail-closed status/views, then restart workers.
+No automatic builder, worker, queue, heartbeat, repair daemon, or force mode
+exists. Active catalog views and no-selector status fail closed globally when
+any active payer lacks an exact published current-generation catalog.
+Reconciliation reports `filter_catalog_backfill_required_count` and
+`sealed_release_inconsistency_count` without building, promoting, repairing,
+deleting, or running DuckDB. The future `mrfweb switch` operation remains
+outside this repository.
 ## Prerequisites
 
 - Go 1.26

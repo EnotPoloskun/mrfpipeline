@@ -553,8 +553,17 @@ func runMonthActivate(ctx context.Context, getenv func(string) string, payer, mo
 	if err := database.ValidateCurrent(ctx, pool); err != nil {
 		return "", err
 	}
-	result, err := release.Activate(ctx, pool, payer, monthDate, func(targets []release.Target) error {
-		return reconcile.ValidateActivationTargets(ctx, pool, warehouse, payer, monthDate, targets)
+	result, err := release.Activate(ctx, pool, payer, monthDate, func(targets []release.Target, schema int64, releaseMonth time.Time) error {
+		if err := reconcile.ValidateActivationTargets(ctx, pool, warehouse, payer, monthDate, targets); err != nil {
+			return err
+		}
+		warehouseSchema, warehouseMonth, recognized := warehouseState.RecognizedCatalog()
+		catalogSchema, catalogMonth, identityErr := consumeringest.InspectCatalogIdentity(catalog.Path)
+		parsedMonth, parseErr := time.Parse("2006-01", warehouseMonth)
+		if !recognized || identityErr != nil || catalogSchema != warehouseSchema || catalogMonth != warehouseMonth || schema != warehouseSchema || parseErr != nil || !parsedMonth.Equal(releaseMonth) {
+			return jobs.Failure(jobs.FailureFilterCatalogInconsistent)
+		}
+		return nil
 	})
 	if err != nil {
 		return "", err

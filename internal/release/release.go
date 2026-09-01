@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -61,6 +62,12 @@ type StatusReport struct {
 	ConsumerFailed            int64    `json:"consumer_failed"`
 	ConsumerSucceeded         int64    `json:"consumer_succeeded"`
 	Partial                   bool     `json:"partial"`
+	FilterCatalogReady        bool     `json:"filter_catalog_ready"`
+	FilterCatalogID           *int64   `json:"filter_catalog_id"`
+	FilterCatalogGeneration   *int64   `json:"filter_catalog_generation"`
+	FilterCatalogStatus       *string  `json:"filter_catalog_status"`
+	FilterCatalogOutputCount  *int64   `json:"filter_catalog_output_count"`
+	ProspectiveCandidateValid bool     `json:"prospective_candidate_valid"`
 }
 
 type ActivationResult struct {
@@ -72,6 +79,7 @@ type ActivationResult struct {
 	SkippedOutputCount       int64   `json:"skipped_output_count"`
 	TerminalFileFailureCount int64   `json:"terminal_file_failure_count"`
 	PreviousCollectionMonth  *string `json:"previous_collection_month"`
+	FilterCatalogID          int64   `json:"filter_catalog_id"`
 }
 
 type rowsQueryer interface {
@@ -412,7 +420,7 @@ func Readiness(ctx context.Context, pool *pgxpool.Pool, payer string, month time
 	return readiness(ctx, pool, payer, month)
 }
 
-func readiness(ctx context.Context, q queryer, payer string, month time.Time) (StatusReport, error) {
+func readiness(ctx context.Context, q rowsQueryer, payer string, month time.Time) (StatusReport, error) {
 	var out StatusReport
 	var status string
 	err := q.QueryRow(ctx, `
@@ -707,8 +715,55 @@ SELECT EXISTS (
 		return StatusReport{}, dbFailure(ctx)
 	}
 	addBlocker(&out.Blockers, inconsistent, "job_inconsistent")
+	candidate, candidateErr := SelectCatalogCandidate(ctx, q, payer, month)
+	if candidateErr != nil {
+		if errors.Is(candidateErr, database.ErrDatabase) || jobs.IsFailure(candidateErr, jobs.FailureFilterCatalogDatabaseFailed) || ctx.Err() != nil || jobs.IsFailure(candidateErr, jobs.FailureReleaseNotFound) {
+			return StatusReport{}, candidateErr
+		}
+	} else {
+		out.ProspectiveCandidateValid = true
+		catalog, catalogErr := inspectActivationCatalog(ctx, q, payer, formatMonth(month), candidate.TargetPublicationGeneration, candidate.Targets)
+		if catalogErr != nil {
+			if errors.Is(catalogErr, database.ErrDatabase) || jobs.IsFailure(catalogErr, jobs.FailureFilterCatalogDatabaseFailed) || ctx.Err() != nil {
+				return StatusReport{}, catalogErr
+			}
+			if catalog.ID > 0 {
+				out.FilterCatalogID = &catalog.ID
+				out.FilterCatalogGeneration = &candidate.TargetPublicationGeneration
+				out.FilterCatalogStatus = &catalog.Status
+				out.FilterCatalogOutputCount = &catalog.OutputCount
+			}
+			switch {
+			case jobs.IsFailure(catalogErr, jobs.FailureFilterCatalogMissing):
+				addBlocker(&out.Blockers, true, "filter_catalog_missing")
+			case catalog.Status == "building" || catalog.Status == "failed":
+				addBlocker(&out.Blockers, true, "filter_catalog_"+catalog.Status)
+			case jobs.IsFailure(catalogErr, jobs.FailureFilterCatalogStale):
+				addBlocker(&out.Blockers, true, "filter_catalog_stale")
+			default:
+				addBlocker(&out.Blockers, true, "filter_catalog_inconsistent")
+			}
+		} else {
+			id, status, count := catalog.ID, catalog.Status, catalog.OutputCount
+			out.FilterCatalogID = &id
+			out.FilterCatalogGeneration = &candidate.TargetPublicationGeneration
+			out.FilterCatalogStatus = &status
+			out.FilterCatalogOutputCount = &count
+			if status == "ready" || (status == "published" && !candidate.HasNewOutputs) {
+				out.FilterCatalogReady = true
+			} else if status == "building" || status == "failed" {
+				addBlocker(&out.Blockers, true, "filter_catalog_"+status)
+			} else {
+				addBlocker(&out.Blockers, true, "filter_catalog_not_ready")
+			}
+		}
+	}
 	sort.Strings(out.Blockers)
-	out.DatabaseReady = len(out.Blockers) == 0
+	if out.ProspectiveCandidateValid && !out.FilterCatalogReady {
+		out.DatabaseReady = false
+	} else {
+		out.DatabaseReady = len(out.Blockers) == 0
+	}
 	return out, nil
 }
 
@@ -716,27 +771,35 @@ func ListActiveOutputs(ctx context.Context, pool *pgxpool.Pool) ([]Target, error
 	if pool == nil {
 		return nil, jobs.Failure(jobs.FailureInvalidArguments)
 	}
-	rows, err := pool.Query(ctx, `
-SELECT s.payer_id, s.collection_month, s.id
-FROM mrfpipeline.monthly_releases r
-JOIN mrfpipeline.monthly_release_outputs o
-  ON o.payer_id = r.payer_id AND o.collection_month = r.collection_month
-JOIN mrfpipeline.mrf_snapshots s ON s.id = o.mrf_snapshot_id
-WHERE r.status = 'active'
-ORDER BY s.payer_id, s.collection_month, s.id`)
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, dbFailure(ctx)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var activeCount, catalogCount int64
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM mrfpipeline.monthly_releases WHERE status='active'`).Scan(&activeCount); err != nil {
+		return nil, dbFailure(ctx)
+	}
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM mrfweb.active_release_catalogs`).Scan(&catalogCount); err != nil {
+		return nil, dbFailure(ctx)
+	}
+	if activeCount != catalogCount {
+		return nil, jobs.Failure(jobs.FailureFilterCatalogInconsistent)
+	}
+	rows, err := tx.Query(ctx, `SELECT s.payer_id,s.collection_month,s.id FROM mrfweb.active_release_outputs c JOIN mrfpipeline.mrf_snapshots s ON c.payer_id=s.payer_id AND c.collection_month=s.collection_month AND c.output_id='mrf-'||s.id ORDER BY s.payer_id,s.collection_month,s.id`)
 	if err != nil {
 		return nil, dbFailure(ctx)
 	}
 	defer rows.Close()
 	var out []Target
 	for rows.Next() {
-		var payer string
-		var month time.Time
+		var p string
+		var m time.Time
 		var id int64
-		if err := rows.Scan(&payer, &month, &id); err != nil {
+		if err := rows.Scan(&p, &m, &id); err != nil {
 			return nil, dbFailure(ctx)
 		}
-		out = append(out, Target{PayerID: payer, CollectionMonth: formatMonth(month), OutputID: formatOutputID(id), SnapshotID: id})
+		out = append(out, Target{PayerID: p, CollectionMonth: formatMonth(m), OutputID: formatOutputID(id), SnapshotID: id})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, dbFailure(ctx)
@@ -1101,7 +1164,7 @@ func mergeTargets(left, right []Target) []Target {
 	return out
 }
 
-func Activate(ctx context.Context, pool *pgxpool.Pool, payer string, month time.Time, preflight func([]Target) error) (ActivationResult, error) {
+func Activate(ctx context.Context, pool *pgxpool.Pool, payer string, month time.Time, preflight func([]Target, int64, time.Time) error) (ActivationResult, error) {
 	if pool == nil {
 		return ActivationResult{}, jobs.Failure(jobs.FailureInvalidArguments)
 	}
@@ -1147,10 +1210,13 @@ FOR UPDATE`, payer)
 	if targetStatus == "" {
 		return ActivationResult{}, jobs.Failure(jobs.FailureReleaseNotFound)
 	}
-	if targetStatus != Building && targetStatus != Inactive && targetStatus != Active {
+	if targetStatus != Building && generation <= 0 {
 		return ActivationResult{}, jobs.Failure(jobs.FailureDomainInvariant)
 	}
+	if targetStatus != Building && targetStatus != Inactive && targetStatus != Active {
+		return ActivationResult{}, jobs.Failure(jobs.FailureDomainInvariant)
 
+	}
 	state := publicationCheckpoint{}
 	published, err := listPublishedTargets(ctx, tx, payer, month)
 	if err != nil {
@@ -1171,39 +1237,56 @@ FOR UPDATE`, payer)
 	if len(targets) == 0 {
 		return ActivationResult{}, jobs.Failure(jobs.FailureReleaseNotReady)
 	}
+
+	newTargets := make([]Target, 0, len(targets))
+	publishedIDs := make(map[int64]struct{}, len(published))
+	for _, target := range published {
+		publishedIDs[target.SnapshotID] = struct{}{}
+	}
+	for _, target := range targets {
+		if _, ok := publishedIDs[target.SnapshotID]; !ok {
+			newTargets = append(newTargets, target)
+		}
+	}
+	if targetStatus == Building && (len(published) != 0 || len(newTargets) != len(targets)) {
+		return ActivationResult{}, jobs.Failure(jobs.FailureDomainInvariant)
+	}
+	var added int64
+	expectedCatalogGeneration := generation
+	if len(newTargets) > 0 || targetStatus == Building {
+		if generation == math.MaxInt64 {
+			return ActivationResult{}, jobs.Failure(jobs.FailureDomainInvariant)
+		}
+		expectedCatalogGeneration = generation + 1
+	}
+	allowPublishedCatalog := targetStatus != Building && len(newTargets) == 0
+	activationCatalog, err := lockActivationCatalog(ctx, tx, payer, formatMonth(month), expectedCatalogGeneration, targets, allowPublishedCatalog)
+	if err != nil {
+		return ActivationResult{}, err
+	}
 	if preflight != nil {
-		if err := preflight(targets); err != nil {
+		if err := preflight(targets, *activationCatalog.ProviderSchema, *activationCatalog.ProviderMonth); err != nil {
 			return ActivationResult{}, err
 		}
 	}
-
-	ids := make([]int64, 0, len(targets))
-	for _, target := range targets {
-		ids = append(ids, target.SnapshotID)
+	if targetStatus == Active && len(newTargets) == 0 && activationCatalog.Status == "published" {
+		skipped := state.SnapshotCount - int64(len(published))
+		if skipped < 0 {
+			skipped = 0
+		}
+		return ActivationResult{PayerID: payer, CollectionMonth: formatMonth(month), OutputCount: int64(len(published)), PublicationGeneration: generation, SkippedOutputCount: skipped, TerminalFileFailureCount: state.TerminalFileFailureCount, FilterCatalogID: activationCatalog.ID}, nil
 	}
-	var added int64
-	if targetStatus != Inactive {
-		nextGeneration := generation + 1
-		tag, err := tx.Exec(ctx, `
-INSERT INTO mrfpipeline.monthly_release_outputs
-    (payer_id, collection_month, mrf_snapshot_id, published_generation)
-SELECT $1, $2, s.id, $4
-FROM mrfpipeline.mrf_snapshots s
-WHERE s.payer_id = $1
-  AND s.collection_month = $2
-  AND s.id = ANY($3::bigint[])
-ON CONFLICT (payer_id, collection_month, mrf_snapshot_id) DO NOTHING`,
-			payer, month, ids, nextGeneration)
-		if err != nil {
+	if targetStatus == Building || len(newTargets) > 0 {
+		ids := make([]int64, 0, len(newTargets))
+		for _, target := range newTargets {
+			ids = append(ids, target.SnapshotID)
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO mrfpipeline.monthly_release_outputs(payer_id,collection_month,mrf_snapshot_id,published_generation) SELECT $1,$2,id,$4 FROM mrfpipeline.mrf_snapshots WHERE payer_id=$1 AND collection_month=$2 AND id=ANY($3::bigint[])`, payer, month, ids, expectedCatalogGeneration)
+		if err != nil || tag.RowsAffected() != int64(len(newTargets)) {
 			return ActivationResult{}, dbFailure(ctx)
 		}
 		added = tag.RowsAffected()
-		if targetStatus == Building && added == 0 {
-			return ActivationResult{}, jobs.Failure(jobs.FailureReleaseNotReady)
-		}
-		if added != 0 {
-			generation = nextGeneration
-		}
+		generation = expectedCatalogGeneration
 	}
 
 	if targetStatus != Active {
@@ -1214,7 +1297,7 @@ WHERE payer_id = $1 AND status = 'active'`, payer); err != nil {
 			return ActivationResult{}, dbFailure(ctx)
 		}
 	}
-	if targetStatus != Active || added != 0 {
+	if targetStatus != Active || len(newTargets) > 0 {
 		if _, err := tx.Exec(ctx, `
 UPDATE mrfpipeline.monthly_releases
 SET status = 'active',
@@ -1222,7 +1305,7 @@ SET status = 'active',
     sealed_at = COALESCE(sealed_at, transaction_timestamp()),
     last_activated_at = transaction_timestamp(),
     updated_at = transaction_timestamp()
-WHERE payer_id = $1 AND collection_month = $2`, payer, month, generation); err != nil {
+WHERE payer_id = $1 AND collection_month = $2`, payer, month, expectedCatalogGeneration); err != nil {
 			return ActivationResult{}, dbFailure(ctx)
 		}
 	}
@@ -1233,6 +1316,22 @@ FROM mrfpipeline.monthly_release_outputs
 WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&outputCount); err != nil {
 		return ActivationResult{}, dbFailure(ctx)
 	}
+	if activationCatalog.Status == "ready" {
+		tag, err := tx.Exec(ctx, `UPDATE mrfweb.release_catalogs SET status='published', published_at=transaction_timestamp() WHERE id=$1 AND status='ready'`, activationCatalog.ID)
+		if err != nil || tag.RowsAffected() != 1 {
+			return ActivationResult{}, dbFailure(ctx)
+		}
+	}
+	if outputCount != int64(len(targets)) {
+		return ActivationResult{}, jobs.Failure(jobs.FailureFilterCatalogInconsistent)
+	}
+	post, err := inspectActivationCatalog(ctx, tx, payer, formatMonth(month), generation, targets)
+	if err != nil || post.ID != activationCatalog.ID || post.Status != "published" {
+		if err != nil {
+			return ActivationResult{}, err
+		}
+		return ActivationResult{}, jobs.Failure(jobs.FailureFilterCatalogInconsistent)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return ActivationResult{}, dbFailure(ctx)
 	}
@@ -1241,6 +1340,7 @@ WHERE payer_id = $1 AND collection_month = $2`, payer, month).Scan(&outputCount)
 		OutputCount: outputCount, PublicationGeneration: generation,
 		AddedOutputCount: added, SkippedOutputCount: state.SnapshotCount - outputCount,
 		TerminalFileFailureCount: state.TerminalFileFailureCount,
+		FilterCatalogID:          activationCatalog.ID,
 	}
 	if result.SkippedOutputCount < 0 {
 		result.SkippedOutputCount = 0

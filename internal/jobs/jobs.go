@@ -87,6 +87,9 @@ const (
 	FailureFilterCatalogPopulationFailed     = "filter_catalog_population_failed"
 	FailureFilterCatalogDatabaseFailed       = "filter_catalog_database_failed"
 	FailureFilterCatalogInconsistent         = "filter_catalog_inconsistent"
+	FailureFilterCatalogMissing              = "filter_catalog_missing"
+	FailureFilterCatalogNotReady             = "filter_catalog_not_ready"
+	FailureFilterCatalogStale                = "filter_catalog_stale"
 	// FailureJobBookkeeping is emitted only in logs when retry or terminal
 	// bookkeeping cannot be persisted. It is not a domain failure code.
 	FailureJobBookkeeping = "job_bookkeeping_failed"
@@ -151,7 +154,8 @@ func allowedFailureCode(code string) bool {
 		FailureFilterCatalogDuckDBVersionInvalid, FailureFilterCatalogQueryFailed, FailureFilterCatalogValueInvalid,
 		FailureFilterCatalogProtocolInvalid, FailureFilterCatalogCancelled, FailureFilterCatalogBusy,
 		FailureFilterCatalogReleaseNotReady, FailureFilterCatalogPublishedMismatch, FailureFilterCatalogPlanInvalid,
-		FailureFilterCatalogPopulationFailed, FailureFilterCatalogDatabaseFailed, FailureFilterCatalogInconsistent:
+		FailureFilterCatalogPopulationFailed, FailureFilterCatalogDatabaseFailed, FailureFilterCatalogInconsistent,
+		FailureFilterCatalogMissing, FailureFilterCatalogNotReady, FailureFilterCatalogStale:
 
 		return true
 	default:

@@ -2,16 +2,13 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–30 architecture and the
-approved, not-yet-implemented Stories 31–32 release-filter target. The numbered
-requirement stories remain authoritative where they are more specific.
-Sections below the approved contract that are explicitly labeled historical
-version 1 are retained as background only; they are not current runtime
-guidance. The Stories 14–27 requirements and current README describe the
-implemented rebuild-only feed-free operation. Stories 28–30 add the database
-contract, concrete read-only extraction boundary, and explicit catalog
-population/status boundary; the planned section below describes the remaining
-Story 31–32 publication and web behavior.
+This document describes the implemented Stories 01–31 architecture and the
+approved, not-yet-implemented Story 32 operational acceptance target. The
+numbered requirement stories remain authoritative where more specific.
+Sections explicitly labeled historical version 1 are background only; they are
+not current runtime guidance. Stories 28–31 add the database contract,
+read-only extraction, explicit catalog population/status, and catalog-aware
+publication.
 
 The design records the implemented version 1 decisions that remain normative
 except where the target addendum explicitly replaces them:
@@ -138,21 +135,15 @@ The target remains UHC-only for production discovery. Generic payer columns
 and per-payer release state prepare the domain/query boundary for later payer
 adapters without claiming they exist now.
 
-## Release filter architecture: Stories 28–30 implemented; Stories 31–32 planned
+## Release filter architecture: Stories 28–31 implemented; Story 32 planned
 
 The approved sequence is:
 
-- [Story 28: Release filter catalog database contract](28-release-filter-catalog-database-contract.md) (implemented schema and views)
-- [Story 29: Release filter warehouse extraction](29-release-filter-warehouse-extraction.md) (implemented typed read-only boundary)
-- [Story 30: Release filter catalog population](30-release-filter-catalog-population.md) (implemented build/status boundary)
-- [Story 31: Filter-aware release publication](31-filter-aware-release-publication.md) (proposed)
+- Stories 28–31: implemented schema, extraction, catalog build/status, and atomic publication
 - [Story 32: Filter catalog operational acceptance](32-filter-catalog-operational-acceptance.md) (proposed)
 
-Story 28 adds no web server or query UI. Story 29 adds no command or worker
-stage. Story 30 adds only explicit synchronous `filters build` and
-database-only `filters status`; it does not activate releases. Stories 31–32
-will complete the catalog-aware publication and future public process without
-expanding Parquet lists during an HTTP request.
+Story 31 keeps the future web process out of this repository while supplying a
+generation-scoped, globally fail-closed active handoff.
 
 ### Ownership and data flow
 
@@ -316,23 +307,13 @@ mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
 mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
 ```
 
-They remain an explicit build-before-activate runbook until Story 31 makes
-catalog readiness part of publication. `filters status` is database-only.
-`filters build` uses the complete database candidate gate and the same
-published/publishable predicates as activation. It copies/sorts outputs for
-the fingerprint and captures the exact semantic plan/output plus attachment
-readiness relation before extraction, then rereads it before ready publication.
-Timestamp-only changes do not matter; semantic changes fail the build, and
-activation compares the relation once more under release locks.
-
-Until Story 31 lands, the operator runbook is:
-
-1. Finish discovery/TOC inventory and resolve consumer or attachment
-   publication failures.
-2. Inspect the database-only candidate with `filters status`.
-3. Run `filters build` and confirm a sanitized `ready` result.
-4. Run the existing `month activate`; Story 31 will later require and promote
-   the exact ready catalog.
+They are the explicit build-before-activate runbook. `filters status` is
+database-only. `filters build` uses the complete candidate gate, captures
+semantic plan/readiness, extracts deterministic values, and marks one catalog
+ready. Activation now requires exact catalog readiness, compares sets under
+release locks, and atomically publishes membership, generation, release
+pointer, and catalog state. Stale races leave state unchanged; rerun
+`filters build` explicitly.
 
 One domain-separated stable 64-bit advisory-lock hash serializes a build per
 payer/month. A mathematical collision may conservatively return false busy but
@@ -349,9 +330,10 @@ cleanup attempt; a crash or cleanup failure may leave replaceable `building`
 state. Explicit retry replaces it after the session lock releases. No River
 job, heartbeat, scheduler, plan revision column, or repair daemon is added.
 
+
 ### Filter-aware publication
 
-The operator sequence becomes:
+The operator sequence is:
 
 ```text
 filters build
@@ -359,38 +341,16 @@ month activate
 future mrfweb switch
 ```
 
-Activation never runs DuckDB. Under Story 27 release locks it applies the fixed
-order missing → not-ready → internally inconsistent → candidate-stale, then
-runs existing warehouse preflight. A worker completing another output or a
-semantic plan/readiness change makes the catalog stale. No active state changes
-until the operator rebuilds.
+Activation never runs DuckDB. It locks release rows, applies catalog
+missing/not-ready/inconsistent/stale precedence, runs warehouse preflight only
+after catalog validation, and commits the exact ready catalog with membership
+and generation. Active views fail closed globally; reconciliation reports
+backfill and sealed catalog counters without mutation. Published generations
+remain immutable and inactive rollback reuses its exact current catalog.
 
-One successful transaction inserts new membership, updates the release
-generation/status pointer, and promotes the exact ready catalog. Any exact
-ready catalog for an unchanged current generation may be promoted; no hidden
-cutover flag exists. Inactive rollback reuses its exact current generation.
-
-Existing Story 27 state uses a quiesced cutover: stop roles, run one final
-pre-Story-31 incremental checkpoint, verify no ready unpublished output, build
-the now-current catalog, deploy catalog-aware activation, promote it, and
-restart. Historical strict membership is trusted but revalidated; violation is
-catalog inconsistency with no automatic membership repair.
-
-Stable active views are globally fail-closed. If any active payer lacks one
-exact published catalog or output equality, the complete no-payer relation is
-empty and `ListActiveOutputs`/no-selector status fail rather than omitting that
-payer. A future read-only role gets active views plus fixed parameterized
-SELECT access to published billing, option, plan, plan/output,
-output/code/network, and provider-filter tables—not staging headers/outputs or
-pipeline/River operational tables.
-
-`filters status` remains database-only and cannot validate a restored
-PostgreSQL database against warehouse files. Reconciliation with full
-filesystem configuration and activation perform that stronger check. The
-future web process loads one active candidate, validates it against the
-warehouse, loads matching filters through fixed SQL, and replaces one immutable
-serving-state pointer. Polling, LISTEN/NOTIFY, HTTP, UI, and the manual web
-control socket/switch command remain outside pipeline Stories 28–32.
+Existing releases use quiesced cutover: stop workers, finish the final Story27
+checkpoint, build the current catalog, deploy catalog-aware activation, promote
+it, verify status/views, then restart workers.
 
 ### Failure, resource, and operational policy
 

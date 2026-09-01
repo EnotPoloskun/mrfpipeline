@@ -149,6 +149,28 @@ WHERE payer_id = 'uhc' AND collection_month = $1`, month, snapshotID); err != ni
 		t.Fatal(err)
 	}
 	basePart := filepath.Join(warehouse, "snapshots", "collection_month=2026-08", "payer_id=uhc", "output_id="+outputID, "rate_facts", outputID+"-part-00000.parquet")
+	target := release.Target{PayerID: "uhc", CollectionMonth: "2026-08", OutputID: outputID, SnapshotID: snapshotID}
+	fp := release.OutputFingerprint([]release.Target{target})
+	catalogStatus := "ready"
+	if sealed {
+		catalogStatus = "published"
+	}
+	var catalogID, catalogPlanID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO mrfweb.release_catalogs(payer_id,collection_month,publication_generation,status,output_fingerprint,output_count,standard_fact_count,provider_catalog_schema_version,provider_catalog_release_month,billing_code_count,code_filter_value_count,plan_count,plan_output_count,output_code_network_count,provider_filter_value_count,completed_at,published_at) VALUES('uhc',$1,1,$2,$3,1,1,1,$1,1,0,1,1,0,0,transaction_timestamp(),CASE WHEN $2='published' THEN transaction_timestamp() END) RETURNING id`, month, catalogStatus, fp).Scan(&catalogID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO mrfweb.release_outputs(catalog_id,mrf_snapshot_id,output_id) VALUES($1,$2,$3)`, catalogID, snapshotID, outputID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO mrfweb.release_plans(catalog_id,plan_name,issuer_name,plan_id_type,plan_id,plan_market_type,search_text) SELECT $1,plan_name,issuer_name,plan_id_type,plan_id,plan_market_type,lower(trim(plan_name)||' '||trim(issuer_name)||' '||plan_id_type||' '||trim(plan_id)||' '||plan_market_type) FROM mrfpipeline.mrf_plans WHERE id=$2 RETURNING id`, catalogID, planID).Scan(&catalogPlanID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO mrfweb.release_billing_codes(catalog_id,billing_code_type,billing_code,observation_count,unmodified_observation_count) VALUES($1,'CPT','1',1,1)`, catalogID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO mrfweb.release_plan_outputs(catalog_id,plan_id,output_id) VALUES($1,$2,$3)`, catalogID, catalogPlanID, outputID); err != nil {
+		t.Fatal(err)
+	}
 	return activationFixture{
 		target:    release.Target{PayerID: "uhc", CollectionMonth: "2026-08", OutputID: outputID, SnapshotID: snapshotID},
 		warehouse: warehouse, expectedPart: expectedPart, basePart: basePart,
@@ -218,7 +240,7 @@ func TestIntegrationActivationRejectsDamagedInactivePublication(t *testing.T) {
 			fixture := seedActivationFixture(t, pool, true)
 			tc.mutate(t, fixture)
 			month := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-			_, err := release.Activate(context.Background(), pool, "uhc", month, func(targets []release.Target) error {
+			_, err := release.Activate(context.Background(), pool, "uhc", month, func(targets []release.Target, _ int64, _ time.Time) error {
 				return reconcile.ValidateActivationTargets(context.Background(), pool, fixture.warehouse, "uhc", month, targets)
 			})
 			if !jobs.IsFailure(err, jobs.FailureSealedReleaseInconsistent) {
@@ -259,7 +281,7 @@ func TestIntegrationFirstActivationRejectsDamagedPublication(t *testing.T) {
 			fixture := seedActivationFixture(t, pool, false)
 			tc.mutate(t, fixture)
 			month := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-			_, err := release.Activate(context.Background(), pool, "uhc", month, func(targets []release.Target) error {
+			_, err := release.Activate(context.Background(), pool, "uhc", month, func(targets []release.Target, _ int64, _ time.Time) error {
 				return reconcile.ValidateActivationTargets(context.Background(), pool, fixture.warehouse, "uhc", month, targets)
 			})
 			if !jobs.IsFailure(err, jobs.FailureReleaseNotReady) {
@@ -283,7 +305,7 @@ func TestIntegrationFirstActivationPublishesHealthyInventory(t *testing.T) {
 	pool := activationTestDB(t)
 	fixture := seedActivationFixture(t, pool, false)
 	month := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	preflight := func(targets []release.Target) error {
+	preflight := func(targets []release.Target, _ int64, _ time.Time) error {
 		return reconcile.ValidateActivationTargets(context.Background(), pool, fixture.warehouse, "uhc", month, targets)
 	}
 	first, err := release.Activate(context.Background(), pool, "uhc", month, preflight)

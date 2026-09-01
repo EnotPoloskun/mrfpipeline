@@ -11,14 +11,14 @@ import (
 // Report is the compact reconcile success object. Mutation counts describe
 // work committed by this invocation; sealed inconsistency is detected state.
 type Report struct {
-	RepairedJobCount                int `json:"repaired_job_count"`
-	UnblockedStageCount             int `json:"unblocked_stage_count"`
-	ScheduledPlanBatchCount         int `json:"scheduled_plan_batch_count"`
-	CleanedArtifactCount            int `json:"cleaned_artifact_count"`
-	SealedReleaseInconsistencyCount int `json:"sealed_release_inconsistency_count"`
-
-	logger     *slog.Logger
-	sealedSeen map[sealedDomainKey]struct{}
+	RepairedJobCount                   int `json:"repaired_job_count"`
+	UnblockedStageCount                int `json:"unblocked_stage_count"`
+	ScheduledPlanBatchCount            int `json:"scheduled_plan_batch_count"`
+	CleanedArtifactCount               int `json:"cleaned_artifact_count"`
+	FilterCatalogBackfillRequiredCount int `json:"filter_catalog_backfill_required_count"`
+	SealedReleaseInconsistencyCount    int `json:"sealed_release_inconsistency_count"`
+	logger                             *slog.Logger
+	sealedSeen                         map[sealedDomainKey]struct{}
 }
 
 type sealedDomainKey struct {

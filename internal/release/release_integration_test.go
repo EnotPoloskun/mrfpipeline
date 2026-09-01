@@ -217,6 +217,16 @@ VALUES ('uhc', DATE '2026-08-01')`); err != nil {
 	aetna := seedReadyRelease(t, pool, "aetna", "2026-08", "aetna-aug")
 	augDate := time.Date(2026, time.August, 1, 0, 0, 0, 0, time.UTC)
 	sepDate := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
+	for _, item := range []struct {
+		payer string
+		month time.Time
+	}{{"uhc", augDate}, {"aetna", augDate}, {"uhc", sepDate}} {
+		candidate, err := SelectCatalogCandidate(ctx, pool, item.payer, item.month)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedActivationCatalog(t, pool, item.payer, item.month, 1, "ready", candidate.Targets)
+	}
 
 	ready, err := Readiness(ctx, pool, "uhc", augDate)
 	if err != nil || !ready.DatabaseReady || len(ready.Blockers) != 0 {
@@ -269,7 +279,13 @@ WHERE payer_id = 'aetna' AND collection_month = DATE '2026-08-01'`).Scan(&after)
 		t.Fatalf("idempotent activation changed timestamp: %v -> %v", before, after)
 	}
 	seedReadyRelease(t, pool, "uhc", "2026-10", "uhc-oct")
-	if _, err := Activate(ctx, pool, "uhc", time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC), func([]Target) error {
+	octMonth := time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC)
+	octCandidate, err := SelectCatalogCandidate(ctx, pool, "uhc", octMonth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedActivationCatalog(t, pool, "uhc", octMonth, 1, "ready", octCandidate.Targets)
+	if _, err := Activate(ctx, pool, "uhc", time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC), func([]Target, int64, time.Time) error {
 		return errors.New("preflight rejected")
 	}); err == nil {
 		t.Fatal("failed activation unexpectedly succeeded")
@@ -318,6 +334,11 @@ SET mrf_source_target_kind = 'numeric', mrf_source_target_count = 4
 WHERE payer_id = 'uhc' AND collection_month = $1`, month); err != nil {
 		t.Fatal(err)
 	}
+	initialCandidate, err := SelectCatalogCandidate(ctx, pool, "uhc", month)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedActivationCatalog(t, pool, "uhc", month, 1, "ready", initialCandidate.Targets)
 
 	before, err := Readiness(ctx, pool, "uhc", month)
 	if err != nil || before.DatabaseReady || !before.Partial {
@@ -361,6 +382,11 @@ WHERE payer_id = 'uhc' AND collection_month = $1`, month).Scan(&tocID); err != n
 	}
 
 	markSnapshotReady(t, pool, pendingSource, pendingSnapshot, "incremental-second")
+	nextCandidate, err := SelectCatalogCandidate(ctx, pool, "uhc", month)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedActivationCatalog(t, pool, "uhc", month, 2, "ready", nextCandidate.Targets)
 	second, err := Activate(ctx, pool, "uhc", month, nil)
 	if err != nil {
 		t.Fatal(err)

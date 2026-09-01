@@ -61,11 +61,11 @@ func TestClassifyRiverStates(t *testing.T) {
 
 func TestFormatReportAndRetry(t *testing.T) {
 	t.Parallel()
-	text, err := FormatReport(Report{RepairedJobCount: 3, UnblockedStageCount: 2, ScheduledPlanBatchCount: 1, CleanedArtifactCount: 4})
+	text, err := FormatReport(Report{RepairedJobCount: 3, UnblockedStageCount: 2, ScheduledPlanBatchCount: 1, CleanedArtifactCount: 4, FilterCatalogBackfillRequiredCount: 7})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text != `{"repaired_job_count":3,"unblocked_stage_count":2,"scheduled_plan_batch_count":1,"cleaned_artifact_count":4,"sealed_release_inconsistency_count":0}`+"\n" {
+	if text != `{"repaired_job_count":3,"unblocked_stage_count":2,"scheduled_plan_batch_count":1,"cleaned_artifact_count":4,"filter_catalog_backfill_required_count":7,"sealed_release_inconsistency_count":0}`+"\n" {
 		t.Fatalf("report %q", text)
 	}
 	if strings.Contains(text, "http") || strings.Contains(text, "toc-") {
@@ -354,7 +354,7 @@ func TestReportJSONAllowlist(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &obj); err != nil {
 		t.Fatal(err)
 	}
-	if len(obj) != 5 {
+	if len(obj) != 6 {
 		t.Fatalf("fields %v", obj)
 	}
 }

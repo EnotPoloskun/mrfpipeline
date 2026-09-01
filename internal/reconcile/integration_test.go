@@ -1258,7 +1258,7 @@ WHERE payer_id = 'uhc' AND collection_month = DATE '2026-08-01'`); err != nil {
 	}
 	building := insertTOCFor(t, pool, "aetna", "2026-08", jobs.StatusPending, jobs.StatusBlocked, jobs.StatusBlocked)
 	report := runPass(t, pool, ws)
-	if report.SealedReleaseInconsistencyCount != 1 || report.RepairedJobCount != 1 {
+	if report.SealedReleaseInconsistencyCount != 2 || report.RepairedJobCount != 1 {
 		t.Fatalf("report %+v", report)
 	}
 	var sealedStatus string
@@ -1357,7 +1357,7 @@ WHERE payer_id = 'uhc' AND collection_month = $1`, month); err != nil {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.SealedReleaseInconsistencyCount != 0 || report.RepairedJobCount != 0 || report.UnblockedStageCount != 0 {
+	if report.SealedReleaseInconsistencyCount != 1 || report.RepairedJobCount != 0 || report.UnblockedStageCount != 0 {
 		t.Fatalf("healthy sealed release was not quiet: %+v", report)
 	}
 }

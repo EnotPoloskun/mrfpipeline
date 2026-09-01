@@ -8,7 +8,6 @@ import (
 
 	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
-	"github.com/enotpoloskun/mrfpipeline/internal/consumeringest"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/mrfparse"
@@ -77,19 +76,14 @@ func inspectEnv(p Params) error {
 	if p.Pool == nil || p.Workspace == nil {
 		return jobs.Failure(jobs.FailureInvalidArguments)
 	}
-	services, err := mrfparse.InspectServices(p.ServicesPath)
+	_, err := mrfparse.InspectServices(p.ServicesPath)
 	if err != nil {
 		return err
 	}
-	catalog, err := consumeringest.InspectCatalog(p.ProviderCatalogPath)
-	if err != nil {
-		return err
+	if p.Workspace.Root == "" {
+		return jobs.Failure(jobs.FailureInvalidArguments)
 	}
-	warehouse, err := consumeringest.InspectWarehouse(p.WarehousePath)
-	if err != nil {
-		return err
-	}
-	return consumeringest.CheckWarehouseCatalog(warehouse, catalog, p.Workspace.Root, services.Path)
+	return nil
 }
 
 // Run executes the safe reconciliation pass. The caller holds the worker lease.
@@ -151,6 +145,9 @@ func Run(ctx context.Context, p Params) (Report, error) {
 	}
 	report.ScheduledPlanBatchCount += n
 	if err := auditSealedPlanSets(ctx, p.Pool, p.WarehousePath, &report); err != nil {
+		return report, err
+	}
+	if err := auditFilterCatalogs(ctx, p, &report); err != nil {
 		return report, err
 	}
 	if err := cleanArtifacts(ctx, p.Pool, p.Workspace, p.ServicesPath, &report); err != nil {
