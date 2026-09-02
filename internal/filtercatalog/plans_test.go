@@ -5,9 +5,11 @@ import (
 )
 
 func TestProjectPlansDeduplicatesSponsorIndependentIdentity(t *testing.T) {
+	identity := planIdentity{PlanName: "Plan", IssuerName: "Issuer", PlanIDType: "ein", PlanID: "1", PlanMarketType: "group"}
 	snapshot := planSnapshot{Rows: []planSnapshotRow{
-		{OutputID: "mrf-20", planIdentity: planIdentity{PlanName: "Plan", IssuerName: "Issuer", PlanIDType: "ein", PlanID: "1", PlanMarketType: "group"}},
-		{OutputID: "mrf-3", planIdentity: planIdentity{PlanName: "Plan", IssuerName: "Issuer", PlanIDType: "ein", PlanID: "1", PlanMarketType: "group"}},
+		{OutputID: "mrf-20", planIdentity: identity},
+		{OutputID: "mrf-20", planIdentity: identity},
+		{OutputID: "mrf-3", planIdentity: identity},
 	}}
 	projection, err := projectPlans(snapshot)
 	if err != nil {
@@ -18,6 +20,20 @@ func TestProjectPlansDeduplicatesSponsorIndependentIdentity(t *testing.T) {
 	}
 	if projection.Plans[0].Outputs[0] != "mrf-20" || projection.Plans[0].Outputs[1] != "mrf-3" {
 		t.Fatalf("outputs=%v", projection.Plans[0].Outputs)
+	}
+}
+
+func TestProjectPlansKeepsSamePlanIDWithDifferentIssuer(t *testing.T) {
+	snapshot := planSnapshot{Rows: []planSnapshotRow{
+		{OutputID: "mrf-1", planIdentity: planIdentity{PlanName: "Shared Plan", IssuerName: "Issuer", PlanIDType: "hios", PlanID: "SHARED-1", PlanMarketType: "group"}},
+		{OutputID: "mrf-1", planIdentity: planIdentity{PlanName: "Alt Shared Plan", IssuerName: "Other Issuer", PlanIDType: "hios", PlanID: "SHARED-1", PlanMarketType: "group"}},
+	}}
+	projection, err := projectPlans(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projection.Plans) != 2 || len(projection.PlanOutputs) != 2 {
+		t.Fatalf("projection=%+v", projection)
 	}
 }
 

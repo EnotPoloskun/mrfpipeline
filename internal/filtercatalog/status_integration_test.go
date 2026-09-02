@@ -2,11 +2,13 @@ package filtercatalog
 
 import (
 	"context"
-	"github.com/enotpoloskun/mrfpipeline/internal/release"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/enotpoloskun/mrfpipeline/internal/release"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func setupInactiveStatus(t *testing.T) (*pgxpool.Pool, int64, release.CatalogCandidate, warehouseIdentity) {
@@ -43,7 +45,7 @@ func populateStatusFixture(t *testing.T, pool *pgxpool.Pool, cat int64, candidat
 	plan := planIdentity{PlanName: "Plan", IssuerName: "Issuer", PlanIDType: "hios", PlanID: "id", PlanMarketType: "group"}
 	projection := planProjection{Plans: []canonicalPlan{{planIdentity: plan, Outputs: []string{candidate.Targets[0].OutputID}}}, PlanOutputs: []planOutput{{Plan: plan, Output: candidate.Targets[0].OutputID}}}
 	extracted := Result{WarehouseSchemaVersion: "2.0.0", ProviderCatalogSchemaVersion: 1, ProviderCatalogReleaseMonth: identity.ReleaseMonth, OutputFingerprint: candidate.OutputFingerprint, StandardFactCount: 1, BillingCodes: []BillingCode{{BillingCodeType: "CPT", BillingCode: "1", ObservationCount: 1, UnmodifiedObservationCount: 1}}}
-	if _, err := populateCatalog(context.Background(), conn, cat, candidate, identity, extracted, projection); err != nil {
+	if _, err := populateCatalog(context.Background(), conn, cat, candidate, identity, extracted, projection, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -120,5 +122,24 @@ func TestIntegrationUnpublishedCatalogReplacement(t *testing.T) {
 				t.Fatalf("outputs=%d", count)
 			}
 		})
+	}
+}
+
+func TestIntegrationStatusRejectsActiveOrInactiveGenerationZero(t *testing.T) {
+	pool, _, _, _ := setupInactiveStatus(t)
+	month := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(context.Background(), `UPDATE mrfpipeline.monthly_releases SET publication_generation=0 WHERE payer_id='uhc' AND collection_month=$1`, month); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Status(context.Background(), pool, "uhc", month)
+	if !jobs.IsFailure(err, jobs.FailureDomainInvariant) {
+		t.Fatalf("inactive generation 0 err=%v", err)
+	}
+	if _, err := pool.Exec(context.Background(), `UPDATE mrfpipeline.monthly_releases SET status='active' WHERE payer_id='uhc' AND collection_month=$1`, month); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Status(context.Background(), pool, "uhc", month)
+	if !jobs.IsFailure(err, jobs.FailureDomainInvariant) {
+		t.Fatalf("active generation 0 err=%v", err)
 	}
 }

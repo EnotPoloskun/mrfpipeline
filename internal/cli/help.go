@@ -18,6 +18,7 @@ Usage:
   mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
   mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
   mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline filters measure --payer <payer> --collection-month <YYYY-MM>
   mrfpipeline --help
   mrfpipeline --version
 
@@ -183,10 +184,12 @@ The target cannot be decreased and all cannot be changed back to a number.
 const filtersHelp = `Usage:
   mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
   mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline filters measure --payer <payer> --collection-month <YYYY-MM>
   mrfpipeline filters --help
 
 Build or inspect the exact filter catalog for a release publication
-generation. Build is synchronous and does not activate the release.
+generation. Build is synchronous and does not activate the release. Measurement
+is an opt-in fresh-build operation for private disposable environments.
 `
 
 const filtersBuildHelp = `Usage:
@@ -205,6 +208,14 @@ const filtersStatusHelp = `Usage:
 
 Read current publication and filter-catalog state from PostgreSQL only.
 This command does not inspect warehouse files or run DuckDB.
+`
+
+const filtersMeasureHelp = `Usage:
+  mrfpipeline filters measure --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline filters measure --help
+
+Measure one fresh filter-catalog build in a disposable private environment.
+The command never activates a release and refuses an existing target catalog.
 `
 
 func helpFor(command string) string {

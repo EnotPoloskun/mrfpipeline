@@ -55,14 +55,47 @@ jobs:
       - name: Prefer SSH for GitHub module fetches
         run: git config --global url."git@github.com:".insteadOf "https://github.com/"
 
+      - name: Install pinned DuckDB CLI
+        run: |
+          set -eu
+          install_root="$RUNNER_TEMP/duckdb-v1.5.5"
+          archive="$RUNNER_TEMP/duckdb_cli-linux-amd64.zip"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            "https://github.com/duckdb/duckdb/releases/download/v1.5.5/duckdb_cli-linux-amd64.zip" \
+            --output "$archive"
+          printf '%s  %s\n' \
+            08c0ca117111fcede14239d0093792352befdc174218c344d232c13279643d05 \
+            "$archive" | sha256sum --check --status
+          mkdir "$install_root"
+          unzip -q "$archive" -d "$install_root"
+          test -x "$install_root/duckdb"
+          duckdb_version="$("$install_root/duckdb" --version)"
+          test "${duckdb_version%% *}" = "v1.5.5"
+          echo "$install_root" >> "$GITHUB_PATH"
+
+      - name: Install PostgreSQL backup clients
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes postgresql-client
+
+      - name: Story32 DuckDB acceptance
+        env:
+          MRFPIPELINE_REQUIRE_DUCKDB_ACCEPTANCE: '1'
+          MRFPIPELINE_REQUIRE_BACKUP_ACCEPTANCE: '1'
+          MRFPIPELINE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/mrfpipeline_test_ci?sslmode=disable
+        run: go test -p 1 ./internal/planattach -run '^TestIntegrationStory32'
+
       - name: Ordinary non-database tests
         run: go test ./...
-
-      - name: Focused race tests
-        run: go test -race ./internal/jobs ./internal/mrfparse ./internal/work ./internal/reconcile
+      - name: Full race tests
+        run: go test -race -p 1 ./...
 
       - name: Go vet
         run: go vet ./...
+
+      - name: Verify static operator binary
+        run: CGO_ENABLED=0 go build ./cmd/mrfpipeline
 
       - name: Validate Compose configuration
         env:
@@ -74,6 +107,24 @@ jobs:
           DOCKER_BUILDKIT: '1'
           COMPOSE_PROFILES: operator,workers
         run: docker compose -f docker-compose.story21.yml build
+
+      - name: Verify final Compose image
+        run: |
+          set -eu
+          test "$(docker run --rm --entrypoint /usr/local/bin/mrfpipeline mrfpipeline:local --version)" = "mrfpipeline dev"
+          duckdb_version="$(docker run --rm --entrypoint /usr/local/bin/duckdb mrfpipeline:local --version)"
+          test "${duckdb_version%% *}" = "v1.5.5"
+          docker run --rm --entrypoint /bin/sh mrfpipeline:local -c \
+            'command -v ldd >/dev/null 2>&1 && ! ldd /usr/local/bin/mrfpipeline >/dev/null 2>&1'
+
+      - name: Verify operator help in final image
+        env:
+          COMPOSE_PROFILES: operator
+        run: |
+          set -eu
+          docker compose -f docker-compose.story21.yml run --rm --no-deps cli filters status --help >/dev/null
+          docker compose -f docker-compose.story21.yml run --rm --no-deps cli filters build --help >/dev/null
+          docker compose -f docker-compose.story21.yml run --rm --no-deps cli filters measure --help >/dev/null
 
       - name: PostgreSQL integration suite
         env:

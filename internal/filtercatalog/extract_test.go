@@ -221,7 +221,7 @@ func TestRunExtractionRedactsProcessFailure(t *testing.T) {
 	if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, err := runExtraction(context.Background(), DuckDB{path: script}, "SELECT 1;\n")
+	_, err := runExtraction(context.Background(), DuckDB{path: script}, "SELECT 1;\n", nil)
 	if !jobs.IsFailure(err, jobs.FailureFilterCatalogQueryFailed) {
 		t.Fatalf("error=%v", err)
 	}
@@ -273,7 +273,7 @@ func TestRunExtractionClassifiesOnlyExactGuardDiagnostics(t *testing.T) {
 			if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			_, err := runExtraction(context.Background(), DuckDB{path: script}, "SELECT 1;\n")
+			_, err := runExtraction(context.Background(), DuckDB{path: script}, "SELECT 1;\n", nil)
 			if !jobs.IsFailure(err, test.want) {
 				t.Fatalf("error=%v want %s", err, test.want)
 			}
@@ -293,7 +293,7 @@ sleep 30
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		_, err := runExtraction(ctx, DuckDB{path: script}, strings.Repeat("x", 1<<20))
+		_, err := runExtraction(ctx, DuckDB{path: script}, strings.Repeat("x", 1<<20), nil)
 		result <- err
 	}()
 	select {
@@ -311,7 +311,7 @@ func TestRunExtractionProtocolErrorWinsProcessFailure(t *testing.T) {
 	if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, err := runExtraction(context.Background(), DuckDB{path: script}, "SELECT 1;\n")
+	_, err := runExtraction(context.Background(), DuckDB{path: script}, "SELECT 1;\n", nil)
 	if !jobs.IsFailure(err, jobs.FailureFilterCatalogProtocolInvalid) {
 		t.Fatalf("error=%v", err)
 	}
@@ -361,7 +361,7 @@ func TestCancellationMapsToFixedFailure(t *testing.T) {
 func TestRunExtractionStartCancellationMapsToCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := runExtraction(ctx, DuckDB{path: filepath.Join(t.TempDir(), "missing-duckdb")}, "SELECT 1;\n")
+	_, err := runExtraction(ctx, DuckDB{path: filepath.Join(t.TempDir(), "missing-duckdb")}, "SELECT 1;\n", nil)
 	if !jobs.IsFailure(err, jobs.FailureFilterCatalogCancelled) {
 		t.Fatalf("error=%v", err)
 	}
@@ -430,7 +430,7 @@ wait
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	go func() {
-		_, err := runExtraction(ctx, DuckDB{path: path}, "SELECT 1;\n")
+		_, err := runExtraction(ctx, DuckDB{path: path}, "SELECT 1;\n", nil)
 		result <- err
 	}()
 	waitForTestFile(t, started)

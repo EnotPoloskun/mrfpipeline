@@ -26,7 +26,20 @@ type BuildParams struct {
 	WarehousePath       string
 	ProviderCatalogPath string
 	Preflight           func([]release.Target) error
+	Observer            func(BuildPhase)
 }
+
+// BuildPhase identifies the narrow timing boundaries used by opt-in
+// real-warehouse measurement. It has no effect when Observer is nil.
+type BuildPhase string
+
+const (
+	BuildPhaseTotalStart      BuildPhase = "total_start"
+	BuildPhaseDuckDBStart     BuildPhase = "duckdb_start"
+	BuildPhaseDuckDBDone      BuildPhase = "duckdb_done"
+	BuildPhasePopulationStart BuildPhase = "population_start"
+	BuildPhasePopulationDone  BuildPhase = "population_done"
+)
 
 // BuildResult is the complete sanitized build result.
 type BuildResult struct {
@@ -116,6 +129,9 @@ func Build(ctx context.Context, params BuildParams) (BuildResult, error) {
 	}
 	defer conn.Release()
 	monthText := params.CollectionMonth.Format("2006-01")
+	if params.Observer != nil {
+		params.Observer(BuildPhaseTotalStart)
+	}
 	locked, err := tryCatalogLock(ctx, conn, release.FilterCatalogLockKey(params.PayerID, monthText))
 	if err != nil {
 		return BuildResult{}, buildDatabaseError(ctx)
@@ -173,11 +189,11 @@ func Build(ctx context.Context, params BuildParams) (BuildResult, error) {
 	if err != nil {
 		return BuildResult{}, mapBuildError(err)
 	}
-
 	extracted, err := Extract(ctx, duck, Params{
 		WarehousePath:     params.WarehousePath,
 		OutputFingerprint: candidate.OutputFingerprint,
 		Outputs:           targetsToOutputs(candidate.Targets),
+		processObserver:   params.Observer,
 	})
 	if err != nil {
 		return BuildResult{}, finishFailedBuild(ctx, conn, catalogID, err)
@@ -197,7 +213,7 @@ func Build(ctx context.Context, params BuildParams) (BuildResult, error) {
 	if err != nil {
 		return BuildResult{}, finishFailedBuild(ctx, conn, catalogID, err)
 	}
-	buildResult, err := populateCatalog(ctx, conn, catalogID, candidate, identity, extracted, projection)
+	buildResult, err := populateCatalog(ctx, conn, catalogID, candidate, identity, extracted, projection, params.Observer)
 	if err != nil {
 		return BuildResult{}, finishFailedBuild(ctx, conn, catalogID, err)
 	}
@@ -604,7 +620,7 @@ RETURNING id`, candidate.PayerID, candidate.CollectionMonth+"-01", candidate.Tar
 	return catalogID, nil
 }
 
-func populateCatalog(ctx context.Context, conn *pgxpool.Conn, catalogID int64, candidate release.CatalogCandidate, identity warehouseIdentity, extracted Result, projection planProjection) (BuildResult, error) {
+func populateCatalog(ctx context.Context, conn *pgxpool.Conn, catalogID int64, candidate release.CatalogCandidate, identity warehouseIdentity, extracted Result, projection planProjection, observer func(BuildPhase)) (BuildResult, error) {
 	if extracted.WarehouseSchemaVersion != "2.0.0" || extracted.ProviderCatalogSchemaVersion != identity.SchemaVersion || !extracted.ProviderCatalogReleaseMonth.Equal(identity.ReleaseMonth) || extracted.OutputFingerprint != candidate.OutputFingerprint || extracted.StandardFactCount <= 0 || len(extracted.BillingCodes) == 0 || len(projection.Plans) == 0 {
 		return BuildResult{}, jobs.Failure(jobs.FailureFilterCatalogPopulationFailed)
 	}
@@ -634,6 +650,9 @@ func populateCatalog(ctx context.Context, conn *pgxpool.Conn, catalogID int64, c
 		}
 	}
 
+	if observer != nil {
+		observer(BuildPhasePopulationStart)
+	}
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return BuildResult{}, buildDatabaseError(ctx)
@@ -753,6 +772,9 @@ WHERE id = $1`, catalogID, extracted.StandardFactCount, extracted.ProviderCatalo
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return BuildResult{}, buildDatabaseError(ctx)
+	}
+	if observer != nil {
+		observer(BuildPhasePopulationDone)
 	}
 	return BuildResult{
 		PayerID: candidate.PayerID, CollectionMonth: candidate.CollectionMonth,

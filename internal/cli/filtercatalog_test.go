@@ -11,6 +11,7 @@ func TestFiltersHelpIsInformational(t *testing.T) {
 		{"filters", "--help"},
 		{"filters", "build", "--help"},
 		{"filters", "status", "--help"},
+		{"filters", "measure", "--help"},
 	} {
 		parsed, err := parse(args)
 		if err != nil || !parsed.help || parsed.helpText == "" {
@@ -26,6 +27,11 @@ func TestFiltersHelpIsInformational(t *testing.T) {
 func TestFiltersParserRejectsDuplicatesAndExtraArguments(t *testing.T) {
 	cases := [][]string{
 		{"filters", "build", "--payer", "payer", "--payer", "other", "--collection-month", "2026-08"},
+		{"filters", "build", "--payer=payer", "--payer=other", "--collection-month=2026-08"},
+		{"filters", "status", "--payer=payer", "--collection-month=2026-08", "--collection-month=2026-09"},
+		{"filters", "measure", "--payer", "payer", "--payer", "other", "--collection-month", "2026-08"},
+		{"filters", "measure", "--payer=payer", "--payer=other", "--collection-month=2026-08"},
+		{"filters", "measure", "--payer=payer", "--collection-month=2026-08", "--collection-month=2026-09"},
 		{"filters", "status", "--payer", "payer", "--collection-month", "2026-08", "--unknown", "x"},
 		{"filters", "status", "--payer", "payer", "--collection-month", "2026-08", "positional"},
 		{"filters", "status", "--payer", "payer"},
@@ -33,6 +39,7 @@ func TestFiltersParserRejectsDuplicatesAndExtraArguments(t *testing.T) {
 		{"filters", "status", "--payer", "", "--collection-month", "2026-08"},
 		{"filters", "build", "--payer", "payer", "--collection-month="},
 		{"filters", "status", "--payer", "payer", "--collection-month", ""},
+		{"filters", "measure", "--payer", "payer"},
 	}
 	for _, args := range cases {
 		_, err := parse(args)

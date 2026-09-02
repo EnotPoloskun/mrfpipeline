@@ -45,6 +45,7 @@ const (
 	monthSourcesSetTotal = "set-total"
 	filtersBuild         = "build"
 	filtersStatus        = "status"
+	filtersMeasure       = "measure"
 )
 
 // Main is the process entry: signals, os.Args, and standard streams.
@@ -109,6 +110,8 @@ func execute(ctx context.Context, args []string, getenv func(string) string) (st
 			text, opErr = runFiltersBuild(ctx, getenv, parsed.payer, parsed.month)
 		case filtersStatus:
 			text, opErr = runFiltersStatus(ctx, getenv, parsed.payer, parsed.month)
+		case filtersMeasure:
+			text, opErr = runFiltersMeasure(ctx, getenv, parsed.payer, parsed.month)
 		default:
 			return "", &usageError{command: cmdFilters, reason: "missing subcommand"}
 		}
@@ -678,6 +681,81 @@ func runFiltersBuild(ctx context.Context, getenv func(string) string, payer, mon
 	return encodeJSON(result)
 }
 
+func runFiltersMeasure(ctx context.Context, getenv func(string) string, payer, month string) (string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
+		return "", err
+	}
+	if err := config.ValidatePayerIdentifier(payer); err != nil {
+		return "", err
+	}
+	monthDate, err := parseMonthDate(month)
+	if err != nil {
+		return "", err
+	}
+	art, err := config.NormalizeLocalPath(config.EnvArtifactRoot, getenv(config.EnvArtifactRoot))
+	if err != nil {
+		return "", err
+	}
+	warehouse, err := config.NormalizeLocalPath(config.EnvWarehousePath, getenv(config.EnvWarehousePath))
+	if err != nil {
+		return "", err
+	}
+	catalogPath, err := config.NormalizeLocalPath(config.EnvProviderCatalogPath, getenv(config.EnvProviderCatalogPath))
+	if err != nil {
+		return "", err
+	}
+	servicesPath, err := config.NormalizeLocalPath(config.EnvServicesPath, getenv(config.EnvServicesPath))
+	if err != nil {
+		return "", err
+	}
+	services, err := mrfparse.InspectServices(servicesPath)
+	if err != nil {
+		return "", err
+	}
+	catalog, err := consumeringest.InspectCatalog(catalogPath)
+	if err != nil {
+		return "", err
+	}
+	warehouseState, err := consumeringest.InspectWarehouse(warehouse)
+	if err != nil {
+		if consumeringest.IsPublicationUnreadable(err) {
+			return "", jobs.Failure(jobs.FailureArtifactReconciliationFailed)
+		}
+		return "", err
+	}
+	if err := artifact.CheckOverlap(art, warehouse, catalogPath, servicesPath); err != nil {
+		return "", err
+	}
+	if err := consumeringest.CheckWarehouseCatalog(warehouseState, catalog, art, services.Path); err != nil {
+		return "", err
+	}
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.OperatorMaxConns)
+	if err != nil {
+		return "", err
+	}
+	defer pool.Close()
+	if err := database.ValidateCurrent(ctx, pool); err != nil {
+		return "", err
+	}
+	result, err := filtercatalog.Measure(ctx, filtercatalog.BuildParams{
+		Pool: pool, PayerID: payer, CollectionMonth: monthDate,
+		WarehousePath: warehouse, ProviderCatalogPath: catalogPath,
+		Preflight: func(targets []release.Target) error {
+			return reconcile.ValidateActivationTargets(ctx, pool, warehouse, payer, monthDate, targets)
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	return encodeJSON(result)
+}
+
 func parseMonthDate(raw string) (time.Time, error) {
 	if err := config.ValidateCollectionMonth(raw); err != nil {
 		return time.Time{}, err
@@ -789,10 +867,12 @@ func parseFiltersCommand(rest []string) (parsed, error) {
 			return parsed{command: cmdFilters, filtersAction: action, help: true, helpText: filtersBuildHelp}, nil
 		case filtersStatus:
 			return parsed{command: cmdFilters, filtersAction: action, help: true, helpText: filtersStatusHelp}, nil
+		case filtersMeasure:
+			return parsed{command: cmdFilters, filtersAction: action, help: true, helpText: filtersMeasureHelp}, nil
 		}
 	}
 	switch action {
-	case filtersBuild, filtersStatus:
+	case filtersBuild, filtersStatus, filtersMeasure:
 		payer, month, err := parseFiltersFlags("filters "+action, rest[1:])
 		if err != nil {
 			return parsed{}, err
@@ -1169,6 +1249,8 @@ func hint(command string) string {
 		return "Try 'mrfpipeline filters build --help'."
 	case "filters status":
 		return "Try 'mrfpipeline filters status --help'."
+	case "filters measure":
+		return "Try 'mrfpipeline filters measure --help'."
 	default:
 		return "Try 'mrfpipeline --help'."
 	}

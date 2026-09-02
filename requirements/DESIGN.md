@@ -2,13 +2,13 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–31 architecture and the
-approved, not-yet-implemented Story 32 operational acceptance target. The
-numbered requirement stories remain authoritative where more specific.
-Sections explicitly labeled historical version 1 are background only; they are
-not current runtime guidance. Stories 28–31 add the database contract,
-read-only extraction, explicit catalog population/status, and catalog-aware
-publication.
+This document describes the implemented Stories 01–32 architecture and
+operational acceptance. The numbered requirement stories remain authoritative
+where more specific. Sections explicitly labeled historical version 1 are
+background only; they are not current runtime guidance. Stories 28–32 add the
+database contract, read-only extraction, explicit catalog
+population/status/measurement, catalog-aware publication, and operational
+acceptance.
 
 The design records the implemented version 1 decisions that remain normative
 except where the target addendum explicitly replaces them:
@@ -135,15 +135,16 @@ The target remains UHC-only for production discovery. Generic payer columns
 and per-payer release state prepare the domain/query boundary for later payer
 adapters without claiming they exist now.
 
-## Release filter architecture: Stories 28–31 implemented; Story 32 planned
+## Release filter architecture: Stories 28–32 implemented
 
-The approved sequence is:
+The approved and implemented sequence is:
 
-- Stories 28–31: implemented schema, extraction, catalog build/status, and atomic publication
-- [Story 32: Filter catalog operational acceptance](32-filter-catalog-operational-acceptance.md) (proposed)
+- Stories 28–32: database schema, extraction, catalog build/status/measurement,
+  atomic publication, permanent acceptance, and operational evidence
 
 Story 31 keeps the future web process out of this repository while supplying a
-generation-scoped, globally fail-closed active handoff.
+generation-scoped, globally fail-closed active handoff. Story 32 proves that
+handoff, packaging, backup/restore, read-only grants, and failure recovery.
 
 ### Ownership and data flow
 
@@ -299,21 +300,29 @@ PostgreSQL. Final analytical queries remain DuckDB/Parquet work in the future
 query service.
 
 ### Explicit build boundary
-
-The implemented Story 30 commands are:
+The implemented Story 30–32 commands and wrappers are:
 
 ```text
 mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
 mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
+mrfpipeline filters measure --payer <payer> --collection-month <YYYY-MM>
+scripts/measure-filter-build.sh <payer> <YYYY-MM>
+scripts/lookup-filter-measure.sh <payer> <YYYY-MM> <CPT|HCPCS> <code> <plan-id> <file>
 ```
 
 They are the explicit build-before-activate runbook. `filters status` is
 database-only. `filters build` uses the complete candidate gate, captures
 semantic plan/readiness, extracts deterministic values, and marks one catalog
-ready. Activation now requires exact catalog readiness, compares sets under
-release locks, and atomically publishes membership, generation, release
-pointer, and catalog state. Stale races leave state unchanged; rerun
-`filters build` explicitly.
+ready. `filters measure` is private and requires a fresh target generation; its
+wrapper emits exactly the 17-field sanitized metric object, never activates,
+and refuses ready/published targets. The lookup wrapper writes only fixed
+parameterized `EXPLAIN (ANALYZE, BUFFERS)` evidence to an operator-selected
+private file.
+
+Activation now requires exact catalog readiness, compares sets under release
+locks, and atomically publishes membership, generation, release pointer, and
+catalog state. Stale races leave state unchanged; rerun `filters build`
+explicitly.
 
 One domain-separated stable 64-bit advisory-lock hash serializes a build per
 payer/month. A mathematical collision may conservatively return false busy but
@@ -346,21 +355,32 @@ missing/not-ready/inconsistent/stale precedence, runs warehouse preflight only
 after catalog validation, and commits the exact ready catalog with membership
 and generation. Active views fail closed globally; reconciliation reports
 backfill and sealed catalog counters without mutation. Published generations
-remain immutable and inactive rollback reuses its exact current catalog.
+remain immutable and inactive rollback reuses their exact current catalog.
 
 Existing releases use quiesced cutover: stop workers, finish the final Story27
 checkpoint, build the current catalog, deploy catalog-aware activation, promote
 it, verify status/views, then restart workers.
 
-### Failure, resource, and operational policy
+### Failure, resource, backup, and read-only policy
 
 Catalog errors use fixed sanitized codes. Logs/results never expose warehouse
 paths, SQL, DuckDB stderr, source URLs, credentials, rates, NPIs, or plan/filter
-values. Failed extraction cannot expose ready rows. Reconciliation remains a
-successful report: missing inactive legacy catalogs increment
+values. Failed extraction cannot expose ready rows. A cancelled or crashed
+build leaves a replaceable unpublished state after process cleanup; retry
+reacquires the advisory lock. `filter_catalog_measure_precondition_failed`
+rejects measurement when the target generation already exists. Reconciliation
+remains a successful report: missing inactive legacy catalogs increment
 `filter_catalog_backfill_required_count`; corruption of a published active or
 inactive catalog increments `sealed_release_inconsistency_count`. It never
 repairs, builds, promotes, deletes, or narrows catalog membership.
+
+The future read-only web role receives CONNECT, USAGE on `mrfweb`, and SELECT
+only on the eight approved active/catalog views and tables. Serving SQL first
+resolves `catalog_id` from `active_release_catalogs`, binds fixed
+parameterized billing, option, keyset-plan, network, and provider queries, and
+never reads pipeline/River tables. Backup acceptance dumps the disposable
+PostgreSQL database and copies the warehouse tree together; restore runs
+catalog-aware reconciliation and status before any handoff.
 
 Permanent acceptance uses a small hand-computed synthetic warehouse. An
 opt-in real-warehouse run records only sanitized counts, wall times, peak RSS,
@@ -1581,17 +1601,15 @@ Stories 14–27 are the implemented rebuild-only sequence:
 | 26 | Delete leftover `mrf.download` and `toc.download` bytes on River UI cancel, retry exhaustion, and HTTP 404, then release an empty MRF slot. |
 | 27 | Persist additive active-output membership, publish numeric partial checkpoints, omit terminal file failures, and keep known MRF work running. |
 
-Stories 28–29 are implemented. Stories 30–32 are the remaining approved
-release-filter sequence and remain proposed until their implementations and
-Story 32 convergence land:
+Stories 28–32 are implemented release-filter and operational acceptance work:
 
 | Story | Deliverable |
 |---:|---|
-| 28 | Add the versioned `mrfweb` PostgreSQL schema, immutable generation catalogs, exact outputs, code/filter/plan/network/provider tables, and fail-closed active serving views. |
+| 28 | Add the versioned `mrfweb` PostgreSQL schema, immutable generation catalogs, exact outputs, code/filter/plan/network/provider tables, and fail-closed active serving views. (Implemented.) |
 | 29 | Package pinned DuckDB 1.5.5 and extract deterministic release-scoped billing, option, output/code/network, and provider rows from exact consumer 2.0.0 outputs without warehouse mutation. (Implemented.) |
-| 30 | Add explicit `filters build/status`, exact candidate fingerprints, canonical plan projection, advisory-lock serialization, atomic ready publication, and idempotent retry. |
-| 31 | Require an exact ready catalog in incremental activation, publish output membership and catalog atomically, support cutover/rollback, and audit fail-closed active handoff. |
-| 32 | Prove synthetic end-to-end semantics, failure/crash/redaction, read-only access, Docker packaging, rollback, and descriptive real-warehouse performance; converge operator documentation. |
+| 30 | Add explicit `filters build/status`, exact candidate fingerprints, canonical plan projection, advisory-lock serialization, atomic ready publication, and idempotent retry. (Implemented.) |
+| 31 | Require an exact ready catalog in incremental activation, publish output membership and catalog atomically, support cutover/rollback, and audit fail-closed active handoff. (Implemented.) |
+| 32 | Prove synthetic end-to-end semantics, failure/crash/redaction, read-only access, Docker packaging, rollback, and descriptive real-warehouse performance; converge operator documentation. (Implemented.) |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC

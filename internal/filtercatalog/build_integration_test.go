@@ -2,7 +2,6 @@ package filtercatalog
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -52,14 +51,22 @@ func seedFilterCatalogBuild(t *testing.T, pool *pgxpool.Pool) (int64, release.Ca
 	if _, err := pool.Exec(ctx, `INSERT INTO mrfpipeline.monthly_releases(payer_id,collection_month,mrf_source_target_kind) VALUES ('uhc',$1,'all')`, month); err != nil {
 		t.Fatal(err)
 	}
-	var source, snap, cat int64
+	var runID, source, snap, plan, batch, cat int64
+	if err := pool.QueryRow(ctx, `INSERT INTO mrfpipeline.discovery_runs(payer_id,collection_month,status,completed_at) VALUES ('uhc',$1,'succeeded',transaction_timestamp()) RETURNING id`, month).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO mrfpipeline.toc_files(payer_id,collection_month,source_url,first_discovery_run_id,download_status,parse_status,import_status) VALUES ('uhc',$1,'https://example.invalid/toc',$2,'succeeded','succeeded','succeeded')`, month, runID); err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(ctx, `INSERT INTO mrfpipeline.mrf_sources(source_url,collection_month,download_status,parse_status) VALUES ('https://example.invalid/mrf',$1,'succeeded','succeeded') RETURNING id`, month).Scan(&source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO mrfpipeline.monthly_release_mrf_sources(payer_id,collection_month,mrf_source_id) VALUES ('uhc',$1,$2)`, month, source); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `INSERT INTO mrfpipeline.mrf_snapshots(mrf_source_id,payer_id,collection_month,consume_status) VALUES ($1,'uhc',$2,'succeeded') RETURNING id`, source, month).Scan(&snap); err != nil {
 		t.Fatal(err)
 	}
-	var plan, batch int64
 	if err := pool.QueryRow(ctx, `INSERT INTO mrfpipeline.mrf_plans(mrf_snapshot_id,plan_name,issuer_name,plan_id_type,plan_id,plan_market_type) VALUES ($1,'Plan','Issuer','hios','id','group') RETURNING id`, snap).Scan(&plan); err != nil {
 		t.Fatal(err)
 	}
@@ -69,13 +76,14 @@ func seedFilterCatalogBuild(t *testing.T, pool *pgxpool.Pool) (int64, release.Ca
 	if _, err := pool.Exec(ctx, `INSERT INTO mrfpipeline.plan_attachment_batch_items(plan_attachment_batch_id,mrf_plan_id) VALUES ($1,$2)`, batch, plan); err != nil {
 		t.Fatal(err)
 	}
-	// Candidate is constructed directly for population-boundary assertions.
-	candidate := release.CatalogCandidate{PayerID: "uhc", CollectionMonth: "2026-08", ReleaseStatus: release.Building, TargetPublicationGeneration: 1, Targets: []release.Target{{PayerID: "uhc", CollectionMonth: "2026-08", OutputID: "mrf-" + fmt.Sprint(snap), SnapshotID: snap}}}
-	candidate.OutputFingerprint = release.OutputFingerprint(candidate.Targets)
+	candidate, err := release.SelectCatalogCandidate(ctx, pool, "uhc", month)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := pool.QueryRow(ctx, `INSERT INTO mrfweb.release_catalogs(payer_id,collection_month,publication_generation,output_fingerprint,output_count) VALUES ('uhc',$1,1,$2,1) RETURNING id`, month, candidate.OutputFingerprint).Scan(&cat); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO mrfweb.release_outputs(catalog_id,mrf_snapshot_id,output_id) VALUES ($1,$2,$3)`, cat, snap, candidate.Targets[0].OutputID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO mrfweb.release_outputs(catalog_id,mrf_snapshot_id,output_id) VALUES ($1,$2,$3)`, cat, candidate.Targets[0].SnapshotID, candidate.Targets[0].OutputID); err != nil {
 		t.Fatal(err)
 	}
 	return cat, candidate, warehouseIdentity{SchemaVersion: 1, ReleaseMonth: month}
@@ -87,7 +95,7 @@ func TestIntegrationPopulateCatalogAtomicRows(t *testing.T) {
 	conn, _ := pool.Acquire(context.Background())
 	defer conn.Release()
 	projection := planProjection{}
-	_, err := populateCatalog(context.Background(), conn, cat, candidate, identity, Result{WarehouseSchemaVersion: "2.0.0", ProviderCatalogSchemaVersion: 1, ProviderCatalogReleaseMonth: identity.ReleaseMonth, OutputFingerprint: candidate.OutputFingerprint, StandardFactCount: 1, BillingCodes: []BillingCode{{BillingCodeType: "CPT", BillingCode: "1", ObservationCount: 1, UnmodifiedObservationCount: 1}}}, projection)
+	_, err := populateCatalog(context.Background(), conn, cat, candidate, identity, Result{WarehouseSchemaVersion: "2.0.0", ProviderCatalogSchemaVersion: 1, ProviderCatalogReleaseMonth: identity.ReleaseMonth, OutputFingerprint: candidate.OutputFingerprint, StandardFactCount: 1, BillingCodes: []BillingCode{{BillingCodeType: "CPT", BillingCode: "1", ObservationCount: 1, UnmodifiedObservationCount: 1}}}, projection, nil)
 	if err == nil || !jobs.IsFailure(err, jobs.FailureFilterCatalogPopulationFailed) {
 		t.Fatalf("invalid extraction error=%v", err)
 	}
@@ -110,7 +118,7 @@ func TestIntegrationPopulateCatalogSuccessAndRollback(t *testing.T) {
 	plan := planIdentity{PlanName: "Plan", IssuerName: "Issuer", PlanIDType: "hios", PlanID: "id", PlanMarketType: "group"}
 	projection := planProjection{Plans: []canonicalPlan{{planIdentity: plan, Outputs: []string{candidate.Targets[0].OutputID}}}, PlanOutputs: []planOutput{{Plan: plan, Output: candidate.Targets[0].OutputID}}}
 	extracted := Result{WarehouseSchemaVersion: "2.0.0", ProviderCatalogSchemaVersion: 1, ProviderCatalogReleaseMonth: identity.ReleaseMonth, OutputFingerprint: candidate.OutputFingerprint, StandardFactCount: 1, BillingCodes: []BillingCode{{BillingCodeType: "CPT", BillingCode: "1", ObservationCount: 1, UnmodifiedObservationCount: 1}}}
-	got, err := populateCatalog(context.Background(), conn, cat, candidate, identity, extracted, projection)
+	got, err := populateCatalog(context.Background(), conn, cat, candidate, identity, extracted, projection, nil)
 	if err != nil || got.CatalogStatus != "ready" || got.PlanCount != 1 || got.PlanOutputCount != 1 {
 		t.Fatalf("got=%+v err=%v", got, err)
 	}
@@ -134,7 +142,7 @@ func TestIntegrationPopulateCatalogRollsBackMidTransaction(t *testing.T) {
 	plan := planIdentity{PlanName: "Plan", IssuerName: "Issuer", PlanIDType: "hios", PlanID: "id", PlanMarketType: "group"}
 	projection := planProjection{Plans: []canonicalPlan{{planIdentity: plan, Outputs: []string{candidate.Targets[0].OutputID}}}, PlanOutputs: []planOutput{{Plan: plan, Output: candidate.Targets[0].OutputID}}}
 	extracted := Result{WarehouseSchemaVersion: "2.0.0", ProviderCatalogSchemaVersion: 1, ProviderCatalogReleaseMonth: identity.ReleaseMonth, OutputFingerprint: candidate.OutputFingerprint, StandardFactCount: 2, BillingCodes: []BillingCode{{BillingCodeType: "CPT", BillingCode: "1", ObservationCount: 1, UnmodifiedObservationCount: 1}, {BillingCodeType: "CPT", BillingCode: "1", ObservationCount: 1, UnmodifiedObservationCount: 1}}}
-	if _, err := populateCatalog(context.Background(), conn, cat, candidate, identity, extracted, projection); err == nil {
+	if _, err := populateCatalog(context.Background(), conn, cat, candidate, identity, extracted, projection, nil); err == nil {
 		t.Fatal("duplicate billing key unexpectedly succeeded")
 	}
 	for _, table := range []string{"release_billing_codes", "release_code_filter_values", "release_plans", "release_plan_outputs", "release_output_code_networks", "release_provider_filter_values"} {
@@ -159,7 +167,7 @@ func TestIntegrationExistingCatalogValidation(t *testing.T) {
 	plan := planIdentity{PlanName: "Plan", IssuerName: "Issuer", PlanIDType: "hios", PlanID: "id", PlanMarketType: "group"}
 	projection := planProjection{Plans: []canonicalPlan{{planIdentity: plan, Outputs: []string{candidate.Targets[0].OutputID}}}, PlanOutputs: []planOutput{{Plan: plan, Output: candidate.Targets[0].OutputID}}}
 	extracted := Result{WarehouseSchemaVersion: "2.0.0", ProviderCatalogSchemaVersion: 1, ProviderCatalogReleaseMonth: identity.ReleaseMonth, OutputFingerprint: candidate.OutputFingerprint, StandardFactCount: 1, BillingCodes: []BillingCode{{BillingCodeType: "CPT", BillingCode: "1", ObservationCount: 1, UnmodifiedObservationCount: 1}}}
-	if _, err := populateCatalog(context.Background(), conn, cat, candidate, identity, extracted, projection); err != nil {
+	if _, err := populateCatalog(context.Background(), conn, cat, candidate, identity, extracted, projection, nil); err != nil {
 		t.Fatal(err)
 	}
 	snapshot := planSnapshot{Rows: []planSnapshotRow{{OutputID: candidate.Targets[0].OutputID, planIdentity: plan}}, Facts: []planReadinessFact{{OutputID: candidate.Targets[0].OutputID, PlanCount: 1, PositiveBatch: true}}}
@@ -189,7 +197,7 @@ func TestIntegrationPublishedCatalogIsImmutableAndCorruptionIsInconsistent(t *te
 	plan := planIdentity{PlanName: "Plan", IssuerName: "Issuer", PlanIDType: "hios", PlanID: "id", PlanMarketType: "group"}
 	projection := planProjection{Plans: []canonicalPlan{{planIdentity: plan, Outputs: []string{candidate.Targets[0].OutputID}}}, PlanOutputs: []planOutput{{Plan: plan, Output: candidate.Targets[0].OutputID}}}
 	extracted := Result{WarehouseSchemaVersion: "2.0.0", ProviderCatalogSchemaVersion: 1, ProviderCatalogReleaseMonth: identity.ReleaseMonth, OutputFingerprint: candidate.OutputFingerprint, StandardFactCount: 1, BillingCodes: []BillingCode{{BillingCodeType: "CPT", BillingCode: "1", ObservationCount: 1, UnmodifiedObservationCount: 1}}}
-	if _, err := populateCatalog(context.Background(), conn, cat, candidate, identity, extracted, projection); err != nil {
+	if _, err := populateCatalog(context.Background(), conn, cat, candidate, identity, extracted, projection, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(context.Background(), `UPDATE mrfweb.release_catalogs SET status='published', published_at=transaction_timestamp() WHERE id=$1`, cat); err != nil {

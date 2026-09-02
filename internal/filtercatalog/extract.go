@@ -161,7 +161,7 @@ func Extract(ctx context.Context, duck DuckDB, params Params) (Result, error) {
 	if err != nil {
 		return zero, jobs.Failure(jobs.FailureFilterCatalogConfigInvalid)
 	}
-	rows, err := runExtraction(ctx, duck, sqlText)
+	rows, err := runExtraction(ctx, duck, sqlText, params.processObserver)
 	if err != nil {
 		return zero, err
 	}
@@ -323,7 +323,7 @@ type summaryRow struct {
 	standardFactCount int64
 }
 
-func runExtraction(ctx context.Context, duck DuckDB, sqlText string) (rowSet, error) {
+func runExtraction(ctx context.Context, duck DuckDB, sqlText string, observer func(BuildPhase)) (rowSet, error) {
 	commandCtx, commandCancel := context.WithCancel(ctx)
 	defer commandCancel()
 	command := exec.CommandContext(commandCtx, duck.path, ":memory:")
@@ -362,6 +362,9 @@ func runExtraction(ctx context.Context, duck DuckDB, sqlText string) (rowSet, er
 			return rowSet{}, jobs.Failure(jobs.FailureFilterCatalogCancelled)
 		}
 		return rowSet{}, jobs.Failure(jobs.FailureFilterCatalogDuckDBUnavailable)
+	}
+	if observer != nil {
+		observer(BuildPhaseDuckDBStart)
 	}
 	protocolDone := make(chan protocolResult, 1)
 	go func() { protocolDone <- readProtocol(ctx, stdout) }()
@@ -415,6 +418,9 @@ supervise:
 		commandCancel()
 	}
 	waitErr := command.Wait()
+	if observer != nil && waitErr == nil && ctx.Err() == nil {
+		observer(BuildPhaseDuckDBDone)
+	}
 	if !protocolReady {
 		protocol = <-protocolDone
 	}

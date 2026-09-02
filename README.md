@@ -3,13 +3,12 @@
 Operator executable for CMS Transparency in Coverage discovery, TOC and MRF
 processing, warehouse ingestion, and additive plan attachment.
 
-Version 1 is implemented through Stories 01–27 in
-[`requirements/`](requirements/). Stories 28–31 implement the versioned
+Version 1 is implemented through Stories 01–32 in
+[`requirements/`](requirements/). Stories 28–32 implement the versioned
 `mrfweb` schema, typed DuckDB extraction, explicit filter catalog
-build/status, and catalog-aware release publication. Proposed Story 32
-specifies final operational acceptance for a future public query service.
-[`requirements/DESIGN.md`](requirements/DESIGN.md) records the product
-decisions that stay consistent across those stories.
+build/status/measurement, catalog-aware release publication, and permanent
+operational acceptance. [`requirements/DESIGN.md`](requirements/DESIGN.md)
+records the product decisions that stay consistent across those stories.
 
 ## Feed-free monthly-release contract
 
@@ -57,12 +56,13 @@ and not every warehouse output that happens to share an active payer/month.
 Query planning, partition pruning, and performance acceptance belong to that
 query service and the consumer.
 
-## Release filter catalogs: Stories 28–31 implemented; Story 32 planned
+## Release filter catalogs: Stories 28–32 implemented
 
-Stories 28–31 implement the versioned `mrfweb` schema, typed read-only
-DuckDB extraction, explicit filter catalog build/status commands, and
-catalog-aware release publication. Story 32 remains the planned operational
-acceptance story.
+Stories 28–32 implement the versioned `mrfweb` schema, typed read-only
+DuckDB extraction, explicit filter catalog build/status commands, catalog-aware
+release publication, and permanent synthetic operational acceptance. Story 32's
+opt-in real-warehouse measurement is available only for private disposable
+configurations.
 
 The catalog is keyed by `(payer_id, collection_month, publication_generation)`.
 It stores exact output membership and fingerprint, source-provided billing
@@ -78,6 +78,12 @@ The required operator flow is:
 mrfpipeline filters status --payer <payer> --collection-month <YYYY-MM>
 mrfpipeline filters build --payer <payer> --collection-month <YYYY-MM>
 mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
+
+# optional private disposable measurement (never activates)
+scripts/measure-filter-build.sh <payer> <YYYY-MM>
+
+# private lookup planning evidence (writes only the selected private file)
+scripts/lookup-filter-measure.sh <payer> <YYYY-MM> <CPT|HCPCS> <code> <plan-id> <file>
 # future, outside this repository:
 mrfweb switch
 ```
@@ -92,6 +98,25 @@ state unchanged; rerun `filters build` explicitly. Published generations are
 immutable and retained for rollback/in-flight query state. Inactive rollback
 reuses its exact current-generation catalog.
 
+The optional measurement script requires the existing normalized pipeline
+configuration and only a payer/month pair. It runs one fresh `filters measure`
+build against a disposable database with no target catalog, records the exact
+17-field sanitized JSON contract, wraps the complete command in the platform's
+supported `/usr/bin/time` mode, and performs an unchanged ordinary build check.
+It never activates a release, accepts no SQL or output override, and refuses an
+existing ready or published target.
+
+The optional lookup script runs only fixed parameterized PostgreSQL serving
+queries with `EXPLAIN (ANALYZE, BUFFERS)` and resolves `catalog_id` from the
+active catalog view. It writes planning evidence only to the operator-selected
+private file and never changes the database or emits measurement JSON.
+
+Private operators record descriptive evidence from those scripts: machine,
+OS, architecture, exact DuckDB `v1.5.5`, publication generation and output
+count, first versus repeated build behavior, peak RSS, and lookup
+`EXPLAIN (ANALYZE, BUFFERS)` timings. Those numbers stay in the private
+review record; they are not committed here and are not a performance SLA.
+
 Existing releases use the explicit quiesced cutover: stop workers, perform a
 final Story 27 checkpoint, build the now-current catalog, deploy catalog-aware
 activation, promote it, verify fail-closed status/views, then restart workers.
@@ -102,6 +127,46 @@ Reconciliation reports `filter_catalog_backfill_required_count` and
 `sealed_release_inconsistency_count` without building, promoting, repairing,
 deleting, or running DuckDB. The future `mrfweb switch` operation remains
 outside this repository.
+
+### Catalog build, publication, and recovery
+
+`filters build` is synchronous and runs one exact DuckDB `v1.5.5` extraction
+under a payer/month advisory lock. It snapshots the current candidate outputs
+and canonical five-field plans, runs the existing warehouse/plan preflight, and
+publishes one non-serving `ready` catalog. It never activates a release. Run
+`month activate` separately; activation compares the complete output and plan
+sets again and atomically publishes membership, generation, and catalog state.
+
+An output or plan race returns `filter_catalog_stale` without mutation. Rerun
+`filters build` explicitly before activation. `filter_catalog_missing`,
+`filter_catalog_not_ready`, `filter_catalog_inconsistent`, and
+`filter_catalog_stale` are operator recovery states, not automatic retries.
+Published catalogs are immutable; inactive rollback reuses the matching
+published generation. A failed extraction records its fixed failure code and
+is replaceable after the process lock is released.
+
+The opt-in measurement wrapper is separate from ordinary build/status output:
+
+```text
+scripts/measure-filter-build.sh <payer> <YYYY-MM>
+```
+
+It requires an unmodified private warehouse and disposable database with no
+target catalog, emits exactly the sanitized 17-field metric object, measures
+DuckDB/population/total monotonic intervals, database relation-size delta, and
+platform-supported peak RSS, then checks ordinary build idempotence internally.
+It never activates or accepts SQL/output overrides. Existing ready or published
+targets fail with `filter_catalog_measure_precondition_failed`.
+
+`scripts/lookup-filter-measure.sh` is private planning evidence only. It takes
+validated payer/month/code/plan arguments, resolves catalog identity from the
+active view, runs fixed parameterized serving queries with
+`EXPLAIN (ANALYZE, BUFFERS)`, and writes only to the selected private file.
+
+The permanent acceptance covers two incremental generations, month cutover and
+rollback, cross-payer active handoff, stale races, cancellation/process cleanup,
+backup/restore consistency, and read-only serving grants. It does not add an
+HTTP query service or implement `mrfweb switch`.
 ## Prerequisites
 
 - Go 1.26
@@ -939,32 +1004,33 @@ that stage and deletes unpublished download bytes. The source stays selected;
 reopen it with `retry`. Do not retry or delete jobs from the UI, and do not
 cancel other kinds.
 
+
 ## Limitations
 
 Discovery is UHC-only; month control and import honor the generic payer
 contract. Local storage only. No automatic enrichment. No plan
 removal/correction. No recurring discovery. Required `--limit`. No UI in this
-binary. TOC import rejects HTTPS MRF
-URLs that contain user information; the shared downloader would refuse
-those locations.
+binary. TOC import rejects HTTPS MRF URLs that contain user information; the
+shared downloader would refuse those locations.
 
 Configured artifact, warehouse, catalog, and services paths must not
 overlap, including the service selector sitting inside the warehouse.
 
 ## Tests
 
-Tests, including PostgreSQL integration, DuckDB consumer paths, and focused
-race tests, run on an operator machine that can resolve the private sibling
-modules. Repository CI uses the explicitly named
+Tests, including PostgreSQL integration, DuckDB consumer paths, and full race
+tests, run on an operator machine that can resolve the private sibling modules.
+Repository CI uses the explicitly named
 `MRFPIPELINE_PRIVATE_MODULES_SSH_KEY` secret; until that secret is configured,
-CI fails with a missing-prerequisite error rather than skipping private
-modules or reporting a false green build.
+CI fails with a missing-prerequisite error rather than skipping private modules
+or reporting a false green build.
 
 ```text
 export GOPRIVATE=github.com/EnotPoloskun/*,github.com/enotpoloskun/mrfconsumer
 go test ./...
+go test -race -p 1 ./...
 go vet ./...
-go test -race ./internal/jobs ./internal/mrfparse ./internal/work ./internal/reconcile
+CGO_ENABLED=0 go build ./cmd/mrfpipeline
 MRFPIPELINE_TEST_DATABASE_URL=<disposable-test-database> go test -p 1 ./...
 ```
 

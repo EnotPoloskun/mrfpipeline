@@ -113,3 +113,21 @@ func TestIntegrationCatalogCandidateRejectsUnreadyDatabaseState(t *testing.T) {
 		})
 	}
 }
+
+func TestIntegrationCatalogCandidateRejectsActiveOrInactiveGenerationZero(t *testing.T) {
+	for _, status := range []string{"active", "inactive"} {
+		t.Run(status, func(t *testing.T) {
+			pool := releaseTestDB(t)
+			ctx := context.Background()
+			month := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+			seedReadyRelease(t, pool, "uhc", "2026-08", "generation-zero-"+status)
+			if _, err := pool.Exec(ctx, `UPDATE mrfpipeline.monthly_releases SET status=$1, sealed_at=transaction_timestamp(), last_activated_at=transaction_timestamp(), publication_generation=0 WHERE payer_id='uhc' AND collection_month=$2`, status, month); err != nil {
+				t.Fatal(err)
+			}
+			_, err := SelectCatalogCandidate(ctx, pool, "uhc", month)
+			if !jobs.IsFailure(err, jobs.FailureDomainInvariant) {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}

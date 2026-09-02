@@ -20,6 +20,7 @@ type Params struct {
 	WarehousePath     string
 	OutputFingerprint string
 	Outputs           []Output
+	processObserver   func(BuildPhase)
 }
 
 // Result is the complete compact extraction result for one candidate release.

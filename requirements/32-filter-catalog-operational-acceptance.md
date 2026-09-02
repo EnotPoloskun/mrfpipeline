@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+Implemented.
 
 ## User story
 
@@ -14,8 +14,8 @@ web process depends on them.
 ## Context
 
 Stories 28–31 add a new schema, pinned DuckDB extraction, explicit build CLI,
-and catalog-aware release publication. Individual unit tests do not prove the
-complete boundary:
+and catalog-aware release publication. Story 32 completes the permanent
+operational acceptance boundary; the implementation is not a future placeholder.
 
 ```text
 pipeline release state
@@ -33,7 +33,7 @@ satisfy the approved contracts.
 
 ## Dependencies
 
-Completed implementations of Stories 28–31 plus the existing Story 22 local
+Completed implementations of Stories 28–32 plus the existing Story 22 local
 Compose topology and Story 27 incremental publication fixture behavior.
 
 ## Goal

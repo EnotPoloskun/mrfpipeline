@@ -282,6 +282,19 @@ func TestCommandEnvironmentRequirements(t *testing.T) {
 		}
 	})
 
+	t.Run("filters measure requires every worker path", func(t *testing.T) {
+		t.Parallel()
+		env := validWorkEnv(t)
+		delete(env, config.EnvServicesPath)
+		code, stdout, stderr := runCLI(context.Background(), []string{"filters", "measure", "--payer", "payer", "--collection-month", "2026-08"}, envMap(env))
+		if code != 2 || stdout != "" {
+			t.Fatalf("exit %d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		if !strings.Contains(stderr, config.EnvServicesPath) {
+			t.Fatalf("stderr %q", stderr)
+		}
+	})
+
 	t.Run("work requires every worker path", func(t *testing.T) {
 		t.Parallel()
 		env := validWorkEnv(t)
@@ -421,6 +434,8 @@ func TestNilContextPanicsBeforeValidation(t *testing.T) {
 		func() { _, _ = runDiscover(nil, getenv, "UHC", "bad", "0") },
 		func() { _, _ = runReconcile(nil, getenv) },
 		func() { _, _ = runRetry(nil, getenv, "toc.parse", "1") },
+		func() { _, _ = runFiltersBuild(nil, getenv, "payer", "2026-08") },
+		func() { _, _ = runFiltersMeasure(nil, getenv, "payer", "2026-08") },
 	} {
 		func() {
 			defer func() {
@@ -475,6 +490,21 @@ func TestCancellationPrecedence(t *testing.T) {
 	}
 	if errors.Is(err, context.Canceled) {
 		t.Fatal("must not re-check cancellation during validation")
+	}
+
+	_, err = runFiltersBuild(canceled, envMap(nil), "payer", "2026-08")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("filters build entry cancel: %v", err)
+	}
+	if errors.Is(err, config.ErrInvalidConfig) {
+		t.Fatal("filters build cancel must precede invalid config and must not retry")
+	}
+	_, err = runFiltersMeasure(canceled, envMap(nil), "payer", "2026-08")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("filters measure entry cancel: %v", err)
+	}
+	if errors.Is(err, config.ErrInvalidConfig) {
+		t.Fatal("filters measure cancel must precede invalid config and must not retry")
 	}
 }
 

@@ -74,6 +74,13 @@ docker buildx build --ssh default --progress=plain --load --tag mrfpipeline:loca
 
 Confirm `docker images mrfpipeline:local` shows a real image before migrate.
 
+The image contains the statically built `mrfpipeline` binary and the official
+DuckDB CLI at `/usr/local/bin/duckdb`, both pinned to the repository contract;
+DuckDB is exact `v1.5.5` for both `linux/amd64` and `linux/arm64` builds.
+DuckDB is not a Compose service, has no port or persistent volume, and never
+runs in a worker. CI verifies `mrfpipeline --version`, `duckdb --version`, and
+the static binary after the final image build.
+
 After a code change, rebuild the tag, then recreate running services so they
 pick up the new image (see [Reload a rebuilt image](#reload-a-rebuilt-image)).
 
@@ -110,8 +117,8 @@ Leave consumer at one replica.
 ## Operator CLI (one-shot `cli` service)
 
 These are the Compose forms of `mrfpipeline migrate`, `discover`,
-`month status`, `month sources set-total`, `month activate`, `retry`, and
-`reconcile`.
+`month status`, `month sources set-total`, `month activate`, `filters status`,
+`filters build`, `retry`, and `reconcile`.
 
 ```text
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli migrate
@@ -119,9 +126,49 @@ docker compose -f docker-compose.story21.yml --profile operator run --rm cli dis
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total <N|all>
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli filters status --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli filters build --payer uhc --collection-month <YYYY-MM>
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli retry --stage <kind> --id <domain-id>
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month activate --payer uhc --collection-month <YYYY-MM>
 ```
+
+## Filter catalog operations
+
+Build before activation and rerun the build explicitly after any stale race:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli filters status --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli filters build --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli month activate --payer uhc --collection-month <YYYY-MM>
+```
+
+The final image help smoke checks are:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli filters status --help
+docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli filters build --help
+docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli filters measure --help
+```
+
+The measurement wrapper is private and disposable only. Run it outside the
+Compose service when its normalized environment points at the private
+warehouse and database:
+
+```text
+scripts/measure-filter-build.sh <payer> <YYYY-MM>
+scripts/lookup-filter-measure.sh <payer> <YYYY-MM> <CPT|HCPCS> <code> <plan-id> <file>
+```
+
+Measurement refuses an existing ready/published target, never activates, emits
+only its exact sanitized 17-field JSON, and uses platform-supported
+`/usr/bin/time`. Lookup output is private `EXPLAIN (ANALYZE, BUFFERS)` evidence
+from fixed parameterized serving queries; it never changes PostgreSQL.
+
+Published catalogs are immutable. Reactivating an inactive month rolls back to
+its exact published generation; activating a new month makes the previous
+month inactive. Back up PostgreSQL and the warehouse together. Restore both,
+run `reconcile` and targeted `month status`/`filters status`, then verify the
+active relation before serving.
 
 `--limit` is additional TOC files and is always required on `discover`.
 `--mrf-source-limit` / `set-total --total` is the cumulative MRF source
