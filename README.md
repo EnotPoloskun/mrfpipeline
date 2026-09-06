@@ -281,13 +281,18 @@ new warehouse instead of refreshing in place.
 mrfpipeline migrate
 mrfpipeline work --role <control|mrf|consumer>
 mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count> [--mrf-source-limit <N|all>]
+mrfpipeline reconcile
+mrfpipeline retry --stage <job-kind> --id <domain-id>
+mrfpipeline stats [--payer <payer>] [--collection-month <YYYY-MM>] [--json]
 mrfpipeline month sources set-total --payer <payer> --collection-month <YYYY-MM> --total <N|all>
 mrfpipeline month status --payer <payer> --collection-month <YYYY-MM>
 mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
 mrfpipeline month status
-mrfpipeline reconcile
-mrfpipeline retry --stage <job-kind> --id <domain-id>
 ```
+
+`stats` is the read-only operational count table by stage, payer, and month.
+It requires only `MRFPIPELINE_DATABASE_URL`. `month status` remains the
+targeted readiness check.
 
 Compose wrappers for those verbs (build, start, scale, `cli` one-shots) are
 in [`DOCKER.md`](DOCKER.md).
@@ -365,6 +370,7 @@ Compose PostgreSQL. Do not `--scale consumer=2`: the extra replica exits
 | Follow control | `docker compose -f docker-compose.story21.yml logs -f --tail=50 control` |
 | Start MRF + consumer | `docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=2 mrf consumer` |
 | Bounded discover | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 1 --mrf-source-limit 3` |
+| Pipeline stats | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli stats` |
 | Month status | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>` |
 | Raise MRF target | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total <N\|all>` |
 | Retry one stage | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli retry --stage <kind> --id <domain-id>` |
@@ -418,12 +424,13 @@ same internal database URL and mounts as the workers:
 
 ```text
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 1 --mrf-source-limit 3
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli stats
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli stats --payer uhc --collection-month <YYYY-MM>
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total <N|all>
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli retry --stage <kind> --id <domain-id>
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli reconcile
 ```
-
 `reconcile` requires only the control service to be stopped; leave MRF and
 consumer running. It coordinates through release and exact execution locks,
 while `retry` may also run with roles active:
@@ -844,12 +851,17 @@ insufficient because active release mapping lives in PostgreSQL.
 
 ## Status queries
 
-Default queries are redacted. They return validated payer/month values,
-derived output IDs, blocker codes, counts, statuses, and numeric IDs only.
-The targeted `month status --payer ... --collection-month ...` command is the
+`mrfpipeline stats` is the operator count table for TOC, MRF, ingest, and
+plan-attachment rows by domain status, payer, and month. The targeted
+`month status --payer ... --collection-month ...` command remains the
 authoritative readiness check, including exact current River-job identity.
-The aggregate query below is an operational overview, not a replacement for
-that targeted check.
+
+The redacted SQL below is supplementary diagnostic SQL. It is not a
+replacement for either command. In particular, the payer-less
+`mrf_sources` aggregate is not identical to `stats` MRF attribution, which
+counts snapshot-joined sources once per payer.
+
+Default queries are redacted. They return validated payer/month values,
 
 ```sql
 SELECT status, count(*) AS n

@@ -2,7 +2,7 @@
 
 ## Status
 
-Not implemented.
+Implemented.
 
 ## User story
 

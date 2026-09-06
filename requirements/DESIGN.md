@@ -652,7 +652,7 @@ loss cancels worker operation and prevents beginning another consumer write.
 
 ## Operator commands
 
-The version 1 executable has five operational commands:
+The version 1 executable includes these operational commands:
 
 ```text
 mrfpipeline migrate
@@ -660,6 +660,7 @@ mrfpipeline work
 mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
 mrfpipeline reconcile
 mrfpipeline retry --stage <job-kind> --id <domain-id>
+mrfpipeline stats [--payer <payer>] [--collection-month <YYYY-MM>] [--json]
 ```
 
 `migrate` explicitly applies current application and River migrations. No
@@ -698,8 +699,11 @@ check it against blob dates. The first admitting run freezes that month on the
 TOC row. A wrong first admission is not corrected by rediscovery or retry; it
 requires rebuilding the affected pipeline and warehouse state.
 
-`reconcile` needs the complete worker environment. `retry` needs only the
-database URL. Both fail without mutation while the leased worker is active.
+`reconcile` needs the complete worker environment. `migrate`, `stats`,
+`discover`, `retry`, no-flag `month status`, targeted `month status`, and
+`filters status` need only the database URL. `retry` fails without mutation
+while the leased worker is active. `stats` is read-only and does not acquire
+the worker lease.
 
 ## Runtime configuration
 
@@ -713,8 +717,9 @@ The established environment is:
 | `MRFPIPELINE_PROVIDER_CATALOG_PATH` | Manually prepared provider catalog. |
 | `MRFPIPELINE_SERVICES_PATH` | Service-selector CSV for `mrfparser`. |
 
-`migrate`, `discover`, and `retry` need only the database URL. `work` and
-`reconcile` need the complete set. Configuration has no file format and
+`migrate`, `stats`, `discover`, and `retry` need only the database URL.
+Both `month status` forms and `filters status` are database-only as well.
+`work` and `reconcile` need the complete set. Configuration has no file format and
 secrets are not accepted through command-line flags.
 
 ## Durable identity model

@@ -13,6 +13,7 @@ Usage:
   mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count> [--mrf-source-limit <N|all>]
   mrfpipeline reconcile
   mrfpipeline retry --stage <job-kind> --id <domain-id>
+  mrfpipeline stats [--payer <payer>] [--collection-month <YYYY-MM>] [--json]
   mrfpipeline month status [--payer <payer> --collection-month <YYYY-MM>]
   mrfpipeline month sources set-total --payer <payer> --collection-month <YYYY-MM> --total <N|all>
   mrfpipeline month activate --payer <payer> --collection-month <YYYY-MM>
@@ -28,6 +29,7 @@ Commands:
   discover  Enqueue one bounded UHC discovery run
   reconcile Repair building-release gaps and report sealed inconsistencies
   retry     Reopen one exact failed stage with a fresh River series
+  stats     Print read-only pipeline stage counts by payer and month
   month     Inspect and activate monthly serving releases
   filters   Build and inspect release filter catalogs
 `
@@ -145,6 +147,18 @@ Required environment:
 
 `
 
+const statsHelp = `Usage:
+  mrfpipeline stats
+  mrfpipeline stats --payer <payer>
+  mrfpipeline stats --collection-month <YYYY-MM>
+  mrfpipeline stats --payer <payer> --collection-month <YYYY-MM>
+  mrfpipeline stats [--payer <payer>] [--collection-month <YYYY-MM>] [--json]
+  mrfpipeline stats --help
+
+Print a read-only count table of TOC, MRF, ingest, and plan-attachment rows
+by domain status, payer, and month. Requires only MRFPIPELINE_DATABASE_URL.
+`
+
 const monthHelp = `Usage:
   mrfpipeline month status
   mrfpipeline month status --payer <payer> --collection-month <YYYY-MM>
@@ -230,6 +244,8 @@ func helpFor(command string) string {
 		return reconcileHelp
 	case cmdRetry:
 		return retryHelp
+	case cmdStats:
+		return statsHelp
 	case cmdMonth:
 		return monthHelp
 	case cmdFilters:

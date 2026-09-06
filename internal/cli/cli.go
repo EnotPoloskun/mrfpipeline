@@ -24,6 +24,7 @@ import (
 	"github.com/enotpoloskun/mrfpipeline/internal/mrfparse"
 	"github.com/enotpoloskun/mrfpipeline/internal/reconcile"
 	"github.com/enotpoloskun/mrfpipeline/internal/release"
+	"github.com/enotpoloskun/mrfpipeline/internal/stats"
 	"github.com/enotpoloskun/mrfpipeline/internal/work"
 )
 
@@ -37,6 +38,7 @@ const (
 	cmdDiscover          = "discover"
 	cmdReconcile         = "reconcile"
 	cmdRetry             = "retry"
+	cmdStats             = "stats"
 	cmdMonth             = "month"
 	cmdFilters           = "filters"
 	monthStatus          = "status"
@@ -95,6 +97,8 @@ func execute(ctx context.Context, args []string, getenv func(string) string) (st
 		text, opErr = runReconcile(ctx, getenv)
 	case cmdRetry:
 		text, opErr = runRetry(ctx, getenv, parsed.stage, parsed.id)
+	case cmdStats:
+		text, opErr = runStats(ctx, getenv, parsed.payer, parsed.month, parsed.statsJSON)
 	case cmdMonth:
 		switch parsed.monthAction {
 		case monthStatus:
@@ -428,6 +432,48 @@ func runRetry(ctx context.Context, getenv func(string) string, stage, id string)
 		return "", err
 	}
 	return reconcile.FormatRetry(result)
+}
+
+func runStats(ctx context.Context, getenv func(string) string, payer, month string, jsonOut bool) (string, error) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := config.ValidateDatabaseURL(getenv(config.EnvDatabaseURL)); err != nil {
+		return "", err
+	}
+	if payer != "" {
+		if err := config.ValidatePayerIdentifier(payer); err != nil {
+			return "", err
+		}
+	}
+	var monthDate time.Time
+	if month != "" {
+		var err error
+		monthDate, err = parseMonthDate(month)
+		if err != nil {
+			return "", err
+		}
+	}
+	pool, err := database.Open(ctx, getenv(config.EnvDatabaseURL), database.OperatorMaxConns)
+	if err != nil {
+		return "", err
+	}
+	defer pool.Close()
+	if err := database.ValidateCurrent(ctx, pool); err != nil {
+		return "", err
+	}
+	opts := stats.Options{Payer: payer, Month: monthDate}
+	rows, err := stats.Collect(ctx, pool, opts)
+	if err != nil {
+		return "", err
+	}
+	if jsonOut {
+		return stats.FormatJSON(rows)
+	}
+	return stats.FormatTable(rows), nil
 }
 
 func runMonthStatus(ctx context.Context, getenv func(string) string, payer, month string) (string, error) {
@@ -790,6 +836,7 @@ type parsed struct {
 	id            string
 	monthAction   string
 	filtersAction string
+	statsJSON     bool
 }
 
 func parse(args []string) (parsed, error) {
@@ -809,7 +856,7 @@ func parse(args []string) (parsed, error) {
 		return parsed{version: true}, nil
 	}
 	switch args[0] {
-	case cmdMigrate, cmdWork, cmdDiscover, cmdReconcile, cmdRetry, cmdMonth, cmdFilters:
+	case cmdMigrate, cmdWork, cmdDiscover, cmdReconcile, cmdRetry, cmdStats, cmdMonth, cmdFilters:
 		return parseCommand(args[0], args[1:])
 	default:
 		return parsed{}, &usageError{reason: "unknown command"}
@@ -826,6 +873,12 @@ func parseCommand(command string, rest []string) (parsed, error) {
 			return parsed{}, err
 		}
 		return parsed{command: command}, nil
+	case cmdStats:
+		payer, month, jsonOut, err := parseStatsFlags(rest)
+		if err != nil {
+			return parsed{}, err
+		}
+		return parsed{command: cmdStats, payer: payer, month: month, statsJSON: jsonOut}, nil
 	case cmdWork:
 		role, err := parseWorkFlags(rest)
 		if err != nil {
@@ -1144,6 +1197,56 @@ func parseRetryFlags(rest []string) (stage, id string, err error) {
 	return stage, id, nil
 }
 
+func parseStatsFlags(rest []string) (payer, month string, jsonOut bool, err error) {
+	var havePayer, haveMonth, haveJSON bool
+	for i := 0; i < len(rest); {
+		arg := rest[i]
+		if arg == "--json" {
+			if haveJSON {
+				return "", "", false, &usageError{command: cmdStats, reason: "duplicate flag --json"}
+			}
+			if i+1 < len(rest) && !strings.HasPrefix(rest[i+1], "--") {
+				return "", "", false, &usageError{command: cmdStats, reason: "unsupported flag"}
+			}
+			haveJSON, jsonOut = true, true
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--json=") {
+			return "", "", false, &usageError{command: cmdStats, reason: "unsupported flag"}
+		}
+		if arg == "--" || isSingleDash(arg) || !strings.HasPrefix(arg, "--") {
+			return "", "", false, &usageError{command: cmdStats, reason: "invalid argument"}
+		}
+		name, value, next, ferr := takeFlag(cmdStats, rest, i)
+		if ferr != nil {
+			return "", "", false, ferr
+		}
+		if name == "json" {
+			return "", "", false, &usageError{command: cmdStats, reason: "unsupported flag"}
+		}
+		if value == "" {
+			return "", "", false, &usageError{command: cmdStats, reason: "empty flag argument"}
+		}
+		switch name {
+		case "payer":
+			if havePayer {
+				return "", "", false, &usageError{command: cmdStats, reason: "duplicate flag --payer"}
+			}
+			payer, havePayer = value, true
+		case "collection-month":
+			if haveMonth {
+				return "", "", false, &usageError{command: cmdStats, reason: "duplicate flag --collection-month"}
+			}
+			month, haveMonth = value, true
+		default:
+			return "", "", false, &usageError{command: cmdStats, reason: "unsupported flag"}
+		}
+		i = next
+	}
+	return payer, month, jsonOut, nil
+}
+
 func takeFlag(command string, args []string, i int) (name, value string, next int, err error) {
 	body := strings.TrimPrefix(args[i], "--")
 	if body == "" || body[0] == '-' {
@@ -1237,6 +1340,8 @@ func hint(command string) string {
 		return "Try 'mrfpipeline reconcile --help'."
 	case cmdRetry:
 		return "Try 'mrfpipeline retry --help'."
+	case cmdStats:
+		return "Try 'mrfpipeline stats --help'."
 	case cmdMonth:
 		return "Try 'mrfpipeline month --help'."
 	case cmdFilters:

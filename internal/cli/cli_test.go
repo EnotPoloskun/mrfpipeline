@@ -64,6 +64,7 @@ func TestInformationalInvocations(t *testing.T) {
 		{"discover", "--help"},
 		{"reconcile", "--help"},
 		{"retry", "--help"},
+		{"stats", "--help"},
 		{"month", "--help"},
 		{"--version"},
 	}
@@ -81,8 +82,8 @@ func TestInformationalInvocations(t *testing.T) {
 				t.Fatalf("help mentioned later story: %q", stdout)
 			}
 			if args[0] == "--help" {
-				if !strings.Contains(stdout, "reconcile") || !strings.Contains(stdout, "retry") {
-					t.Fatalf("root help must list five commands: %q", stdout)
+				if !strings.Contains(stdout, "reconcile") || !strings.Contains(stdout, "retry") || !strings.Contains(stdout, "stats") {
+					t.Fatalf("root help must list operator commands including stats: %q", stdout)
 				}
 			}
 		})

@@ -116,13 +116,15 @@ Leave consumer at one replica.
 
 ## Operator CLI (one-shot `cli` service)
 
-These are the Compose forms of `mrfpipeline migrate`, `discover`,
+These are the Compose forms of `mrfpipeline migrate`, `discover`, `stats`,
 `month status`, `month sources set-total`, `month activate`, `filters status`,
 `filters build`, `retry`, and `reconcile`.
 
 ```text
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli migrate
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 1 --mrf-source-limit 3
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli stats
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli stats --payer uhc --collection-month <YYYY-MM>
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total <N|all>
@@ -262,7 +264,7 @@ docker compose -f docker-compose.story21.yml ps
 docker compose -f docker-compose.story21.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql
 ```
 
-`month status` is the readiness check. Worker logs never print URLs.
+`mrfpipeline stats` is the read-only operational count table. `month status` is the readiness check. Worker logs never print URLs.
 
 ## River UI (optional)
 

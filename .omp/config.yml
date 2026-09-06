@@ -1,0 +1,8 @@
+memory:
+  backend: mnemopi
+
+mnemopi:
+  bank: mrf-pipeline
+  scoping: global
+  autoRecall: true
+  autoRetain: true
