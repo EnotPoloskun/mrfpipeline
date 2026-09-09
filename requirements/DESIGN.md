@@ -1576,7 +1576,8 @@ output and every warehouse publication.
 - URL uniqueness is exact database equality, independent of listing order.
 - TOC imports may finish out of order.
 - MRF sources and snapshots may become eligible out of order.
-- Consumer writes are serialized, but their order is not plan identity.
+- Distinct `output_id` writes may overlap; the same `output_id` stays serial,
+  but write order is not plan identity.
 - Plans are sorted deterministically when generating a batch document.
 - Later plan arrival is additive and does not invalidate an earlier completed
   parse or ingest.
