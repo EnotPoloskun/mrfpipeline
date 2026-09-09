@@ -2,6 +2,7 @@ package admission
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,7 +14,11 @@ import (
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertype"
 )
 
 func admissionTestDB(t *testing.T) *pgxpool.Pool {
@@ -357,6 +362,112 @@ VALUES ($1, 'uhc', $2)`, sourceID, month); err != nil {
 	if held != 2 {
 		t.Fatalf("failed capacity configuration changed held=%d", held)
 	}
+}
+
+type immediateRetry struct{}
+
+func (immediateRetry) NextRetry(*rivertype.JobRow) time.Time { return time.Now() }
+
+func startControlRuntime(t *testing.T, pool *pgxpool.Pool, w *Worker) {
+	t.Helper()
+	workers := river.NewWorkers()
+	river.AddWorker(workers, w)
+	cfg := jobs.ClientConfig(workers, map[string]river.QueueConfig{jobs.QueueControl: {MaxWorkers: 1}}, nil, jobs.NewLogger(io.Discard))
+	cfg.SkipUnknownJobCheck = true
+	cfg.RetryPolicy = immediateRetry{}
+	cfg.FetchCooldown = 50 * time.Millisecond
+	cfg.FetchPollInterval = 50 * time.Millisecond
+	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = jobs.Shutdown(context.Background(), client) })
+}
+
+func insertControlWake(t *testing.T, pool *pgxpool.Pool) int64 {
+	t.Helper()
+	ctx := context.Background()
+	client, err := jobs.NewInsertClient(ctx, pool, jobs.NewLogger(io.Discard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WakeTx(ctx, tx, client); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var jobID int64
+	if err := pool.QueryRow(ctx, `
+SELECT id FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindControlSchedule).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
+	return jobID
+}
+
+func TestIntegrationInvalidArgumentsCancelsWithoutEightAttempts(t *testing.T) {
+	pool := admissionTestDB(t)
+	jobID := insertControlWake(t, pool)
+	startControlRuntime(t, pool, &Worker{Logger: jobs.NewLogger(io.Discard)})
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		var attempt int
+		var state string
+		if err := pool.QueryRow(context.Background(), `
+SELECT attempt, state FROM mrfpipeline_river.river_job WHERE id = $1`, jobID).Scan(&attempt, &state); err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if state == "cancelled" {
+			if attempt != 1 {
+				t.Fatalf("cancelled after %d attempts", attempt)
+			}
+			return
+		}
+		if state == "discarded" || attempt >= 8 {
+			t.Fatalf("consumed retry budget attempt=%d state=%s", attempt, state)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("invalid_job_arguments did not cancel")
+}
+
+func TestIntegrationScheduleDatabaseErrorRetries(t *testing.T) {
+	pool := admissionTestDB(t)
+	jobID := insertControlWake(t, pool)
+	startControlRuntime(t, pool, &Worker{
+		Pool:   pool,
+		Logger: jobs.NewLogger(io.Discard),
+		BeforeSchedule: func(context.Context, *river.Client[pgx.Tx]) error {
+			return jobs.Failure(jobs.FailureReconciliationDatabaseFailed)
+		},
+	})
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var attempt int
+		var state string
+		if err := pool.QueryRow(context.Background(), `
+SELECT attempt, state FROM mrfpipeline_river.river_job WHERE id = $1`, jobID).Scan(&attempt, &state); err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if state == "cancelled" || state == "discarded" {
+			t.Fatalf("retryable schedule error became terminal attempt=%d state=%s", attempt, state)
+		}
+		if attempt >= 2 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("reconciliation_database_failed did not retry")
 }
 
 func assertSelectedURLs(t *testing.T, pool *pgxpool.Pool, month time.Time, want []string) {

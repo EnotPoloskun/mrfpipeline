@@ -10,6 +10,13 @@ import (
 
 var errInvariant = jobs.Failure(jobs.FailurePlanAttachInvariant)
 
+func mapSnapshotPreflight(err error) error {
+	if err == nil {
+		return nil
+	}
+	return jobs.Failure(jobs.FailurePlanAttachInputInvalid)
+}
+
 func mapWorkError(err error) error {
 	if err == nil {
 		return nil

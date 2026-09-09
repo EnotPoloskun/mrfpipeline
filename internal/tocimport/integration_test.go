@@ -377,7 +377,7 @@ func TestIntegrationInvalidLastPartNoMutation(t *testing.T) {
 	pool := testDB(t)
 	client := insertClient(t, pool)
 	ws := mustWorkspace(t)
-	tocID, _ := insertImportJob(t, pool, client, time.Time{})
+	tocID, jobID := insertImportJob(t, pool, client, time.Time{})
 	source, output, err := generatedPaths(ws, tocID)
 	if err != nil {
 		t.Fatal(err)
@@ -400,6 +400,53 @@ func TestIntegrationInvalidLastPartNoMutation(t *testing.T) {
 	var code *string
 	if err := pool.QueryRow(context.Background(), `SELECT failure_code FROM mrfpipeline.toc_files WHERE id = $1`, tocID).Scan(&code); err != nil || code == nil || *code != jobs.FailureTOCImportSchemaInvalid {
 		t.Fatalf("code %v", code)
+	}
+	var attempt int
+	var state string
+	if err := pool.QueryRow(context.Background(), `
+SELECT attempt, state FROM mrfpipeline_river.river_job WHERE id = $1`, jobID).Scan(&attempt, &state); err != nil {
+		t.Fatal(err)
+	}
+	if attempt != 1 || state != "cancelled" {
+		t.Fatalf("river attempt=%d state=%s", attempt, state)
+	}
+}
+
+func TestIntegrationRowInvalidNoMutation(t *testing.T) {
+	pool := testDB(t)
+	client := insertClient(t, pool)
+	ws := mustWorkspace(t)
+	tocID, jobID := insertImportJob(t, pool, client, time.Time{})
+	source, output, err := generatedPaths(ws, tocID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := artifact.RecordDirName(artifact.KindTOC, tocID)
+	a := validAssoc("https://example.test/a.json", "plan", "issuer", nil, "hios", "id", "group")
+	a.TOCOutputID, a.CollectionMonth = id, "2026-08"
+	writeParquet(t, filepath.Join(output, datasetTOCFiles, "part-00000.parquet"), []tocFileRow{sampleTOCRow(id, "uhc", "2026-08", source)})
+	writeParquet(t, filepath.Join(output, datasetAssociations, "part-00000.parquet"), []assocRow{a})
+	writeManifest(t, output, id, "uhc", "2026-08", source, 2)
+	startImportRuntime(t, pool, ws, 8, nil)
+	waitImport(t, pool, tocID, jobs.StatusFailed)
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline.mrf_sources`) != 0 {
+		t.Fatal("mutated")
+	}
+	if count(t, pool, `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindMRFDownload) != 0 {
+		t.Fatal("mrf jobs")
+	}
+	var code *string
+	if err := pool.QueryRow(context.Background(), `SELECT failure_code FROM mrfpipeline.toc_files WHERE id = $1`, tocID).Scan(&code); err != nil || code == nil || *code != jobs.FailureTOCImportRowInvalid {
+		t.Fatalf("code %v", code)
+	}
+	var attempt int
+	var state string
+	if err := pool.QueryRow(context.Background(), `
+SELECT attempt, state FROM mrfpipeline_river.river_job WHERE id = $1`, jobID).Scan(&attempt, &state); err != nil {
+		t.Fatal(err)
+	}
+	if attempt != 1 || state != "cancelled" {
+		t.Fatalf("river attempt=%d state=%s", attempt, state)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/enotpoloskun/mrfconsumer"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
+	"github.com/enotpoloskun/mrfpipeline/internal/consumeringest"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/enotpoloskun/mrfpipeline/internal/planbatch"
 	"github.com/riverqueue/river"
@@ -191,6 +192,9 @@ func TestMapWorkError(t *testing.T) {
 	}
 	if !jobs.IsFailure(mapWorkError(mrfconsumer.ErrInvalidInput), jobs.FailurePlanAttachInputInvalid) {
 		t.Fatal("input")
+	}
+	if err := mapSnapshotPreflight(consumeringest.InspectCompletedSnapshot(t.TempDir(), "uhc", "2026-08", "mrf-1")); !jobs.IsFailure(err, jobs.FailurePlanAttachInputInvalid) {
+		t.Fatalf("snapshot inspect: %v", err)
 	}
 	secret := errors.Join(mrfconsumer.ErrOutput, errors.New("plan Acme https://secret"))
 	err := mapWorkError(secret)

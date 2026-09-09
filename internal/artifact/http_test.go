@@ -244,6 +244,11 @@ func TestDownloadNotFoundIsDistinct(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte("<html lang=\"en\">secret 404 body</html>"))
 	})
+	mux.HandleFunc("/410", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusGone)
+		_, _ = w.Write([]byte("<html lang=\"en\">secret 410 body</html>"))
+	})
 	mux.HandleFunc("/forbidden", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte("secret 403 body"))
@@ -265,6 +270,13 @@ func TestDownloadNotFoundIsDistinct(t *testing.T) {
 	_, err = d.Download(context.Background(), KindTOC, 2, testURL("/redir"), testProg())
 	if !errors.Is(err, ErrHTTPNotFound) {
 		t.Fatalf("redirected 404: %v", err)
+	}
+	_, err = d.Download(context.Background(), KindTOC, 4, testURL("/410"), testProg())
+	if !errors.Is(err, ErrDownload) || !errors.Is(err, ErrHTTPNotFound) {
+		t.Fatalf("410: %v", err)
+	}
+	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "410") || strings.Contains(err.Error(), "<html") {
+		t.Fatalf("leaked 410: %v", err)
 	}
 	_, err = d.Download(context.Background(), KindTOC, 3, testURL("/forbidden"), testProg())
 	if !errors.Is(err, ErrDownload) || errors.Is(err, ErrHTTPNotFound) {

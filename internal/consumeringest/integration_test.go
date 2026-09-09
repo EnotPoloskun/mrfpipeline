@@ -484,3 +484,59 @@ func TestIntegrationCorruptOwnedCatalogFailsClosed(t *testing.T) {
 		t.Fatalf("map %v", mapWorkError(err))
 	}
 }
+
+func TestIntegrationMissingParsedFailsImmediately(t *testing.T) {
+	pool := testDB(t)
+	ws := mustWorkspace(t)
+	svc := mustServices(t)
+	cat := mustCatalog(t)
+	warehouse := filepath.Join(t.TempDir(), "wh")
+	if err := os.Mkdir(warehouse, 0700); err != nil {
+		t.Fatal(err)
+	}
+	client := insertClient(t, pool)
+	sourceID, snapID, jobID := insertIngestJob(t, pool, client, "2026-08-01")
+	var ingested atomic.Bool
+	startIngestRuntime(t, pool, &Worker{
+		Pool: pool, Workspace: ws, WarehousePath: warehouse, ServicesPath: svc, Catalog: cat,
+		Logger: jobs.NewLogger(io.Discard),
+		Ingest: func(context.Context, mrfconsumer.Config) (mrfconsumer.Report, error) {
+			ingested.Store(true)
+			return mrfconsumer.Report{}, errors.New("should not ingest")
+		},
+	}, 8)
+	waitConsume(t, pool, snapID, jobs.StatusFailed)
+	if ingested.Load() {
+		t.Fatal("ingested missing parse")
+	}
+	var fail *string
+	var parse string
+	if err := pool.QueryRow(context.Background(), `SELECT failure_code FROM mrfpipeline.mrf_snapshots WHERE id = $1`, snapID).Scan(&fail); err != nil {
+		t.Fatal(err)
+	}
+	if fail == nil || *fail != jobs.FailureConsumerIngestInputInvalid {
+		t.Fatalf("fail %v", fail)
+	}
+	if err := pool.QueryRow(context.Background(), `SELECT parse_status FROM mrfpipeline.mrf_sources WHERE id = $1`, sourceID).Scan(&parse); err != nil {
+		t.Fatal(err)
+	}
+	if parse != jobs.StatusSucceeded {
+		t.Fatalf("parse %s", parse)
+	}
+	var attempt int
+	var state string
+	if err := pool.QueryRow(context.Background(), `
+SELECT attempt, state FROM mrfpipeline_river.river_job WHERE id = $1`, jobID).Scan(&attempt, &state); err != nil {
+		t.Fatal(err)
+	}
+	if attempt != 1 || state != "cancelled" {
+		t.Fatalf("river attempt=%d state=%s", attempt, state)
+	}
+	entries, err := os.ReadDir(warehouse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("warehouse mutated %v", entries)
+	}
+}

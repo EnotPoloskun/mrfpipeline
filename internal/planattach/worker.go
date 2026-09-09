@@ -91,7 +91,7 @@ func (w *Worker) attach(ctx context.Context, ident claimIdentity) (int64, error)
 	}
 
 	if err := consumeringest.InspectCompletedSnapshot(w.WarehousePath, ident.PayerID, ident.MonthText, consumeringest.FormatSnapshotOutputID(ident.SnapshotID)); err != nil {
-		return 0, jobs.Failure(jobs.FailurePlanAttachOutputInvalid)
+		return 0, mapSnapshotPreflight(err)
 	}
 
 	outputID := consumeringest.FormatSnapshotOutputID(ident.SnapshotID)

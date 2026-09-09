@@ -746,3 +746,86 @@ func writeIncomplete(t *testing.T, ws *artifact.Workspace, id int64) {
 		t.Fatal(err)
 	}
 }
+
+func TestIntegrationGoneReleasesEmptySlot(t *testing.T) {
+	pool := testDB(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gone", http.StatusGone)
+	}))
+	t.Cleanup(ts.Close)
+	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := insertClient(t, pool)
+	sourceID, jobID := insertSourceJob(t, pool, client, storedURL("/gone"))
+	startDownloadRuntime(t, pool, hookDownloader(ws, ts), 8)
+	waitDownload(t, pool, sourceID, jobs.StatusFailed)
+	download, parse, parseJob, fail := sourceRow(t, pool, sourceID)
+	if download != jobs.StatusFailed || parse != jobs.StatusBlocked || parseJob != nil || fail == nil || *fail != jobs.FailureMRFDownloadNotFound {
+		t.Fatalf("terminal %s %s job=%v fail=%v", download, parse, parseJob, fail)
+	}
+	var attempt int
+	var state string
+	if err := pool.QueryRow(context.Background(), `
+SELECT attempt, state FROM mrfpipeline_river.river_job WHERE id = $1`, jobID).Scan(&attempt, &state); err != nil {
+		t.Fatal(err)
+	}
+	if attempt != 1 || state != "cancelled" {
+		t.Fatalf("river attempt=%d state=%s", attempt, state)
+	}
+	raw, err := ws.InspectDownloadState(artifact.KindMRF, sourceID)
+	if err != nil || raw != artifact.DownloadAbsent {
+		t.Fatalf("download state %s %v", raw, err)
+	}
+	var held int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_materialization_slots WHERE mrf_source_id = $1`, sourceID).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Fatalf("held slots %d", held)
+	}
+}
+
+func TestIntegrationForbiddenRetries(t *testing.T) {
+	pool := testDB(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusForbidden)
+	}))
+	t.Cleanup(ts.Close)
+	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := insertClient(t, pool)
+	sourceID, jobID := insertSourceJob(t, pool, client, storedURL("/forbidden"))
+	startDownloadRuntime(t, pool, hookDownloader(ws, ts), 8)
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var attempt int
+		var download string
+		if err := pool.QueryRow(context.Background(), `
+SELECT j.attempt, s.download_status
+FROM mrfpipeline_river.river_job j
+JOIN mrfpipeline.mrf_sources s ON s.id = $2
+WHERE j.id = $1`, jobID, sourceID).Scan(&attempt, &download); err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if attempt >= 2 && download != jobs.StatusFailed {
+			var held int
+			if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline.mrf_materialization_slots WHERE mrf_source_id = $1`, sourceID).Scan(&held); err != nil {
+				t.Fatal(err)
+			}
+			if held != 1 {
+				t.Fatalf("slot released during 403 retry held=%d", held)
+			}
+			return
+		}
+		if download == jobs.StatusFailed {
+			t.Fatal("403 failed immediately")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("403 did not retry")
+}

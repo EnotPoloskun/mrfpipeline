@@ -186,7 +186,7 @@ A different value fails `source_target_conflict`.
 `consumer.attach_plans`. `--id` is the domain row, not a River job id.
 
 `mrf.parse`, `mrf.download`, and `toc.download` have four attempts including
-the first. A terminal download (retry exhaustion, HTTP 404, or River UI cancel)
+the first. A terminal download (retry exhaustion, HTTP 404 or 410, or River UI cancel)
 deletes unpublished download bytes and matching staging; MRF cleanup then frees
 the resident slot. Recreate/SIGTERM stays an interruption and keeps bytes for
 resume. After a terminal parse, the worker deletes unpublished parsed output,

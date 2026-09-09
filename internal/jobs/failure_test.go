@@ -35,6 +35,7 @@ func TestFailureCodes(t *testing.T) {
 		FailureConsumerIngestInputInvalid,
 		FailureConsumerIngestOutputFailed,
 		FailureConsumerIngestOutputInvalid,
+		FailureConsumerIngestPublicationInvalid,
 		FailureConsumerIngestProviderChanged,
 		FailureConsumerIngestDatabaseFailed,
 		FailurePlanAttachConfigInvalid,
@@ -67,94 +68,62 @@ func TestFailureCodes(t *testing.T) {
 	if terminalFailureCode(jobErr("work")) != FailureAttemptsExhausted {
 		t.Fatal("unknown work error")
 	}
-	if !isImmediateFail(Failure(FailureDomainInvariant)) {
-		t.Fatal("invariant should be immediate")
+	for _, code := range []string{
+		FailureInvalidArguments,
+		FailureMissingRecord,
+		FailureDomainInvariant,
+		FailureTOCDownloadNotFound,
+		FailureMRFDownloadNotFound,
+		FailureSealedReleaseInconsistent,
+		FailureSealedReleaseRetryForbidden,
+		FailureTOCParseInputInvalid,
+		FailureTOCParseOutputInvalid,
+		FailureMRFParseOutputInvalid,
+		FailureMRFParseSelectorChanged,
+		FailureTOCImportManifestInvalid,
+		FailureTOCImportSchemaInvalid,
+		FailureTOCImportRowInvalid,
+		FailureTOCImportOrderInvalid,
+		FailureTOCImportInvariant,
+		FailureConsumerIngestConfigInvalid,
+		FailureConsumerIngestInputInvalid,
+		FailureConsumerIngestProviderChanged,
+		FailureConsumerIngestPublicationInvalid,
+		FailurePlanAttachConfigInvalid,
+		FailurePlanAttachInputInvalid,
+		FailurePlanAttachInvariant,
+	} {
+		if !isImmediateFail(Failure(code)) {
+			t.Fatalf("%s should be immediate", code)
+		}
 	}
-	if isImmediateFail(Failure(FailureDiscoveryListing)) {
-		t.Fatal("listing should retry")
-	}
-	if isImmediateFail(Failure(FailureTOCDownload)) {
-		t.Fatal("toc download should retry")
-	}
-	if !isImmediateFail(Failure(FailureTOCDownloadNotFound)) {
-		t.Fatal("toc 404 must be immediate")
-	}
-	if isImmediateFail(Failure(FailureMRFDownload)) {
-		t.Fatal("mrf download should retry")
-	}
-	if !isImmediateFail(Failure(FailureMRFDownloadNotFound)) {
-		t.Fatal("mrf 404 must be immediate")
-	}
-	if isImmediateFail(Failure(FailureTOCParseInputInvalid)) {
-		t.Fatal("toc parse input should retry")
-	}
-	if isImmediateFail(Failure(FailureMRFParseExecutionFailed)) {
-		t.Fatal("mrf parse execution should retry")
-	}
-	if isImmediateFail(Failure(FailureMRFParseOutputInvalid)) {
-		t.Fatal("mrf parse output should retry")
-	}
-	if isImmediateFail(Failure(FailureMRFParseSelectorChanged)) {
-		t.Fatal("mrf parse selector should retry")
-	}
-	if isImmediateFail(Failure(FailureMRFParseCleanupFailed)) {
-		t.Fatal("mrf parse cleanup should retry")
-	}
-	if isImmediateFail(Failure(FailureMRFParseDatabaseFailed)) {
-		t.Fatal("mrf parse database should retry")
-	}
-	if isImmediateFail(Failure(FailureTOCImportManifestInvalid)) {
-		t.Fatal("toc import manifest should retry")
-	}
-	if isImmediateFail(Failure(FailureTOCImportInvariant)) {
-		t.Fatal("toc import invariant should retry")
-	}
-	if isImmediateFail(Failure(FailureConsumerIngestConfigInvalid)) {
-		t.Fatal("consumer ingest config should retry")
-	}
-	if isImmediateFail(Failure(FailureConsumerIngestInputInvalid)) {
-		t.Fatal("consumer ingest input should retry")
-	}
-	if isImmediateFail(Failure(FailureConsumerIngestOutputFailed)) {
-		t.Fatal("consumer ingest output failed should retry")
-	}
-	if isImmediateFail(Failure(FailureConsumerIngestOutputInvalid)) {
-		t.Fatal("consumer ingest output invalid should retry")
-	}
-	if isImmediateFail(Failure(FailureConsumerIngestProviderChanged)) {
-		t.Fatal("consumer ingest provider should retry")
-	}
-	if isImmediateFail(Failure(FailureConsumerIngestDatabaseFailed)) {
-		t.Fatal("consumer ingest database should retry")
-	}
-	if isImmediateFail(Failure(FailurePlanAttachConfigInvalid)) {
-		t.Fatal("plan attach config should retry")
-	}
-	if isImmediateFail(Failure(FailurePlanAttachInputInvalid)) {
-		t.Fatal("plan attach input should retry")
-	}
-	if isImmediateFail(Failure(FailurePlanAttachOutputFailed)) {
-		t.Fatal("plan attach output failed should retry")
-	}
-	if isImmediateFail(Failure(FailurePlanAttachOutputInvalid)) {
-		t.Fatal("plan attach output invalid should retry")
-	}
-	if isImmediateFail(Failure(FailurePlanAttachDatabaseFailed)) {
-		t.Fatal("plan attach database should retry")
-	}
-	if isImmediateFail(Failure(FailurePlanAttachInvariant)) {
-		t.Fatal("plan attach invariant should retry")
-	}
-	if isImmediateFail(Failure(FailureWorkerLeaseUnavailable)) {
-		t.Fatal("lease unavailable is not an immediate worker fail")
-	}
-	if isImmediateFail(Failure(FailureRiverTerminalWithoutResult)) {
-		t.Fatal("river terminal is not an immediate worker fail")
-	}
-	if isImmediateFail(Failure(FailureRetryStageNotFailed)) {
-		t.Fatal("retry not-failed is not an immediate worker fail")
-	}
-	if !isImmediateFail(Failure(FailureSealedReleaseRetryForbidden)) {
-		t.Fatal("sealed retry must be immediate")
+	for _, code := range []string{
+		FailureDiscoveryListing,
+		FailureDiscoveryResultInvalid,
+		FailureDiscoveryDatabase,
+		FailureTOCDownload,
+		FailureMRFDownload,
+		FailureTOCParseResourceFailed,
+		FailureTOCParseOutputFailed,
+		FailureTOCParseCleanupFailed,
+		FailureMRFParseExecutionFailed,
+		FailureMRFParseCleanupFailed,
+		FailureMRFParseDatabaseFailed,
+		FailureTOCImportDatabaseFailed,
+		FailureConsumerIngestOutputFailed,
+		FailureConsumerIngestOutputInvalid,
+		FailureConsumerIngestDatabaseFailed,
+		FailurePlanAttachOutputFailed,
+		FailurePlanAttachOutputInvalid,
+		FailurePlanAttachDatabaseFailed,
+		FailureReconciliationDatabaseFailed,
+		FailureArtifactReconciliationFailed,
+		FailureWorkerLeaseUnavailable,
+		FailureRiverTerminalWithoutResult,
+		FailureRetryStageNotFailed,
+	} {
+		if isImmediateFail(Failure(code)) {
+			t.Fatalf("%s should retry", code)
+		}
 	}
 }

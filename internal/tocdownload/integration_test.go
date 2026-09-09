@@ -507,3 +507,46 @@ func TestIntegrationWorkQueuesAndConcurrency(t *testing.T) {
 		waitDownload(t, pool, id, jobs.StatusSucceeded)
 	}
 }
+
+func TestIntegrationGoneDeletesUnpublished(t *testing.T) {
+	_, pool := testDB(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gone", http.StatusGone)
+	}))
+	t.Cleanup(ts.Close)
+	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := insertClient(t, pool)
+	tocID, jobID := insertTOCJob(t, pool, client, storedURL("/gone"))
+	data, err := ws.DownloadDataPath(artifact.KindTOC, tocID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(data), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(data, []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	startDownloadRuntime(t, pool, hookDownloader(ws, ts), 8)
+	waitDownload(t, pool, tocID, jobs.StatusFailed)
+	download, parse, parseJob, fail := tocRow(t, pool, tocID)
+	if download != jobs.StatusFailed || parse != jobs.StatusBlocked || parseJob != nil || fail == nil || *fail != jobs.FailureTOCDownloadNotFound {
+		t.Fatalf("terminal %s %s job=%v fail=%v", download, parse, parseJob, fail)
+	}
+	var attempt int
+	var state string
+	if err := pool.QueryRow(context.Background(), `
+SELECT attempt, state FROM mrfpipeline_river.river_job WHERE id = $1`, jobID).Scan(&attempt, &state); err != nil {
+		t.Fatal(err)
+	}
+	if attempt != 1 || state != "cancelled" {
+		t.Fatalf("river attempt=%d state=%s", attempt, state)
+	}
+	st, err := ws.InspectDownloadState(artifact.KindTOC, tocID)
+	if err != nil || st != artifact.DownloadAbsent {
+		t.Fatalf("download state %s %v", st, err)
+	}
+}

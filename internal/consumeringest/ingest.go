@@ -74,6 +74,7 @@ func mapWorkError(err error) error {
 		jobs.FailureConsumerIngestInputInvalid,
 		jobs.FailureConsumerIngestOutputFailed,
 		jobs.FailureConsumerIngestOutputInvalid,
+		jobs.FailureConsumerIngestPublicationInvalid,
 		jobs.FailureConsumerIngestProviderChanged,
 		jobs.FailureConsumerIngestDatabaseFailed,
 	} {

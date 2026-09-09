@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 )
 
 func TestLockForSucceedRunsPreLockFirst(t *testing.T) {
@@ -471,5 +473,109 @@ func TestLifecycleFailureCodeKeepsInfrastructureDistinct(t *testing.T) {
 	}
 	if got := lifecycleFailureCode(fmt.Errorf("database unavailable")); got != FailureJobLifecycle {
 		t.Fatalf("infrastructure failure %q", got)
+	}
+}
+
+func jobCancelled(err error) bool {
+	var cancel *rivertype.JobCancelError
+	return errors.As(err, &cancel)
+}
+
+func TestRunImmediateWorkFailureIsTerminal(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		kind string
+		spec StageSpec
+		code string
+	}{
+		{kind: KindTOCParse, spec: TOCParseStage, code: FailureTOCParseOutputInvalid},
+		{kind: KindMRFParse, spec: MRFParseStage, code: FailureMRFParseOutputInvalid},
+		{kind: KindTOCImport, spec: TOCImportStage, code: FailureTOCImportRowInvalid},
+		{kind: KindConsumerIngest, spec: ConsumerIngestStage, code: FailureConsumerIngestInputInvalid},
+		{kind: KindConsumerAttachPlans, spec: ConsumerAttachPlansStage, code: FailurePlanAttachInvariant},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			t.Parallel()
+			var terminal, failed int
+			var failCode string
+			err := Run(context.Background(), RunParams{
+				Kind:        tc.kind,
+				Spec:        tc.spec,
+				DomainID:    1,
+				RiverJobID:  2,
+				Attempt:     1,
+				MaxAttempts: 8,
+				Claim: func(context.Context) (ClaimResult, error) {
+					return ClaimResult{Action: ClaimWork}, nil
+				},
+				Work: func(context.Context) error {
+					return Failure(tc.code)
+				},
+				Fail: func(_ context.Context, code string) error {
+					failed++
+					failCode = code
+					return nil
+				},
+				Terminal: func(context.Context) error {
+					terminal++
+					return nil
+				},
+			})
+			if !jobCancelled(err) {
+				t.Fatalf("want JobCancel, got %v", err)
+			}
+			if failed != 1 || failCode != tc.code || terminal != 1 {
+				t.Fatalf("failed=%d code=%q terminal=%d", failed, failCode, terminal)
+			}
+		})
+	}
+}
+
+func TestRunRetryableWorkFailureDoesNotCancel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		kind string
+		spec StageSpec
+		code string
+	}{
+		{kind: KindMRFParse, spec: MRFParseStage, code: FailureMRFParseExecutionFailed},
+		{kind: KindTOCDownload, spec: TOCDownloadStage, code: FailureTOCDownload},
+		{kind: KindDiscoveryRun, spec: DiscoveryRunStage, code: FailureDiscoveryListing},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			t.Parallel()
+			var terminal, failed int
+			err := Run(context.Background(), RunParams{
+				Kind:        tc.kind,
+				Spec:        tc.spec,
+				DomainID:    1,
+				RiverJobID:  2,
+				Attempt:     1,
+				MaxAttempts: 8,
+				Claim: func(context.Context) (ClaimResult, error) {
+					return ClaimResult{Action: ClaimWork}, nil
+				},
+				Work: func(context.Context) error {
+					return Failure(tc.code)
+				},
+				Fail: func(context.Context, string) error {
+					failed++
+					return nil
+				},
+				Terminal: func(context.Context) error {
+					terminal++
+					return nil
+				},
+			})
+			if err == nil || jobCancelled(err) {
+				t.Fatalf("want retryable error, got %v", err)
+			}
+			if !IsFailure(err, tc.code) {
+				t.Fatalf("want wrapped %s, got %v", tc.code, err)
+			}
+			if failed != 0 || terminal != 0 {
+				t.Fatalf("failed=%d terminal=%d", failed, terminal)
+			}
+		})
 	}
 }

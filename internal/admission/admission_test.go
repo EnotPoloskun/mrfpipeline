@@ -1,6 +1,14 @@
 package admission
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
+)
 
 func TestTargetFormattingAndParsing(t *testing.T) {
 	t.Parallel()
@@ -41,3 +49,19 @@ func TestTargetTransitionIsCumulative(t *testing.T) {
 }
 
 func ptr(n int64) *int64 { return &n }
+
+func TestWorkerNilPoolCancels(t *testing.T) {
+	t.Parallel()
+	err := (*Worker)(nil).Work(context.Background(), &river.Job[jobs.ControlScheduleArgs]{})
+	var cancel *rivertype.JobCancelError
+	if !errors.As(err, &cancel) {
+		t.Fatalf("want JobCancel, got %v", err)
+	}
+	if !jobs.IsFailure(err, jobs.FailureInvalidArguments) {
+		t.Fatalf("code %v", err)
+	}
+	err = (&Worker{}).Work(context.Background(), &river.Job[jobs.ControlScheduleArgs]{})
+	if !errors.As(err, &cancel) || !jobs.IsFailure(err, jobs.FailureInvalidArguments) {
+		t.Fatalf("nil pool %v", err)
+	}
+}

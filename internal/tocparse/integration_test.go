@@ -442,7 +442,7 @@ func TestIntegrationCorruptManifestPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tocID, _ := insertParseJob(t, pool, client)
+	tocID, jobID := insertParseJob(t, pool, client)
 	writeDownload(t, ws, tocID, testdata(t, "toc.json"))
 	output, err := ws.ParsedDir(artifact.KindTOC, tocID)
 	if err != nil {
@@ -468,6 +468,19 @@ func TestIntegrationCorruptManifestPreserved(t *testing.T) {
 	if parses.Load() != 0 {
 		t.Fatalf("parsed corrupt output %d", parses.Load())
 	}
+	var attempt int
+	var state string
+	if err := pool.QueryRow(context.Background(), `
+SELECT attempt, state FROM mrfpipeline_river.river_job WHERE id = $1`, jobID).Scan(&attempt, &state); err != nil {
+		t.Fatal(err)
+	}
+	if attempt != 1 || state != "cancelled" {
+		t.Fatalf("river attempt=%d state=%s", attempt, state)
+	}
+	download, _, _, _, _ := tocRow(t, pool, tocID)
+	if download != jobs.StatusSucceeded {
+		t.Fatalf("download %s", download)
+	}
 	got, err := os.ReadFile(filepath.Join(output, fileManifest))
 	if err != nil || !bytes.Equal(got, corrupt) {
 		t.Fatal("corrupt output mutated")
@@ -490,7 +503,7 @@ func TestIntegrationInjectedFailureThenRetry(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(cfg.OutputPath, "partial"), []byte("x"), 0600); err != nil {
 				return mrftocparser.Report{}, err
 			}
-			return mrftocparser.Report{}, mrftocparser.ErrInvalidInput
+			return mrftocparser.Report{}, mrftocparser.ErrResource
 		}
 		return DefaultParse(ctx, cfg)
 	}, 8)

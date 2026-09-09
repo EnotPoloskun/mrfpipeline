@@ -3,7 +3,7 @@
 Operator executable for CMS Transparency in Coverage discovery, TOC and MRF
 processing, warehouse ingestion, and additive plan attachment.
 
-Version 1 is implemented through Stories 01–32 in
+Version 1 is implemented through Stories 01–34 in
 [`requirements/`](requirements/). Stories 28–32 implement the versioned
 `mrfweb` schema, typed DuckDB extraction, explicit filter catalog
 build/status/measurement, catalog-aware release publication, and permanent
@@ -638,7 +638,7 @@ worker if capacity approaches the operator safety threshold.
 An interrupted or retryable download keeps its selected source and slot; the
 existing staging directory is used for cleanup/resume. Automatic parse retries
 keep the raw file and slot, so they do not redownload. When a download reaches
-terminal failure (retry exhaustion, HTTP 404, or River UI cancel), the worker
+terminal failure (retry exhaustion, HTTP 404 or 410, or River UI cancel), the worker
 removes unpublished download bytes and matching staging; an MRF slot is then
 released. Recreate/SIGTERM remains an interruption and keeps bytes for resume.
 When parse reaches a terminal failure, the worker removes unpublished parsed
@@ -647,7 +647,10 @@ slot and wakes control. The source remains selected and failed, and
 `retry --stage mrf.download` redownloads from scratch; `retry --stage
 mrf.parse` reuses valid raw bytes when present and rematerializes the download
 when they are gone. `mrf.parse`, `mrf.download`, and `toc.download` have four
-attempts including the first. HTTP 404 is not retried. Other stages retain
+attempts including the first. HTTP 404 and 410 are not retried. Parse, import,
+ingest, and attach errors that cannot succeed on the same frozen bytes or
+process identity also fail on the first attempt. Other HTTP 4xx/5xx, listing,
+parser execution, database, and cleanup errors still retry. Other stages retain
 eight. After deploy, reconcile repairs already terminal parses that still hold
 slots; do not delete slot rows from SQL.
 Cancelling `mrf.download`, `mrf.parse`, or `toc.download` in River UI fails

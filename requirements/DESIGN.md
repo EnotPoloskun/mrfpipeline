@@ -2,7 +2,7 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–32 architecture and
+This document describes the implemented Stories 01–34 architecture and
 operational acceptance. The numbered requirement stories remain authoritative
 where more specific. Sections explicitly labeled historical version 1 are
 background only; they are not current runtime guidance. Stories 28–32 add the
@@ -435,8 +435,13 @@ or terminal-parse cleanup (and after terminal empty-download cleanup as today).
 River UI cancel of `mrf.download` or `mrf.parse` is that same terminal occupancy:
 the stage fails, files are removed, and the slot is released. Story 26 extends
 this to `toc.download`: a terminal download failure, including retry exhaustion,
-HTTP 404, or River UI cancel, deletes unpublished download bytes and matching
-staging. MRF download cleanup then releases the slot. Worker recreate/SIGTERM
+HTTP 404 or 410, or River UI cancel, deletes unpublished download bytes and matching
+staging. MRF download cleanup then releases the slot. Work errors whose next
+attempt cannot succeed (invalid frozen parse/import/ingest/attach input, HTTP
+404/410, selector or catalog identity mismatch) fail on that attempt, run the
+existing Terminal occupancy hook, and do not consume the rest of the retry
+budget. Generic download, parser-execution, listing, database, and cleanup
+errors still retry. Worker recreate/SIGTERM
 stays an interruption and keeps bytes for resume. The capacity is a source
 count, not a byte quota.
 
@@ -1422,6 +1427,17 @@ A worker returns its assigned stage from `running` to `pending`, keeps any
 completed reusable artifact, and returns a safe error to River. River applies
 the shared retry policy.
 
+### Immediate non-retryable work failure
+
+Some classified work errors cannot succeed on a later attempt without an
+operator changing frozen bytes, URL, catalog, or process identity. Those
+codes fail the assigned stage on this attempt, run the existing Terminal
+hook, and cancel the River delivery. HTTP 410 uses the same
+`*_download_not_found` codes and download Terminal cleanup as HTTP 404.
+`mrf_parse_execution_failed`, generic `*_download_failed`, listing,
+database, cleanup, and mixed ingest/attach `*_output_invalid` codes stay
+retryable.
+
 ### Exhausted stage
 
 On the final attempt, the assigned stage becomes `failed` with a fixed safe
@@ -1615,6 +1631,13 @@ Stories 28–32 are implemented release-filter and operational acceptance work:
 | 30 | Add explicit `filters build/status`, exact candidate fingerprints, canonical plan projection, advisory-lock serialization, atomic ready publication, and idempotent retry. (Implemented.) |
 | 31 | Require an exact ready catalog in incremental activation, publish output membership and catalog atomically, support cutover/rollback, and audit fail-closed active handoff. (Implemented.) |
 | 32 | Prove synthetic end-to-end semantics, failure/crash/redaction, read-only access, Docker packaging, rollback, and descriptive real-warehouse performance; converge operator documentation. (Implemented.) |
+
+Stories 33–34 are implemented operator and retry-taxonomy work:
+
+| Story | Deliverable |
+|---:|---|
+| 33 | Add a read-only `stats` command of TOC/MRF/ingest/plan-attachment counts by status, payer, and month. (Implemented.) |
+| 34 | Fail non-retryable work errors on attempt 1, map HTTP 410 to the existing 404 codes, run Stories 23/26 occupancy cleanup, and cancel permanent `control.schedule` wiring errors. (Implemented.) |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC

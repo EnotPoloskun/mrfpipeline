@@ -45,6 +45,7 @@ const (
 	FailureConsumerIngestInputInvalid        = "consumer_ingest_input_invalid"
 	FailureConsumerIngestOutputFailed        = "consumer_ingest_output_failed"
 	FailureConsumerIngestOutputInvalid       = "consumer_ingest_output_invalid"
+	FailureConsumerIngestPublicationInvalid  = "consumer_ingest_publication_invalid"
 	FailureConsumerIngestProviderChanged     = "consumer_ingest_provider_changed"
 	FailureConsumerIngestDatabaseFailed      = "consumer_ingest_database_failed"
 	FailurePlanAttachConfigInvalid           = "plan_attach_config_invalid"
@@ -141,7 +142,7 @@ func allowedFailureCode(code string) bool {
 		FailureTOCImportManifestInvalid, FailureTOCImportSchemaInvalid, FailureTOCImportRowInvalid,
 		FailureTOCImportOrderInvalid, FailureTOCImportDatabaseFailed, FailureTOCImportInvariant,
 		FailureConsumerIngestConfigInvalid, FailureConsumerIngestInputInvalid, FailureConsumerIngestOutputFailed,
-		FailureConsumerIngestOutputInvalid, FailureConsumerIngestProviderChanged, FailureConsumerIngestDatabaseFailed,
+		FailureConsumerIngestOutputInvalid, FailureConsumerIngestPublicationInvalid, FailureConsumerIngestProviderChanged, FailureConsumerIngestDatabaseFailed,
 		FailurePlanAttachConfigInvalid, FailurePlanAttachInputInvalid, FailurePlanAttachOutputFailed,
 		FailurePlanAttachOutputInvalid, FailurePlanAttachDatabaseFailed, FailurePlanAttachInvariant,
 		FailureWorkerLeaseUnavailable, FailureWorkerLeaseLost, FailureRiverTerminalWithoutResult,
@@ -166,13 +167,25 @@ func allowedFailureCode(code string) bool {
 }
 
 func isImmediateFail(err error) bool {
-	return isFailure(err, FailureInvalidArguments) ||
-		isFailure(err, FailureMissingRecord) ||
-		isFailure(err, FailureDomainInvariant) ||
-		isFailure(err, FailureTOCDownloadNotFound) ||
-		isFailure(err, FailureMRFDownloadNotFound) ||
-		isFailure(err, FailureSealedReleaseInconsistent) ||
-		isFailure(err, FailureSealedReleaseRetryForbidden)
+	var f *failCodeError
+	if !errors.As(err, &f) {
+		return false
+	}
+	switch f.code {
+	case FailureInvalidArguments, FailureMissingRecord, FailureDomainInvariant,
+		FailureTOCDownloadNotFound, FailureMRFDownloadNotFound,
+		FailureSealedReleaseInconsistent, FailureSealedReleaseRetryForbidden,
+		FailureTOCParseInputInvalid, FailureTOCParseOutputInvalid,
+		FailureMRFParseOutputInvalid, FailureMRFParseSelectorChanged,
+		FailureTOCImportManifestInvalid, FailureTOCImportSchemaInvalid,
+		FailureTOCImportRowInvalid, FailureTOCImportOrderInvalid, FailureTOCImportInvariant,
+		FailureConsumerIngestConfigInvalid, FailureConsumerIngestInputInvalid,
+		FailureConsumerIngestProviderChanged, FailureConsumerIngestPublicationInvalid,
+		FailurePlanAttachConfigInvalid, FailurePlanAttachInputInvalid, FailurePlanAttachInvariant:
+		return true
+	default:
+		return false
+	}
 }
 
 func terminalFailureCode(err error) string {

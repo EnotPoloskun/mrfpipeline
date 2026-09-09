@@ -21,8 +21,16 @@ type Worker struct {
 
 func (w *Worker) Work(ctx context.Context, job *river.Job[jobs.ControlScheduleArgs]) error {
 	if w == nil || w.Pool == nil {
-		return jobs.Failure(jobs.FailureInvalidArguments)
+		return river.JobCancel(jobs.Failure(jobs.FailureInvalidArguments))
 	}
+	err := w.run(ctx, job)
+	if jobs.IsFailure(err, jobs.FailureInvalidArguments) {
+		return river.JobCancel(err)
+	}
+	return err
+}
+
+func (w *Worker) run(ctx context.Context, job *river.Job[jobs.ControlScheduleArgs]) error {
 	client := river.ClientFromContext[pgx.Tx](ctx)
 	if w.BeforeSchedule != nil {
 		if err := w.BeforeSchedule(ctx, client); err != nil {

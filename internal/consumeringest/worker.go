@@ -138,7 +138,13 @@ func (w *Worker) ingest(ctx context.Context, job *river.Job[jobs.ConsumerIngestA
 }
 
 func (w *Worker) validatePublished(ident claimIdentity, outputID string) error {
-	return w.validatePublishedReport(ident, outputID, nil)
+	if err := w.validatePublishedReport(ident, outputID, nil); err != nil {
+		if jobs.IsFailure(err, jobs.FailureConsumerIngestOutputInvalid) {
+			return jobs.Failure(jobs.FailureConsumerIngestPublicationInvalid)
+		}
+		return err
+	}
+	return nil
 }
 
 func (w *Worker) validatePublishedReport(ident claimIdentity, outputID string, report *mrfconsumer.Report) error {

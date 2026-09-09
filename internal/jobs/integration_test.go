@@ -191,12 +191,12 @@ UPDATE mrfpipeline_test.stages SET river_job_id = $2 WHERE id = $1`, id, riverJo
 		const riverJobID = 701
 		stageID := newStage(t, riverJobID)
 		var buf bytes.Buffer
-		err := run(t, pool, stageID, riverJobID, 1, 2, Failure(FailureTOCParseOutputInvalid), &buf)
-		if !IsFailure(err, FailureTOCParseOutputInvalid) {
+		err := run(t, pool, stageID, riverJobID, 1, 2, Failure(FailureTOCParseResourceFailed), &buf)
+		if !IsFailure(err, FailureTOCParseResourceFailed) {
 			t.Fatalf("run error %v", err)
 		}
 		record := readRecord(t, &buf)
-		if record["msg"] != "job_attempt_failed" || record["outcome"] != "retrying" || record["failure"] != FailureTOCParseOutputInvalid {
+		if record["msg"] != "job_attempt_failed" || record["outcome"] != "retrying" || record["failure"] != FailureTOCParseResourceFailed {
 			t.Fatalf("record %v", record)
 		}
 	})
@@ -205,7 +205,7 @@ UPDATE mrfpipeline_test.stages SET river_job_id = $2 WHERE id = $1`, id, riverJo
 		const riverJobID = 702
 		stageID := newStage(t, riverJobID)
 		var buf bytes.Buffer
-		if err := run(t, pool, stageID, riverJobID, 2, 2, Failure(FailureTOCParseOutputInvalid), &buf); err == nil {
+		if err := run(t, pool, stageID, riverJobID, 1, 2, Failure(FailureTOCParseOutputInvalid), &buf); err == nil {
 			t.Fatal("terminal run unexpectedly succeeded")
 		}
 		record := readRecord(t, &buf)
@@ -216,7 +216,7 @@ UPDATE mrfpipeline_test.stages SET river_job_id = $2 WHERE id = $1`, id, riverJo
 
 	t.Run("bookkeeping", func(t *testing.T) {
 		var buf bytes.Buffer
-		err := run(t, nil, 703, 703, 1, 2, Failure(FailureTOCParseOutputInvalid), &buf)
+		err := run(t, nil, 703, 703, 1, 2, Failure(FailureTOCParseResourceFailed), &buf)
 		if err == nil {
 			t.Fatal("bookkeeping failure unexpectedly succeeded")
 		}

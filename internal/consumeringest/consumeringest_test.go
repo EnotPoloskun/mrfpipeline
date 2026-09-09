@@ -485,7 +485,7 @@ func TestInvalidTargetPreserved(t *testing.T) {
 		SnapshotID: 3, SourceID: 3, PayerID: "uhc",
 		Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 1,
 	})
-	if !jobs.IsFailure(err, jobs.FailureConsumerIngestOutputInvalid) {
+	if !jobs.IsFailure(err, jobs.FailureConsumerIngestPublicationInvalid) {
 		t.Fatalf("got %v", err)
 	}
 	if called {
@@ -614,7 +614,7 @@ func TestExistingTargetRejectedWithoutIngest(t *testing.T) {
 				SnapshotID: tc.id, SourceID: tc.id, PayerID: "uhc",
 				Month: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), MonthText: "2026-08", ConsumeJobID: 1,
 			})
-			if !jobs.IsFailure(err, jobs.FailureConsumerIngestOutputInvalid) {
+			if !jobs.IsFailure(err, jobs.FailureConsumerIngestPublicationInvalid) {
 				t.Fatalf("got %v", err)
 			}
 			if called {

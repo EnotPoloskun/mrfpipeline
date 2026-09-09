@@ -132,7 +132,11 @@ the same. Recreate/SIGTERM stays an interruption and keeps bytes for resume.
 A parse retry reuses valid raw bytes when present; when bytes are gone it
 reopens download and waits for admission before redownloading. New mrf.parse,
 mrf.download, and toc.download jobs have four attempts including the first.
-HTTP 404 is not retried. Other production stages retain eight.
+HTTP 404 and 410 are not retried. Parse, import, ingest, and attach errors
+that cannot succeed on the same frozen bytes or process identity also fail
+on the first attempt. Other HTTP 4xx/5xx, listing, parser execution,
+database, and cleanup errors still retry until the existing attempt budget.
+Other production stages retain eight.
 
 Retries for active or inactive releases fail with
 sealed_release_retry_forbidden.

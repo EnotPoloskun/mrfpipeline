@@ -93,7 +93,7 @@ func TestInformationalInvocations(t *testing.T) {
 func TestCurrentOperatorCoordinationHelp(t *testing.T) {
 	t.Parallel()
 	for command, want := range map[string][]string{
-		"retry":     {"may run while worker roles are active", "execution locks"},
+		"retry":     {"may run while worker roles are active", "execution locks", "HTTP 404 and 410 are not retried"},
 		"reconcile": {"singleton control lease", "Stop the control worker", "MRF and consumer roles may remain running"},
 	} {
 		text := helpFor(command)
