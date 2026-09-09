@@ -13,7 +13,6 @@ Compose PostgreSQL.
 
 ## Do not
 
-- `--scale consumer=2` (the extra replica exits `worker_busy`)
 - `docker compose down -v` unless deleting the disposable PostgreSQL and
   artifact volumes is intentional
 - run first `month activate` before discovery/TOC work is terminal; activation
@@ -112,7 +111,13 @@ docker compose -f docker-compose.story21.yml up -d --force-recreate --no-deps co
 docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=3 mrf consumer
 ```
 
-Leave consumer at one replica.
+Scale consumer replicas:
+
+```text
+docker compose -f docker-compose.story21.yml --profile workers up -d --scale consumer=2 mrf consumer
+```
+
+Default Compose still starts one consumer replica; scale explicitly when needed.
 
 ## Operator CLI (one-shot `cli` service)
 

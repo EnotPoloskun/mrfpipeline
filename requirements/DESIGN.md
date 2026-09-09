@@ -2,7 +2,7 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–34 architecture and
+This document describes the implemented Stories 01–35 architecture and
 operational acceptance. The numbered requirement stories remain authoritative
 where more specific. Sections explicitly labeled historical version 1 are
 background only; they are not current runtime guidance. Stories 28–32 add the
@@ -126,7 +126,7 @@ The target keeps these version 1 invariants:
 - one independent consumer output per source/payer/month;
 - plan-independent parse/ingest and additive output-scoped plan attachment;
 - PostgreSQL domain truth plus River at-least-once execution;
-- one control lease, role-specific River workers, and serialized consumer writers until the pinned consumer contract permits more;
+- one control lease, role-specific River workers, replicable consumer processes (one mutation per process), and per-output consumer locks after warehouse init;
 - immutable parser/consumer publication boundaries; and
 - explicit retry, conservative reconciliation, redaction, and local-only
   storage.
@@ -1638,6 +1638,12 @@ Stories 33–34 are implemented operator and retry-taxonomy work:
 |---:|---|
 | 33 | Add a read-only `stats` command of TOC/MRF/ingest/plan-attachment counts by status, payer, and month. (Implemented.) |
 | 34 | Fail non-retryable work errors on attempt 1, map HTTP 410 to the existing 404 codes, run Stories 23/26 occupancy cleanup, and cancel permanent `control.schedule` wiring errors. (Implemented.) |
+
+Stories 35 is implemented concurrent consumer worker enablement:
+
+| Story | Deliverable |
+|---:|---|
+| 35 | Pin consumer Story 26, drop the consumer role lease, keep per-process `MaxWorkers: 1`, and allow distinct snapshot ingests to overlap across replicas. (Implemented.) |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC

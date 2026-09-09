@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
+	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/riverqueue/river/rivertype"
 )
@@ -284,13 +285,20 @@ func TestAcceptanceGuards(t *testing.T) {
 	}
 }
 
+func TestHealthNilLeaseSucceeds(t *testing.T) {
+	t.Parallel()
+	if err := Health(nil, nil, nil)(context.Background()); err != nil {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestHealthLeaseLostCancels(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var lost atomic.Bool
 	var called bool
-	h := Health(nil, func() {
+	h := Health(&database.Lease{}, func() {
 		called = true
 		cancel()
 	}, &lost)

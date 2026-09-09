@@ -37,9 +37,9 @@ func AcquireConsumerLease(ctx context.Context, pool *pgxpool.Pool) (*Lease, erro
 	return AcquireRoleLease(ctx, pool, ConsumerLeaseObject)
 }
 
-// AcquireRoleLease takes the dedicated role lease. Control is singleton;
-// consumer remains singleton only while the pinned consumer contract requires
-// serialized writers. MRF workers do not acquire a role lease.
+// AcquireRoleLease takes the dedicated role lease. Control is singleton.
+// ConsumerLeaseObject remains reserved; consumer workers no longer acquire it.
+// MRF workers do not acquire a role lease.
 func AcquireRoleLease(ctx context.Context, pool *pgxpool.Pool, object int32) (*Lease, error) {
 	if ctx == nil {
 		panic("nil context")

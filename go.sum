@@ -53,6 +53,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/enotpoloskun/mrfconsumer v0.0.0-20260827032738-489ea6d60cd7 h1:Ml+u5k3Tq805np+xexu5y0qNoFTX0rNHEcpMT/3jfjw=
 github.com/enotpoloskun/mrfconsumer v0.0.0-20260827032738-489ea6d60cd7/go.mod h1:s43Vj+y0f+JWbAA3LfXOiNUGBJ3S6Ngk8MJwJP/XxZk=
+github.com/enotpoloskun/mrfconsumer v0.0.0-20260909042622-31ce87f9203a h1:VPt++bx05ls3Bzb3azmntSXve4jbRblg8wZsLVH4B50=
+github.com/enotpoloskun/mrfconsumer v0.0.0-20260909042622-31ce87f9203a/go.mod h1:s43Vj+y0f+JWbAA3LfXOiNUGBJ3S6Ngk8MJwJP/XxZk=
 github.com/google/go-cmp v0.5.5 h1:Khx7svrCpmxxtHBq5j2mp/xVjsi8hQMfNLvJFAlrGgU=
 github.com/google/go-cmp v0.5.5/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

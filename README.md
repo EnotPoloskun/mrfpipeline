@@ -303,8 +303,7 @@ in [`DOCKER.md`](DOCKER.md).
 environment, holds the singleton control lease, initializes the artifact root,
 reconciles, and consumes discovery/TOC/admission queues. The `mrf` role owns
 only MRF download and parse. The `consumer` role owns consumer ingest and plan
-attachment and remains singleton while the pinned warehouse writer requires
-serialized writes.
+attachment and is replicable: one mutation per process; scale with `--scale consumer=N`.
 
 `discover` enqueues one bounded UHC discovery run for a building monthly
 release and reports identifiers without waiting for downloads. `--limit` is a
@@ -358,8 +357,7 @@ processing.
 All operator commands below run from the repository root. Repeat
 `-f docker-compose.story21.yml`, or export `COMPOSE_FILE=docker-compose.story21.yml`.
 Compose does not take a host pipeline database URL; workers use the unpublished
-Compose PostgreSQL. Do not `--scale consumer=2`: the extra replica exits
-`worker_busy`.
+Compose PostgreSQL. Scale consumer replicas explicitly when more than one warehouse write should run at once, for example `--scale consumer=2`.
 
 | Goal | Command |
 |---|---|
@@ -369,6 +367,7 @@ Compose PostgreSQL. Do not `--scale consumer=2`: the extra replica exits
 | Start control | `docker compose -f docker-compose.story21.yml up -d control` |
 | Follow control | `docker compose -f docker-compose.story21.yml logs -f --tail=50 control` |
 | Start MRF + consumer | `docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=2 mrf consumer` |
+| Scale consumer replicas | `docker compose -f docker-compose.story21.yml --profile workers up -d --scale consumer=2 mrf consumer` |
 | Bounded discover | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 1 --mrf-source-limit 3` |
 | Pipeline stats | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli stats` |
 | Month status | `docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>` |

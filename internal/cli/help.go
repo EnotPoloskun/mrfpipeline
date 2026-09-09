@@ -62,7 +62,7 @@ Required environment:
   MRFPIPELINE_SERVICES_PATH
 
 The control role must be the only control process. The consumer role is
-serialized because the current warehouse writer is serialized. MRF download
+replicable: one mutation per process; scale with --scale consumer=N. MRF download
 has two workers and MRF parse has one worker per process; the database-owned
 resident capacity is the shared download-plus-parse disk bound.
 `

@@ -71,8 +71,8 @@ func QueuesForRole(role string) map[string]river.QueueConfig {
 // Run starts one explicit role-specific River client, waits until ctx is
 // canceled or the client stops, then shuts down. A requested shutdown after
 // Start succeeds returns nil. MRF parse concurrency is one per process because
-// every parser call holds the process mutex. Consumer concurrency is one while
-// the pinned warehouse writer requires serialized writes.
+// every parser call holds the process mutex. Consumer concurrency is one job
+// per process; scale with multiple consumer replicas.
 func (r Runtime) Run(ctx context.Context) error {
 	if ctx == nil {
 		panic("nil context")
@@ -110,8 +110,6 @@ func (r Runtime) Run(ctx context.Context) error {
 	ownsLease := lease == nil
 	if lease == nil && role == "control" {
 		lease, err = database.AcquireControlLease(ctx, r.Pool)
-	} else if lease == nil && role == "consumer" {
-		lease, err = database.AcquireConsumerLease(ctx, r.Pool)
 	}
 	if err != nil {
 		if database.IsLeaseUnavailable(err) {

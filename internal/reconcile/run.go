@@ -214,7 +214,7 @@ func Health(lease *database.Lease, cancel context.CancelFunc, lost *atomic.Bool)
 			return leaseLost()
 		}
 		if lease == nil {
-			return fail()
+			return nil
 		}
 		if err := lease.Check(ctx); err != nil {
 			if ctx.Err() != nil {
