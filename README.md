@@ -462,8 +462,11 @@ volumes. Do not use `docker compose down -v` unless deleting the disposable
 PostgreSQL database and artifact volume is intentional.
 
 Each MRF container has one parser worker, so two MRF containers provide up to
-two concurrent parser calls; scale the service for more. The consumer remains
-exactly one process because the pinned warehouse writer is not concurrent-safe.
+two concurrent parser calls; scale the service for more. Consumer replicas are
+safe to scale: each process runs one executing consumer job at a time
+(`MaxWorkers: 1`), warehouse init runs once, distinct `output_id` writes may
+overlap, and the same `output_id` stays serial. Scale with
+`--scale consumer=N` when more than one warehouse write should run at once.
 The shared PostgreSQL resident capacity bounds selected raw/in-progress MRF
 sources across all MRF containers. It is a count, not a byte quota, and does
 not bound parsed output, temporary peak expansion, PostgreSQL, River history,

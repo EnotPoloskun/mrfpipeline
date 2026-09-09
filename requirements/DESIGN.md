@@ -395,8 +395,10 @@ Story 21 supersedes the single-process deployment guidance below for current
 operation. The control role is the only singleton and holds the database
 control lease. MRF roles own only download and parse queues; each process runs
 at most one parser, and multiple ordinary River processes may be started.
-Consumer roles own ingest and plan-attachment queues and remain one process
-until the pinned consumer writer contract permits distinct-output concurrency.
+Consumer roles own ingest and plan-attachment queues. Each consumer process
+runs one executing job at a time (`MaxWorkers: 1`); warehouse init runs once,
+distinct `output_id` writes may overlap, and the same `output_id` stays serial.
+Scale consumer replicas with `--scale consumer=N`.
 All roles share the initialized artifact root, while one durable PostgreSQL
 resident-capacity limit bounds raw and in-progress MRF materializations. A
 terminal parse is no longer in progress after its raw and parser staging are
@@ -419,13 +421,13 @@ version-1 context; they do not override this addendum.
 ## Current Stories 22–26 local operation
 
 The current deployment is one control process, one or more ordinary MRF River
-processes, and exactly one consumer process. Queue ownership is explicit:
+processes, and one or more consumer replicas. Queue ownership is explicit:
 
 | Role | Queues | Cardinality |
 |---|---|---|
 | control | discovery, TOC download/parse/import, admission and control scheduling | one control lease |
 | mrf | MRF download and parse | one parser call per process; scale processes |
-| consumer | consumer ingest and plan attachment | one process with the pinned writer |
+| consumer | consumer ingest and plan attachment | one executing job per process; scale replicas |
 
 Discovery imports feed-free monthly captures. Source admission selects a
 cumulative stable prefix and the shared resident-slot table admits only as
@@ -1555,7 +1557,7 @@ The pipeline applies concurrency rather than arbitrary MRF-size limits:
 - TOC parsers/importers: two each.
 - MRF downloads: two.
 - MRF parser: one.
-- Consumer writer: one.
+- Consumer writer: one executing job per process (scale replicas).
 
 HTTP bodies stream through a fixed buffer. Parsers retain their existing
 bounded-memory and temporary-workspace contracts. TOC association import must

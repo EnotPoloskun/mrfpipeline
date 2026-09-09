@@ -2,18 +2,41 @@ package consumeringest
 
 import (
 	"context"
+	"errors"
+	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/enotpoloskun/mrfconsumer"
+	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
-	"github.com/enotpoloskun/mrfpipeline/internal/reconcile"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
+
+func attachTransformOverlapProbe(sharedInflight *atomic.Int64, overlap *atomic.Int64) func(mrfconsumer.IngestProgress) {
+	var entered atomic.Bool
+	return func(p mrfconsumer.IngestProgress) {
+		if entered.Load() {
+			return
+		}
+		switch p.Phase {
+		case "provider_relationships", "rate_facts", "publishing":
+			entered.Store(true)
+			if sharedInflight.Add(1) > 1 {
+				overlap.Add(1)
+			}
+			time.Sleep(50 * time.Millisecond)
+			sharedInflight.Add(-1)
+		}
+	}
+}
 
 func startDualConsumerClients(t *testing.T, pool *pgxpool.Pool, w *Worker) {
 	t.Helper()
@@ -53,19 +76,15 @@ func TestIntegrationDistinctSnapshotsOverlapRealIngest(t *testing.T) {
 	s2, snap2, _ := insertIngestJobForURL(t, pool, client, "2026-09-01", "https://files.test/mrf/b")
 	writeRealParsed(t, ws, s1, svc)
 	writeRealParsed(t, ws, s2, svc)
-	var inflight atomic.Int64
+	var sharedInflight atomic.Int64
 	var overlap atomic.Int64
-	health := reconcile.Health(nil, nil, nil)
 	ingest := func(ctx context.Context, cfg mrfconsumer.Config) (mrfconsumer.Report, error) {
-		if inflight.Add(1) > 1 {
-			overlap.Add(1)
-		}
-		defer inflight.Add(-1)
+		cfg.OnProgress = attachTransformOverlapProbe(&sharedInflight, &overlap)
 		return mrfconsumer.Ingest(ctx, cfg)
 	}
 	startDualConsumerClients(t, pool, &Worker{
 		Pool: pool, Workspace: ws, WarehousePath: warehouse, ServicesPath: svc, Catalog: cat,
-		Logger: jobs.NewLogger(io.Discard), Ingest: ingest, Health: health,
+		Logger: jobs.NewLogger(io.Discard), Ingest: ingest, Health: func(context.Context) error { return nil },
 	})
 	waitConsume(t, pool, snap1, jobs.StatusSucceeded)
 	waitConsume(t, pool, snap2, jobs.StatusSucceeded)
@@ -74,14 +93,122 @@ func TestIntegrationDistinctSnapshotsOverlapRealIngest(t *testing.T) {
 	}
 }
 
-func TestIntegrationConsumerHealthNilLease(t *testing.T) {
-	health := reconcile.Health(nil, nil, nil)
-	if err := health(context.Background()); err != nil {
-		t.Fatalf("health: %v", err)
-	}
-	w := &Worker{Health: health}
+func TestWorkerNilHealthSucceeds(t *testing.T) {
+	w := &Worker{Health: func(context.Context) error { return nil }}
 	if err := w.Health(context.Background()); err != nil {
 		t.Fatalf("worker health: %v", err)
+	}
+}
+
+func writeContractPlansJSON(t *testing.T) string {
+	t.Helper()
+	data, err := json.Marshal([]map[string]string{
+		{"plan_name": "Z", "issuer_name": "Issuer", "plan_id_type": "hios", "plan_id": "9", "plan_market_type": "group"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "plans.json")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func contractCatalogPath(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "catalog")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeCatalogFixture(t, root)
+	return root
+}
+
+func contractIngest(t *testing.T, ws *artifact.Workspace, catalog, warehouse, services, month, outputID string, sourceID int64) {
+	t.Helper()
+	writeRealParsed(t, ws, sourceID, services)
+	parsed, err := ws.ParsedDir(artifact.KindMRF, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mrfconsumer.Ingest(context.Background(), mrfconsumer.Config{
+		InputPath: parsed, ProviderCatalogPath: catalog, OutputPath: warehouse,
+		PayerID: "uhc", CollectionMonth: month, OutputID: outputID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestContractIngestOverlapsAttachConsumedOutput(t *testing.T) {
+	ws := mustWorkspace(t)
+	t.Setenv("TMPDIR", ws.StagingDir())
+	services := mustServices(t)
+	catalog := contractCatalogPath(t)
+	warehouse := filepath.Join(t.TempDir(), "wh")
+	contractIngest(t, ws, catalog, warehouse, services, "2026-08", "mrf-consumed", 1)
+	var attachErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		contractIngest(t, ws, catalog, warehouse, services, "2026-09", "mrf-new", 2)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, attachErr = mrfconsumer.AttachPlans(context.Background(), mrfconsumer.AttachPlansConfig{
+			PlansPath: writeContractPlansJSON(t), OutputPath: warehouse, OutputID: "mrf-consumed", PlanBatchID: "job-overlap",
+		})
+	}()
+	wg.Wait()
+	if attachErr != nil {
+		t.Fatalf("attach failed: %v", attachErr)
+	}
+	if _, err := os.Lstat(filepath.Join(warehouse, "snapshots", "collection_month=2026-09", "payer_id=uhc", "output_id=mrf-new")); err != nil {
+		t.Fatalf("new ingest missing: %v", err)
+	}
+}
+
+func TestContractSameSnapshotIngestAttachSerializes(t *testing.T) {
+	ws := mustWorkspace(t)
+	t.Setenv("TMPDIR", ws.StagingDir())
+	services := mustServices(t)
+	catalog := contractCatalogPath(t)
+	warehouse := filepath.Join(t.TempDir(), "wh")
+	writeRealParsed(t, ws, 1, services)
+	parsed, err := ws.ParsedDir(artifact.KindMRF, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := mrfconsumer.Config{
+		InputPath: parsed, ProviderCatalogPath: catalog, OutputPath: warehouse,
+		PayerID: "uhc", CollectionMonth: "2026-08", OutputID: "mrf-same",
+	}
+	var ingestErr, attachErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, ingestErr = mrfconsumer.Ingest(context.Background(), cfg)
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, attachErr = mrfconsumer.AttachPlans(context.Background(), mrfconsumer.AttachPlansConfig{
+			PlansPath: writeContractPlansJSON(t), OutputPath: warehouse, OutputID: "mrf-same", PlanBatchID: "job-same",
+		})
+	}()
+	wg.Wait()
+	if ingestErr != nil {
+		t.Fatalf("ingest failed: %v", ingestErr)
+	}
+	final := filepath.Join(warehouse, "snapshots", "collection_month=2026-08", "payer_id=uhc", "output_id=mrf-same")
+	if _, err := os.Lstat(final); err != nil {
+		t.Fatalf("snapshot missing: %v", err)
+	}
+	if attachErr != nil && !errors.Is(attachErr, mrfconsumer.ErrOutput) {
+		t.Fatalf("attach failed: %v", attachErr)
 	}
 }
 

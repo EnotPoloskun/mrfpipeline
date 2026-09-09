@@ -14,8 +14,8 @@ const (
 	// executing MRF stage keeps one advisory-lock connection while external work
 	// runs.
 	MRFMaxConns int32 = 8
-	// ConsumerMaxConns leaves headroom above the singleton warehouse writer and
-	// its advisory-lock/bookkeeping connections.
+	// ConsumerMaxConns leaves headroom above one executing consumer job per process
+	// and its advisory-lock/bookkeeping connections.
 	ConsumerMaxConns int32 = 6
 	// OperatorMaxConns is used by short-lived operator commands.
 	OperatorMaxConns int32 = 8

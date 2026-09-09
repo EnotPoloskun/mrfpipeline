@@ -79,7 +79,7 @@ func TestModulePathAndGoVersion(t *testing.T) {
 	if !strings.Contains(text, "github.com/EnotPoloskun/mrfparser v0.0.0-20260822232859-7197303b3fe5") {
 		t.Fatalf("expected pinned mrfparser: %s", text)
 	}
-	if !strings.Contains(text, "github.com/enotpoloskun/mrfconsumer v0.0.0-20260909042622-31ce87f9203a") {
+	if !strings.Contains(text, "github.com/enotpoloskun/mrfconsumer v0.0.0-20260909043755-3650afa40dd2") {
 		t.Fatalf("expected pinned mrfconsumer: %s", text)
 	}
 	if !strings.Contains(text, "github.com/parquet-go/parquet-go v0.30.1") {
