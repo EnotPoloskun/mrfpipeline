@@ -130,10 +130,12 @@ func TestNormalizeLocalPathAbsFailure(t *testing.T) {
 
 func TestValidatePayer(t *testing.T) {
 	t.Parallel()
-	if err := ValidatePayer("uhc"); err != nil {
-		t.Fatal(err)
+	for _, raw := range []string{"uhc", "optum", "cigna"} {
+		if err := ValidatePayer(raw); err != nil {
+			t.Fatalf("%q: %v", raw, err)
+		}
 	}
-	for _, raw := range []string{"UHC", "united-healthcare", "uhc ", " uhc", ""} {
+	for _, raw := range []string{"UHC", "OPTUM", "Cigna", "united-healthcare", "aetna", "uhc ", " uhc", ""} {
 		err := ValidatePayer(raw)
 		if !errors.Is(err, ErrInvalidConfig) {
 			t.Fatalf("%q: got %v", raw, err)
@@ -141,6 +143,16 @@ func TestValidatePayer(t *testing.T) {
 		if !strings.Contains(err.Error(), FieldPayer) {
 			t.Fatalf("%q: missing field name in %v", raw, err)
 		}
+	}
+	err := ValidatePayer("aetna")
+	if err == nil {
+		t.Fatal("aetna")
+	}
+	if !strings.Contains(err.Error(), "uhc") || !strings.Contains(err.Error(), "optum") || !strings.Contains(err.Error(), "cigna") {
+		t.Fatalf("unsupported identifier should name accepted adapters: %v", err)
+	}
+	if strings.Contains(err.Error(), "only uhc") {
+		t.Fatalf("error still says only uhc: %v", err)
 	}
 }
 

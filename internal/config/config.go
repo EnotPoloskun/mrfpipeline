@@ -20,14 +20,14 @@ const (
 	EnvServicesPath        = "MRFPIPELINE_SERVICES_PATH"
 	EnvMRFResidentCapacity = "MRFPIPELINE_MRF_RESIDENT_CAPACITY"
 
-	FieldPayer           = "payer"
-	FieldCollectionMonth = "collection_month"
-	FieldLimit           = "limit"
-	FieldStage           = "stage"
-	FieldID              = "id"
-	FieldMRFSourceLimit  = "mrf_source_limit"
+	FieldPayer            = "payer"
+	FieldCollectionMonth  = "collection_month"
+	FieldLimit            = "limit"
+	FieldStage            = "stage"
+	FieldID               = "id"
+	FieldMRFSourceLimit   = "mrf_source_limit"
 	FieldResidentCapacity = "mrf_resident_capacity"
-	FieldWorkerRole      = "worker_role"
+	FieldWorkerRole       = "worker_role"
 )
 
 // ValidateDatabaseURL accepts a nonempty opaque secret. It does not parse,
@@ -71,15 +71,18 @@ func ValidatePayerIdentifier(raw string) error {
 	return nil
 }
 
-// ValidatePayer accepts only the exact production adapter identifier uhc.
+// ValidatePayer accepts the exact production adapter identifiers supported by
+// the pinned mrfdiscoverer: uhc, optum, and cigna.
 func ValidatePayer(raw string) error {
 	if err := ValidatePayerIdentifier(raw); err != nil {
 		return err
 	}
-	if raw != "uhc" {
-		return wrap(FieldPayer, "must be the exact adapter identifier uhc")
+	switch raw {
+	case "uhc", "optum", "cigna":
+		return nil
+	default:
+		return wrap(FieldPayer, "must be an exact adapter identifier: uhc, optum, or cigna")
 	}
-	return nil
 }
 
 // ValidateCollectionMonth accepts exactly YYYY-MM with year 0001-9999.

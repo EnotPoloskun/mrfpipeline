@@ -356,6 +356,7 @@ func TestDiscoverSemanticValidation(t *testing.T) {
 		field string
 	}{
 		{"payer", []string{"discover", "--payer", "UHC", "--collection-month", "2026-08", "--limit", "1"}, config.FieldPayer},
+		{"aetna", []string{"discover", "--payer", "aetna", "--collection-month", "2026-08", "--limit", "1"}, config.FieldPayer},
 		{"month", []string{"discover", "--payer", "uhc", "--collection-month", "0000-01", "--limit", "1"}, config.FieldCollectionMonth},
 		{"limit zero", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "0"}, config.FieldLimit},
 		{"limit plus", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "+5"}, config.FieldLimit},
@@ -388,6 +389,43 @@ func TestDiscoverSemanticValidation(t *testing.T) {
 		_, err := execute(context.Background(), discoverArgs(limit), env)
 		if !errors.Is(err, database.ErrDatabase) {
 			t.Fatalf("limit %s: %v", limit, err)
+		}
+	}
+}
+
+func TestDiscoverSupportedPayers(t *testing.T) {
+	t.Parallel()
+	env := envMap(validDB())
+	for _, payer := range []string{"uhc", "optum", "cigna"} {
+		args := []string{"discover", "--payer", payer, "--collection-month", "2026-08", "--limit", "1", "--mrf-source-limit", "all"}
+		_, err := execute(context.Background(), args, env)
+		if !errors.Is(err, database.ErrDatabase) {
+			t.Fatalf("%s: %v", payer, err)
+		}
+	}
+	code, stdout, stderr := runCLI(context.Background(), []string{"discover", "--payer", "aetna", "--collection-month", "2026-08", "--limit", "1", "--mrf-source-limit", "all"}, env)
+	if code != 2 || stdout != "" {
+		t.Fatalf("aetna: exit %d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, config.FieldPayer) {
+		t.Fatalf("aetna stderr %q missing payer", stderr)
+	}
+}
+
+func TestDiscoverHelpNamesSupportedPayers(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{{"--help"}, {"discover", "--help"}} {
+		code, stdout, stderr := runCLI(context.Background(), args, fatalEnv(t))
+		if code != 0 || stderr != "" {
+			t.Fatalf("%v: exit %d stderr=%q", args, code, stderr)
+		}
+		for _, want := range []string{"uhc", "optum", "cigna"} {
+			if !strings.Contains(stdout, want) {
+				t.Fatalf("%v missing %q: %s", args, want, stdout)
+			}
+		}
+		if strings.Contains(stdout, "only uhc") || strings.Contains(stdout, "bounded UHC discovery") {
+			t.Fatalf("%v still describes UHC-only discovery: %s", args, stdout)
 		}
 	}
 }

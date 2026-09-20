@@ -305,10 +305,11 @@ reconciles, and consumes discovery/TOC/admission queues. The `mrf` role owns
 only MRF download and parse. The `consumer` role owns consumer ingest and plan
 attachment and is replicable: one mutation per process; scale with `--scale consumer=N`.
 
-`discover` enqueues one bounded UHC discovery run for a building monthly
-release and reports identifiers without waiting for downloads. `--limit` is a
-TOC limit. `--mrf-source-limit` is the cumulative MRF target; it is required
-when a release is still `unset`, and can be increased later with `set-total`.
+`discover` enqueues one bounded discovery run (`--payer uhc`, `optum`, or
+`cigna`) for a building monthly release and reports identifiers without waiting
+for downloads. `--limit` is a TOC limit. `--mrf-source-limit` is the cumulative
+MRF target; it is required when a release is still `unset`, and can be increased
+later with `set-total`.
 
 `month status` reports strict completion blockers, or the complete active
 `(payer_id, collection_month, output_id)` handoff relation with no selector.
@@ -1024,8 +1025,8 @@ cancel other kinds.
 
 ## Limitations
 
-Discovery is UHC-only; month control and import honor the generic payer
-contract. Local storage only. No automatic enrichment. No plan
+Discovery accepts `uhc`, `optum`, and `cigna`; month control and import honor
+the generic payer contract. Local storage only. No automatic enrichment. No plan
 removal/correction. No recurring discovery. Required `--limit`. No UI in this
 binary. TOC import rejects HTTPS MRF URLs that contain user information; the
 shared downloader would refuse those locations.

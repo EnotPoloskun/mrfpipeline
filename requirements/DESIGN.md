@@ -2,10 +2,11 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–35 architecture and
+This document describes the implemented Stories 01–36 architecture and
 operational acceptance. The numbered requirement stories remain authoritative
-where more specific. Sections explicitly labeled historical version 1 are
-background only; they are not current runtime guidance. Stories 28–32 add the
+where more specific.
+Sections explicitly labeled historical version 1 are background only; they
+are not current runtime guidance. Stories 28–32 add the
 database contract, read-only extraction, explicit catalog
 population/status/measurement, catalog-aware publication, and operational
 acceptance.
@@ -136,9 +137,10 @@ The target keeps these version 1 invariants:
 - explicit retry, conservative reconciliation, redaction, and local-only
   storage.
 
-The target remains UHC-only for production discovery. Generic payer columns
-and per-payer release state prepare the domain/query boundary for later payer
-adapters without claiming they exist now.
+Production discovery accepts the exact identifiers the pinned `mrfdiscoverer`
+already lists (`uhc`, `optum`, and `cigna`). Generic payer columns and
+per-payer release state remain the domain/query boundary; a later discoverer
+payer still needs a later pipeline story.
 
 ## Release filter architecture: Stories 28–32 implemented
 
@@ -548,7 +550,7 @@ Version 1 does not include:
 
 - Automatic `mrfenricher` execution or taxonomy refresh scheduling.
 - A web API, dashboard, or end-user plan-search UI.
-- A payer other than UHC.
+- A payer the pinned `mrfdiscoverer` does not list.
 - Internal recurring discovery scheduling.
 - Omitted or unlimited discovery admission; that waits for a chunked-admission
   story.
@@ -568,7 +570,7 @@ Version 1 does not include:
 
 ```mermaid
 flowchart LR
-    UHC["UHC blob listing"] --> D["mrfdiscoverer"]
+    Listing["Payer listing"] --> D["mrfdiscoverer"]
     D --> O["mrfpipeline"]
 
     O --> TD["TOC download"]
@@ -1651,6 +1653,12 @@ Stories 35 is implemented concurrent consumer worker enablement:
 |---:|---|
 | 35 | Pin consumer Story 26, drop the consumer role lease, keep per-process `MaxWorkers: 1`, and allow distinct snapshot ingests to overlap across replicas. (Implemented.) |
 
+Story 36 is implemented production discover-adapter expansion:
+
+| Story | Deliverable |
+|---:|---|
+| 36 | Accept `discover --payer` values `uhc`, `optum`, and `cigna`, matching the pinned `mrfdiscoverer`. (Implemented.) |
+
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC
 TOC first, then two, then five representative TOCs before UI work begins.
@@ -1661,9 +1669,9 @@ The version 1 pipeline is complete when all of the following are proven:
 
 1. A migration initializes current application and River schemas and is safe
    to rerun.
-2. A bounded UHC discovery requires `--limit`, durably admits only that number
-   of new TOCs, and records overflow of distinct new URLs that were not
-   admitted.
+2. A bounded discovery for a supported payer identifier (`uhc`, `optum`, or
+   `cigna`) requires `--limit`, durably admits only that number of new TOCs,
+   and records overflow of distinct new URLs that were not admitted.
 3. Every admitted TOC downloads, parses, and imports through idempotent River
    jobs. A wrong first-admitted collection month is rebuilt, not corrected in
    place.
