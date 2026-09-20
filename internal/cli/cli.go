@@ -265,12 +265,16 @@ func runDiscover(ctx context.Context, getenv func(string) string, payer, month, 
 	if err := config.ValidateCollectionMonth(month); err != nil {
 		return "", err
 	}
-	n, err := config.ValidateLimit(limit)
+	kind, n, err := config.ValidateDiscoverLimit(limit)
 	if err != nil {
 		return "", err
 	}
-	if n > math.MaxInt32 {
-		return "", fmt.Errorf("%w: %s: must fit in a PostgreSQL integer", config.ErrInvalidConfig, config.FieldLimit)
+	var tocLimit *int64
+	if kind != "all" {
+		if n > math.MaxInt32 {
+			return "", fmt.Errorf("%w: %s: must fit in a PostgreSQL integer", config.ErrInvalidConfig, config.FieldLimit)
+		}
+		tocLimit = &n
 	}
 	mrfLimit := ""
 	if len(mrfLimits) > 0 {
@@ -297,7 +301,7 @@ func runDiscover(ctx context.Context, getenv func(string) string, payer, month, 
 		return "", err
 	}
 	defer pool.Close()
-	return discovery.EnqueueWithTarget(ctx, pool, payer, month, n, target)
+	return discovery.EnqueueWithTarget(ctx, pool, payer, month, tocLimit, target)
 }
 
 func runMonthSetTotal(ctx context.Context, getenv func(string) string, payer, month, total string) (string, error) {

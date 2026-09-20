@@ -177,7 +177,7 @@ month inactive. Back up PostgreSQL and the warehouse together. Restore both,
 run `reconcile` and targeted `month status`/`filters status`, then verify the
 active relation before serving.
 
-`--limit` is additional TOC files and is always required on `discover`.
+`--limit` is additional TOC files and is always required on `discover` (`N` or `all`).
 `--mrf-source-limit` / `set-total --total` is the cumulative MRF source
 target. It is required while the release target is still `unset`.
 

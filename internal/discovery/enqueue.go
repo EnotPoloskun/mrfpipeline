@@ -20,20 +20,28 @@ import (
 // Enqueue inserts one discovery run and its discovery.run job in one
 // transaction, then returns the compact enqueue report.
 func Enqueue(ctx context.Context, pool *pgxpool.Pool, payer, month string, limit int64) (string, error) {
-	return EnqueueWithTarget(ctx, pool, payer, month, limit, admission.Target{Kind: admission.TargetAll})
+	return EnqueueWithTarget(ctx, pool, payer, month, &limit, admission.Target{Kind: admission.TargetAll})
 }
 
 // EnqueueWithTarget creates a discovery run and initializes or reuses the
 // durable cumulative MRF source target in the same transaction.
-func EnqueueWithTarget(ctx context.Context, pool *pgxpool.Pool, payer, month string, limit int64, target admission.Target) (string, error) {
+// A nil limit stores toc_limit NULL and admits every new TOC in this listing.
+func EnqueueWithTarget(ctx context.Context, pool *pgxpool.Pool, payer, month string, limit *int64, target admission.Target) (string, error) {
 	if ctx == nil {
 		panic("nil context")
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if pool == nil || payer == "" || limit < 1 || limit > math.MaxInt32 {
+	if pool == nil || payer == "" {
 		return "", jobs.Failure("enqueue")
+	}
+	var stored any
+	if limit != nil {
+		if *limit < 1 || *limit > math.MaxInt32 {
+			return "", jobs.Failure("enqueue")
+		}
+		stored = int32(*limit)
 	}
 	monthDate, err := parseCollectionMonth(month)
 	if err != nil {
@@ -76,7 +84,7 @@ WHERE payer_id = $1 AND collection_month = $2`, payer, monthDate).Scan(&kind); e
 	err = tx.QueryRow(ctx, `
 INSERT INTO mrfpipeline.discovery_runs (payer_id, collection_month, toc_limit, status)
 VALUES ($1, $2, $3, 'pending')
-RETURNING id`, payer, monthDate, int32(limit)).Scan(&runID)
+RETURNING id`, payer, monthDate, stored).Scan(&runID)
 	if err != nil {
 		return "", dbFail(ctx, "insert run", err)
 	}

@@ -104,6 +104,21 @@ func ValidateLimit(raw string) (int64, error) {
 	return ValidatePositiveID(FieldLimit, raw)
 }
 
+// ValidateDiscoverLimit accepts a positive per-run TOC admission count or all.
+func ValidateDiscoverLimit(raw string) (kind string, count int64, err error) {
+	if raw == "all" {
+		return "all", 0, nil
+	}
+	n, err := ValidatePositiveID(FieldLimit, raw)
+	if err != nil {
+		if strings.Contains(err.Error(), "must be a positive integer") {
+			return "", 0, wrap(FieldLimit, "must be a positive integer or all")
+		}
+		return "", 0, err
+	}
+	return "numeric", n, nil
+}
+
 // ValidateSourceTarget accepts a positive cumulative source count or all.
 // An empty value is reserved for callers that intentionally omit the option.
 func ValidateSourceTarget(raw string) (kind string, count int64, err error) {

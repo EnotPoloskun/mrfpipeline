@@ -12,6 +12,8 @@ import (
 	"github.com/riverqueue/river"
 )
 
+func int64Ptr(n int64) *int64 { return &n }
+
 func TestFormatReport(t *testing.T) {
 	t.Parallel()
 	text, err := FormatReport(Report{
@@ -19,7 +21,7 @@ func TestFormatReport(t *testing.T) {
 		RiverJobID:      9001,
 		PayerID:         "uhc",
 		CollectionMonth: "2026-08",
-		TOCLimit:        5,
+		TOCLimit:        int64Ptr(5),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +64,22 @@ func TestFormatReport(t *testing.T) {
 		if keys[i] != k {
 			t.Fatalf("keys %v", keys)
 		}
+	}
+}
+
+func TestFormatReportUnlimited(t *testing.T) {
+	t.Parallel()
+	text, err := FormatReport(Report{
+		DiscoveryRunID:  41,
+		RiverJobID:      9001,
+		PayerID:         "optum",
+		CollectionMonth: "2026-08",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "{\"discovery_run_id\":41,\"river_job_id\":9001,\"payer_id\":\"optum\",\"collection_month\":\"2026-08\",\"toc_limit\":null}\n" {
+		t.Fatalf("got %q", text)
 	}
 }
 
@@ -203,5 +221,38 @@ func TestLimitSelectionCounts(t *testing.T) {
 	}
 	if first[0].Ordinal != 0 || first[1].Ordinal != 1 || first[2].Ordinal != 3 {
 		t.Fatalf("ordinals %+v", first)
+	}
+}
+
+func TestLimitSelectionCountsUnlimited(t *testing.T) {
+	t.Parallel()
+	files := []TOCFile{
+		{URL: "known-1"},
+		{URL: "new-A"},
+		{URL: "new-A"},
+		{URL: "new-B"},
+		{URL: "new-C"},
+		{URL: "new-D"},
+	}
+	first, err := firstOccurrences(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	known := map[string]bool{"known-1": true}
+	var existing, admitted, overflow int64
+	var limit *int64
+	for _, hit := range first {
+		if known[hit.URL] {
+			existing++
+			continue
+		}
+		if limit != nil && admitted >= *limit {
+			overflow++
+			continue
+		}
+		admitted++
+	}
+	if existing != 1 || admitted != 4 || overflow != 0 {
+		t.Fatalf("existing=%d admitted=%d overflow=%d", existing, admitted, overflow)
 	}
 }

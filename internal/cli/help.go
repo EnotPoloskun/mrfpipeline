@@ -10,7 +10,7 @@ started by the pipeline.
 Usage:
   mrfpipeline migrate
   mrfpipeline work --role <control|mrf|consumer>
-  mrfpipeline discover --payer <uhc|optum|cigna> --collection-month <YYYY-MM> --limit <count> [--mrf-source-limit <N|all>]
+  mrfpipeline discover --payer <uhc|optum|cigna> --collection-month <YYYY-MM> --limit <N|all> [--mrf-source-limit <N|all>]
   mrfpipeline reconcile
   mrfpipeline retry --stage <job-kind> --id <domain-id>
   mrfpipeline stats [--payer <payer>] [--collection-month <YYYY-MM>] [--json]
@@ -26,7 +26,7 @@ Usage:
 Commands:
   migrate   Apply application and River database migrations
   work      Run background workers
-  discover  Enqueue one bounded discovery run
+  discover  Enqueue one discovery run
   reconcile Repair building-release gaps and report sealed inconsistencies
   retry     Reopen one exact failed stage with a fresh River series
   stats     Print read-only pipeline stage counts by payer and month
@@ -68,7 +68,7 @@ resident capacity is the shared download-plus-parse disk bound.
 `
 
 const discoverHelp = `Usage:
-  mrfpipeline discover --payer <uhc|optum|cigna> --collection-month <YYYY-MM> --limit <count> [--mrf-source-limit <N|all>]
+  mrfpipeline discover --payer <uhc|optum|cigna> --collection-month <YYYY-MM> --limit <N|all> [--mrf-source-limit <N|all>]
   mrfpipeline discover --help
 
 Enqueue one background discovery run. Success reports the durable run and
@@ -77,8 +77,9 @@ job identifiers rather than waiting for listing or download.
 collection_month selects the caller-supplied building monthly release that
 owns discovered TOC captures. It is not inferred from URLs or payer contents.
 
---limit is required and must be a positive integer. Unlimited discovery is
-out of version 1 scope.
+--limit is required and must be a positive integer or all. all admits every
+new TOC URL in this listing as an opt-in for this run; it is not a durable
+month-wide TOC target and does not select MRF sources.
 
 --mrf-source-limit is required for a new or unset release. Omit it only when
 an existing release already has an initialized target; omission then reuses
@@ -88,7 +89,7 @@ cumulative and can later be increased with month sources set-total.
 Required flags:
   --payer              Exact payer adapter identifier (uhc, optum, or cigna)
   --collection-month   Caller-selected month, exactly YYYY-MM
-  --limit              Positive int64 of newly admitted TOCs
+  --limit              Positive int64 of newly admitted TOCs, or all
 
 Required environment:
   MRFPIPELINE_DATABASE_URL  PostgreSQL connection string

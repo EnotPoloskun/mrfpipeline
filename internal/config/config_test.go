@@ -242,3 +242,49 @@ func TestValidateLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateDiscoverLimit(t *testing.T) {
+	t.Parallel()
+	kind, n, err := ValidateDiscoverLimit("all")
+	if err != nil || kind != "all" || n != 0 {
+		t.Fatalf("all: kind=%q n=%d err=%v", kind, n, err)
+	}
+	for _, raw := range []string{"1", "2", "5", "10", "01", strconv.FormatInt(1<<63-1, 10)} {
+		kind, n, err := ValidateDiscoverLimit(raw)
+		if err != nil {
+			t.Fatalf("%q: %v", raw, err)
+		}
+		want, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if kind != "numeric" || n != want {
+			t.Fatalf("%q: kind=%q n=%d want numeric %d", raw, kind, n, want)
+		}
+	}
+
+	invalids := []string{"All", "ALL", "all ", "", "0", "+5", "1.5", "0x10", "1 ", " 1"}
+	for _, raw := range invalids {
+		_, _, err := ValidateDiscoverLimit(raw)
+		if !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("%q: got %v", raw, err)
+		}
+		if !strings.Contains(err.Error(), FieldLimit) {
+			t.Fatalf("%q: missing field name in %v", raw, err)
+		}
+		if !strings.Contains(err.Error(), "positive integer or all") {
+			t.Fatalf("%q: want positive integer or all in %v", raw, err)
+		}
+	}
+
+	_, _, err = ValidateDiscoverLimit("9223372036854775808")
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("int64 overflow: %v", err)
+	}
+	if !strings.Contains(err.Error(), FieldLimit) {
+		t.Fatalf("int64 overflow missing field: %v", err)
+	}
+	if !strings.Contains(err.Error(), "signed 64-bit integer") {
+		t.Fatalf("int64 overflow message: %v", err)
+	}
+}

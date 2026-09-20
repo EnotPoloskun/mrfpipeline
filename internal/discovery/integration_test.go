@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/EnotPoloskun/mrfdiscoverer"
+	"github.com/enotpoloskun/mrfpipeline/internal/admission"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
@@ -87,8 +88,31 @@ func mustEnqueueMonth(t *testing.T, pool *pgxpool.Pool, month string, limit int6
 		t.Fatal(err)
 	}
 	r := parseReport(t, text)
-	if r.TOCLimit != limit || r.PayerID != "uhc" || r.CollectionMonth != month {
+	if r.TOCLimit == nil || *r.TOCLimit != limit || r.PayerID != "uhc" || r.CollectionMonth != month {
 		t.Fatalf("%+v", r)
+	}
+	return r
+}
+
+func mustEnqueueUnlimited(t *testing.T, pool *pgxpool.Pool) Report {
+	t.Helper()
+	text, err := EnqueueWithTarget(context.Background(), pool, "uhc", "2026-08", nil, admission.Target{Kind: admission.TargetAll})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := parseReport(t, text)
+	if r.TOCLimit != nil || r.PayerID != "uhc" || r.CollectionMonth != "2026-08" {
+		t.Fatalf("%+v", r)
+	}
+	if !strings.Contains(strings.TrimSpace(text), `"toc_limit":null`) {
+		t.Fatalf("report %q", text)
+	}
+	var stored *int32
+	if err := pool.QueryRow(context.Background(), `SELECT toc_limit FROM mrfpipeline.discovery_runs WHERE id = $1`, r.DiscoveryRunID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != nil {
+		t.Fatalf("stored toc_limit %v", stored)
 	}
 	return r
 }
@@ -285,6 +309,37 @@ WHERE payer_id = 'uhc' AND source_url = 'https://example.invalid/known'`).Scan(&
 		t.Fatalf("monthly captures %d %v", n, err)
 	}
 	assertDownloadJobs(t, pool, 5)
+}
+
+func TestIntegrationAdmissionUnlimited(t *testing.T) {
+	_, pool := testDB(t)
+	client := insertClient(t, pool)
+	files := []TOCFile{
+		{URL: "https://example.invalid/known"},
+		{URL: "https://example.invalid/new-a"},
+		{URL: "https://example.invalid/new-a"},
+		{URL: "https://example.invalid/new-b"},
+		{URL: "https://example.invalid/new-c"},
+	}
+	capped := mustEnqueue(t, pool, 1)
+	markRunning(t, pool, capped.DiscoveryRunID)
+	if err := admit(context.Background(), pool, client, capped.DiscoveryRunID, capped.RiverJobID, files); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(t, pool, capped.DiscoveryRunID, 5, 0, 1, 3)
+	assertDownloadJobs(t, pool, 1)
+
+	unlimited := mustEnqueueUnlimited(t, pool)
+	markRunning(t, pool, unlimited.DiscoveryRunID)
+	if err := admit(context.Background(), pool, client, unlimited.DiscoveryRunID, unlimited.RiverJobID, files); err != nil {
+		t.Fatal(err)
+	}
+	assertCounts(t, pool, unlimited.DiscoveryRunID, 5, 1, 3, 0)
+	assertTOC(t, pool, "2026-08", "https://example.invalid/known", true)
+	assertTOC(t, pool, "2026-08", "https://example.invalid/new-a", true)
+	assertTOC(t, pool, "2026-08", "https://example.invalid/new-b", true)
+	assertTOC(t, pool, "2026-08", "https://example.invalid/new-c", true)
+	assertDownloadJobs(t, pool, 4)
 }
 
 func TestIntegrationEmptyListingAndRetryNoop(t *testing.T) {

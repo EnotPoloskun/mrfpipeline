@@ -15,7 +15,7 @@ import (
 type runRow struct {
 	PayerID string
 	Month   time.Time
-	Limit   int32
+	Limit   *int32
 }
 
 func loadRun(ctx context.Context, pool *pgxpool.Pool, runID int64) (runRow, error) {
@@ -50,7 +50,7 @@ func admit(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx.Tx]
 	var assigned *int64
 	var payer string
 	var month time.Time
-	var limit int32
+	var limit *int32
 	err = tx.QueryRow(ctx, `
 SELECT status, river_job_id, payer_id, collection_month, toc_limit
 FROM mrfpipeline.discovery_runs
@@ -92,7 +92,7 @@ FOR UPDATE`, runID).Scan(&status, &assigned, &payer, &month, &limit)
 			existing++
 			continue
 		}
-		if admitted >= int64(limit) {
+		if limit != nil && admitted >= int64(*limit) {
 			overflow++
 			continue
 		}

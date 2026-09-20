@@ -63,7 +63,7 @@ func TestIntegrationDiscoverCommand(t *testing.T) {
 	if !strings.HasSuffix(stdout, "\n") || strings.Contains(stdout, " ") {
 		t.Fatalf("compact report %q", stdout)
 	}
-	if r.PayerID != "uhc" || r.CollectionMonth != "2026-08" || r.TOCLimit != 5 || r.DiscoveryRunID <= 0 || r.RiverJobID <= 0 {
+	if r.PayerID != "uhc" || r.CollectionMonth != "2026-08" || r.TOCLimit == nil || *r.TOCLimit != 5 || r.DiscoveryRunID <= 0 || r.RiverJobID <= 0 {
 		t.Fatalf("%+v", r)
 	}
 	if strings.Contains(stdout, "null") {
@@ -97,6 +97,34 @@ func TestIntegrationDiscoverCommand(t *testing.T) {
 	}
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM mrfpipeline_river.river_job WHERE kind = $1`, jobs.KindDiscoveryRun).Scan(&n); err != nil || n != 3 {
 		t.Fatalf("write failure jobs %d", n)
+	}
+}
+
+func TestIntegrationDiscoverLimitAll(t *testing.T) {
+	env, pool := testDiscoverEnv(t)
+	code, stdout, stderr := runCLI(context.Background(), discoverArgs("all"), env)
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%q", code, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr %q", stderr)
+	}
+	var r discovery.Report
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.PayerID != "uhc" || r.CollectionMonth != "2026-08" || r.TOCLimit != nil || r.DiscoveryRunID <= 0 || r.RiverJobID <= 0 {
+		t.Fatalf("%+v", r)
+	}
+	if !strings.Contains(stdout, `"toc_limit":null`) {
+		t.Fatalf("report %q", stdout)
+	}
+	var stored *int32
+	if err := pool.QueryRow(context.Background(), `SELECT toc_limit FROM mrfpipeline.discovery_runs WHERE id = $1`, r.DiscoveryRunID).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != nil {
+		t.Fatalf("stored toc_limit %v", stored)
 	}
 }
 

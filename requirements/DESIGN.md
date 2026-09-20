@@ -2,7 +2,7 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–36 architecture and
+This document describes the implemented Stories 01–37 architecture and
 operational acceptance. The numbered requirement stories remain authoritative
 where more specific.
 Sections explicitly labeled historical version 1 are background only; they
@@ -16,8 +16,8 @@ except where the target addendum explicitly replaces them:
 
 - Discover TOCs incrementally; do not wait for an unknowable "complete" payer
   set before processing useful work.
-- Require a positive admission `--limit` on every discovery. Omitted or
-  unlimited discovery is deferred until chunked admission has its own design.
+- Require `--limit` on every discovery (`N` or `all`). Omitted `--limit`
+  remains invalid.
 - Download and parse one exact MRF URL once, even when several TOCs reference
   it.
 - Keep `mrfparser` plan-independent and serialize every `Parse` call with a
@@ -525,8 +525,8 @@ records durable orchestration state.
 
 Version 1 must:
 
-- Run a manually triggered UHC TOC discovery with a required positive
-  `--limit`.
+- Run a manually triggered TOC discovery with a required `--limit` (`N` or
+  `all`).
 - Support a small first live progression: one newly admitted TOC, then two,
   then five, with ten only after measuring fan-out and disk use.
 - Store discoveries, TOCs, exact MRF URLs, feed/month snapshots, plan
@@ -552,8 +552,7 @@ Version 1 does not include:
 - A web API, dashboard, or end-user plan-search UI.
 - A payer the pinned `mrfdiscoverer` does not list.
 - Internal recurring discovery scheduling.
-- Omitted or unlimited discovery admission; that waits for a chunked-admission
-  story.
+- Omitted `--limit`; `--limit` remains required (`N` or `all`).
 - HTTP proxy environment variables, custom TLS, or private-network downloads.
 - Range-resume downloads or remote content revalidation under an exact URL.
 - Removal or replacement of an attached plan.
@@ -670,7 +669,7 @@ The version 1 executable includes these operational commands:
 ```text
 mrfpipeline migrate
 mrfpipeline work
-mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count>
+mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <N|all>
 mrfpipeline reconcile
 mrfpipeline retry --stage <job-kind> --id <domain-id>
 mrfpipeline stats [--payer <payer>] [--collection-month <YYYY-MM>] [--json]
@@ -685,10 +684,10 @@ reconciliation as `reconcile`, starts the registered River workers, and runs
 until canceled.
 
 `discover` creates and enqueues one durable discovery run. `--limit` is
-required and must be a positive `int64`. The command does not wait for TOC
-downloads, MRF parsing, consumer ingestion, or plan attachment. The
-`discovery_runs.toc_limit` column remains nullable only so a later
-chunked-admission story can store unlimited runs; version 1 never writes null.
+required and is a positive `int64` or `all`. `all` stores `toc_limit` null and
+admits every new TOC URL in this listing; it is not a durable month-wide TOC
+target. The command does not wait for TOC
+downloads, MRF parsing, consumer ingestion, or plan attachment.
 
 `reconcile` acquires the exclusive worker lease and repairs safely inferable
 nonterminal scheduling/artifact gaps. `retry` grants one fresh River attempt
@@ -978,7 +977,7 @@ mrfpipeline discover --payer uhc --collection-month 2026-08 --limit 1
 The command validates current application and River schema, then atomically:
 
 - inserts one pending `discovery_runs` row with payer, caller-selected month,
-  and required positive limit;
+  and required `--limit` (`N` stored as a positive integer, `all` as null);
 - inserts one `discovery.run` River job carrying only the run ID; and
 - stores the River job ID on the run.
 
@@ -997,17 +996,19 @@ The worker records known and new URLs transactionally:
 - Known exact `(payer_id, source_url)` rows are reused and observed again.
 - New exact URLs are candidates for admission.
 - `--limit` bounds newly admitted TOCs, not the number of known results in the
-  payer listing.
+  payer listing. `--limit all` admits every new first-occurrence URL in this
+  listing.
 - Newly admitted TOCs receive a `toc.download` job.
 - The discovery run records discovered, existing, admitted, and overflow
   counts. `overflow_count` is the number of distinct new first-occurrence URLs
-  excluded by `--limit`.
+  excluded by a numeric `--limit`, and is 0 for `--limit all`.
 
-Version 1 requires `--limit`. A single admission transaction is appropriate
-only because the run is bounded. Omitted or unlimited discovery is deferred
-until chunked admission is designed. The detailed behavior for new candidates
-after the limit is reached—including which membership rows are stored and how
-`overflow_count` is computed—is owned by Story 05 and must remain consistent
+Version 1 requires `--limit` (`N` or `all`). `--limit all` still uses one
+admission transaction; a listing too large to insert in one transaction fails
+and retries as today. Chunked in-worker admission remains a later story.
+Omitted `--limit` stays invalid. The detailed behavior for new candidates
+after a numeric limit is reached—including which membership rows are stored and
+how `overflow_count` is computed—is owned by Story 05 and must remain consistent
 with the Story 02 schema.
 
 ### 3. Download a TOC
@@ -1659,6 +1660,12 @@ Story 36 is implemented production discover-adapter expansion:
 |---:|---|
 | 36 | Accept `discover --payer` values `uhc`, `optum`, and `cigna`, matching the pinned `mrfdiscoverer`. (Implemented.) |
 
+Story 37 is implemented discover `--limit all`:
+
+| Story | Deliverable |
+|---:|---|
+| 37 | Accept `discover --limit all` to admit every new TOC URL in this listing. (Implemented.) |
+
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC
 TOC first, then two, then five representative TOCs before UI work begins.
@@ -1669,9 +1676,11 @@ The version 1 pipeline is complete when all of the following are proven:
 
 1. A migration initializes current application and River schemas and is safe
    to rerun.
-2. A bounded discovery for a supported payer identifier (`uhc`, `optum`, or
-   `cigna`) requires `--limit`, durably admits only that number of new TOCs,
-   and records overflow of distinct new URLs that were not admitted.
+2. A discovery for a supported payer identifier (`uhc`, `optum`, or
+   `cigna`) requires `--limit` (`N` or `all`). Numeric limits durably admit
+   only that number of new TOCs and record overflow of distinct new URLs that
+   were not admitted. `--limit all` admits every new TOC in this listing with
+   overflow 0.
 3. Every admitted TOC downloads, parses, and imports through idempotent River
    jobs. A wrong first-admitted collection month is rebuilt, not corrected in
    place.

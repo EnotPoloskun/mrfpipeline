@@ -280,7 +280,7 @@ new warehouse instead of refreshing in place.
 ```text
 mrfpipeline migrate
 mrfpipeline work --role <control|mrf|consumer>
-mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <count> [--mrf-source-limit <N|all>]
+mrfpipeline discover --payer uhc --collection-month <YYYY-MM> --limit <N|all> [--mrf-source-limit <N|all>]
 mrfpipeline reconcile
 mrfpipeline retry --stage <job-kind> --id <domain-id>
 mrfpipeline stats [--payer <payer>] [--collection-month <YYYY-MM>] [--json]
@@ -305,9 +305,10 @@ reconciles, and consumes discovery/TOC/admission queues. The `mrf` role owns
 only MRF download and parse. The `consumer` role owns consumer ingest and plan
 attachment and is replicable: one mutation per process; scale with `--scale consumer=N`.
 
-`discover` enqueues one bounded discovery run (`--payer uhc`, `optum`, or
+`discover` enqueues one discovery run (`--payer uhc`, `optum`, or
 `cigna`) for a building monthly release and reports identifiers without waiting
-for downloads. `--limit` is a TOC limit. `--mrf-source-limit` is the cumulative
+for downloads. `--limit` is a per-run TOC admission cap: a positive integer or
+`all`. `--mrf-source-limit` is the cumulative
 MRF target; it is required when a release is still `unset`, and can be increased
 later with `set-total`.
 
@@ -580,8 +581,9 @@ with `MRFPIPELINE_*` set. Replace `<YYYY-MM>` with the collection month you
 intend (CMS listing month, exactly `YYYY-MM`). The Compose-only command list
 is [`DOCKER.md`](DOCKER.md).
 
-`--limit` is newly admitted **TOC files**, required, and always a positive
-integer. Unlimited TOC discovery is out of version 1 scope. `--mrf-source-limit`
+`--limit` is newly admitted **TOC files**, required, and a positive integer or
+`all`. `--limit all` admits every new TOC in this listing; it is not a durable
+month-wide TOC target. `--mrf-source-limit`
 is the cumulative **MRF source** target (`N` or `all`). Resident capacity
 (`MRFPIPELINE_MRF_RESIDENT_CAPACITY`, default `2`) is how many selected raw
 sources may occupy disk at once. It is not a byte quota and not a cap on how
@@ -718,13 +720,21 @@ existing target is reused.
 
 ### Run without an MRF cap
 
-There is no unlimited TOC flag; pick a `--limit` large enough for the listing
-you want. To select every known MRF source for the month, use `all`.
+`--limit all` admits every new TOC in this listing; it is per-run, not a
+durable month-wide TOC target. `--mrf-source-limit all` (or `month sources
+set-total --total all`) is the separate durable MRF source target.
 
-On a **new** unset release:
+On a **new** unset release, select every known MRF source while still using a
+small TOC sample:
 
 ```text
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 1 --mrf-source-limit all
+```
+
+To admit every new TOC in this listing as well:
+
+```text
+docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit all --mrf-source-limit all
 ```
 
 On an existing numeric building release:
@@ -733,8 +743,10 @@ On an existing numeric building release:
 docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total all
 ```
 
-`all` still processes only sources discovered from admitted TOCs. Raise
-`--limit` (new TOCs) if the listing has more TOC files you have not admitted.
+`--mrf-source-limit all` still processes only sources discovered from admitted
+TOCs. Use `--limit all` (or a later numeric `--limit`) if the listing has more
+TOC files you have not admitted.
+
 Disk, warehouse, and River history remain operator-bounded; raise
 `MRFPIPELINE_MRF_RESIDENT_CAPACITY` only if you want more concurrent raw
 sources, not as a substitute for `all`.
@@ -1027,8 +1039,8 @@ cancel other kinds.
 
 Discovery accepts `uhc`, `optum`, and `cigna`; month control and import honor
 the generic payer contract. Local storage only. No automatic enrichment. No plan
-removal/correction. No recurring discovery. Required `--limit`. No UI in this
-binary. TOC import rejects HTTPS MRF URLs that contain user information; the
+removal/correction. No recurring discovery. Required `--limit` (`N` or `all`).
+No UI in this binary. TOC import rejects HTTPS MRF URLs that contain user information; the
 shared downloader would refuse those locations.
 
 Configured artifact, warehouse, catalog, and services paths must not

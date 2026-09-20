@@ -362,6 +362,9 @@ func TestDiscoverSemanticValidation(t *testing.T) {
 		{"limit plus", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "+5"}, config.FieldLimit},
 		{"limit hex", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "0x10"}, config.FieldLimit},
 		{"limit empty", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit="}, config.FieldLimit},
+		{"limit All", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "All"}, config.FieldLimit},
+		{"limit ALL", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "ALL"}, config.FieldLimit},
+		{"limit all space", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "all "}, config.FieldLimit},
 		{"limit overflow", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "9223372036854775808"}, config.FieldLimit},
 		{"limit exceeds integer", []string{"discover", "--payer", "uhc", "--collection-month", "2026-08", "--limit", "2147483648"}, config.FieldLimit},
 	}
@@ -385,7 +388,7 @@ func TestDiscoverSemanticValidation(t *testing.T) {
 		})
 	}
 
-	for _, limit := range []string{"1", "2", "5", "10", "02"} {
+	for _, limit := range []string{"1", "2", "5", "10", "02", "all"} {
 		_, err := execute(context.Background(), discoverArgs(limit), env)
 		if !errors.Is(err, database.ErrDatabase) {
 			t.Fatalf("limit %s: %v", limit, err)
@@ -409,6 +412,22 @@ func TestDiscoverSupportedPayers(t *testing.T) {
 	}
 	if !strings.Contains(stderr, config.FieldPayer) {
 		t.Fatalf("aetna stderr %q missing payer", stderr)
+	}
+}
+
+func TestDiscoverHelpNamesLimitAll(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{{"--help"}, {"discover", "--help"}} {
+		code, stdout, stderr := runCLI(context.Background(), args, fatalEnv(t))
+		if code != 0 || stderr != "" {
+			t.Fatalf("%v: exit %d stderr=%q", args, code, stderr)
+		}
+		if !strings.Contains(stdout, "--limit <N|all>") {
+			t.Fatalf("%v missing --limit <N|all>: %s", args, stdout)
+		}
+		if strings.Contains(stdout, "Unlimited discovery is out of version 1 scope") {
+			t.Fatalf("%v still forbids unlimited discovery: %s", args, stdout)
+		}
 	}
 }
 
