@@ -1,15 +1,21 @@
-# Docker Compose operator commands
+# Local pipeline setup (Docker Compose)
 
-Copy-paste Compose wrappers for the same verbs as the host `mrfpipeline`
-binary. Product behavior, flags, and blockers stay in
-[`README.md`](README.md). The file for this topology is
-[`docker-compose.story21.yml`](docker-compose.story21.yml).
+This is the copy-paste Compose command sheet for running `mrfpipeline` on a
+machine that already has Docker Compose. The setup walkthrough and command
+list are in [`USAGE.md`](USAGE.md). Product behavior, flags, and blockers
+stay in [`README.md`](README.md). The topology file is
+[`docker-compose.yml`](docker-compose.yml).
 
-Run every command from the repository root. Repeat
-`-f docker-compose.story21.yml`, or export
-`COMPOSE_FILE=docker-compose.story21.yml`. Compose does not take a host
+The pipeline image is `mrfpipeline:local`. It contains the `mrfpipeline`
+binary and pinned DuckDB `v1.5.5`. It does **not** contain enricher, NPPES
+data, or the provider catalog. Enricher is a separate program with its own
+Postgres; copy its export directory onto this host.
+
+Run every command from the repository root. `-f docker-compose.yml` is
+optional (it is the default Compose file). Compose does not take a host
 pipeline database URL; workers and the `cli` service use unpublished
-Compose PostgreSQL.
+Compose PostgreSQL. The optional River UI profile publishes only
+`127.0.0.1:8080`.
 
 ## Do not
 
@@ -22,6 +28,19 @@ Compose PostgreSQL.
   download cleanup frees the slot)
 - `DELETE` from `mrf_materialization_slots`
 - change the catalog or selector while a warehouse already exists
+- put enricher or an enricher database URL into this stack
+
+## What you need
+
+- Docker Compose
+- An SSH key that can read the private sibling modules (`mrfparser`,
+  `mrfdiscoverer`, `mrfconsumer`) **only to build** the image
+- A real `mrfenricher` catalog directory with `manifest.json`
+- A services CSV with header `billing_code_type,billing_code`
+- Disk: resident slots bound in-flight raw MRFs, not warehouse/parsed output
+
+The other computer does not need Go, River, DuckDB, enricher, or enricher
+Postgres.
 
 ## Inputs
 
@@ -35,7 +54,7 @@ Copy those files **before** any Compose command that mounts them. Put a real
 `mrfenricher` catalog under `local/provider-catalog/` (must contain
 `manifest.json`). Edit `.env`:
 
-- `MRFPIPELINE_PROVIDER_CATALOG_DIR` — catalog directory
+- `MRFPIPELINE_PROVIDER_CATALOG_DIR` — catalog directory (enricher export)
 - `MRFPIPELINE_SERVICES_FILE` — selector CSV with header
   `billing_code_type,billing_code`
 - `MRFPIPELINE_MRF_RESIDENT_CAPACITY` — concurrent raw MRF sources (default
@@ -56,7 +75,7 @@ Preferred:
 eval "$(ssh-agent -s)"
 ssh-add <path-to-private-module-key>
 export GOPRIVATE=github.com/EnotPoloskun/*,github.com/enotpoloskun/mrfconsumer
-DOCKER_BUILDKIT=1 docker compose -f docker-compose.story21.yml build
+DOCKER_BUILDKIT=1 docker compose -f docker-compose.yml build
 ```
 
 Direct:
@@ -83,12 +102,22 @@ the static binary after the final image build.
 After a code change, rebuild the tag, then recreate running services so they
 pick up the new image (see [Reload a rebuilt image](#reload-a-rebuilt-image)).
 
+Pushing to a private registry (for example GHCR) is optional and is not
+required to run locally. Tag and push only after `docker login`:
+
+```text
+docker tag mrfpipeline:local ghcr.io/<namespace>/mrfpipeline:<git-sha>
+docker push ghcr.io/<namespace>/mrfpipeline:<git-sha>
+```
+
+Keep that package private. The image includes compiled private modules.
+
 ## First start
 
 ```text
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli migrate
-docker compose -f docker-compose.story21.yml up -d control
-docker compose -f docker-compose.story21.yml logs -f --tail=50 control
+docker compose -f docker-compose.yml --profile operator run --rm cli migrate
+docker compose -f docker-compose.yml up -d control
+docker compose -f docker-compose.yml logs -f --tail=50 control
 ```
 
 Wait for a JSON line with `msg=worker_started`, `kind=runtime`, and
@@ -100,24 +129,35 @@ to the number of parallel parses you want, and set
 control so it rereads `.env`):
 
 ```text
-docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=2 mrf consumer
+docker compose -f docker-compose.yml --profile workers up -d --scale mrf=2 mrf consumer
 ```
 
 Three parallel parses:
 
 ```text
 # in .env: MRFPIPELINE_MRF_RESIDENT_CAPACITY=3
-docker compose -f docker-compose.story21.yml up -d --force-recreate --no-deps control
-docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=3 mrf consumer
+docker compose -f docker-compose.yml up -d --force-recreate --no-deps control
+docker compose -f docker-compose.yml --profile workers up -d --scale mrf=3 mrf consumer
+```
+
+Or use the wrappers, which keep in-flight `mrf` containers:
+
+```text
+scripts/scale-mrf.sh 3
+scripts/scale-consumer.sh 1
 ```
 
 Scale consumer replicas:
 
 ```text
-docker compose -f docker-compose.story21.yml --profile workers up -d --scale consumer=2 mrf consumer
+docker compose -f docker-compose.yml --profile workers up -d --scale consumer=2 mrf consumer
 ```
 
 Default Compose still starts one consumer replica; scale explicitly when needed.
+
+Plain `docker compose up -d` starts only PostgreSQL, migrate, and control.
+`mrf` and `consumer` are behind the `workers` profile. River UI is behind
+the `ui` profile.
 
 ## Operator CLI (one-shot `cli` service)
 
@@ -126,17 +166,26 @@ These are the Compose forms of `mrfpipeline migrate`, `discover`, `stats`,
 `filters build`, `retry`, and `reconcile`.
 
 ```text
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli migrate
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 1 --mrf-source-limit 3
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli stats
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli stats --payer uhc --collection-month <YYYY-MM>
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total <N|all>
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli filters status --payer uhc --collection-month <YYYY-MM>
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli filters build --payer uhc --collection-month <YYYY-MM>
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli retry --stage <kind> --id <domain-id>
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli month activate --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.yml --profile operator run --rm cli migrate
+docker compose -f docker-compose.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 1 --mrf-source-limit 3
+docker compose -f docker-compose.yml --profile operator run --rm cli stats
+docker compose -f docker-compose.yml --profile operator run --rm cli stats --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.yml --profile operator run --rm cli month status
+docker compose -f docker-compose.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total <N|all>
+docker compose -f docker-compose.yml --profile operator run --rm cli filters status --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.yml --profile operator run --rm cli filters build --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.yml --profile operator run --rm cli retry --stage <kind> --id <domain-id>
+docker compose -f docker-compose.yml --profile operator run --rm cli month activate --payer uhc --collection-month <YYYY-MM>
+```
+
+Supported `--payer` values: `uhc`, `optum`, `cigna`. `--limit` is `N` or `all`.
+`--mrf-source-limit all` selects every known MRF source for the month.
+
+Full-month example:
+
+```text
+docker compose -f docker-compose.yml --profile operator run --rm cli discover --payer optum --collection-month 2026-09 --limit all --mrf-source-limit all
 ```
 
 ## Filter catalog operations
@@ -144,17 +193,17 @@ docker compose -f docker-compose.story21.yml --profile operator run --rm cli mon
 Build before activation and rerun the build explicitly after any stale race:
 
 ```text
-docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli filters status --payer uhc --collection-month <YYYY-MM>
-docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli filters build --payer uhc --collection-month <YYYY-MM>
-docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli month activate --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.yml --profile operator run --rm --no-deps cli filters status --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.yml --profile operator run --rm --no-deps cli filters build --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.yml --profile operator run --rm --no-deps cli month activate --payer uhc --collection-month <YYYY-MM>
 ```
 
 The final image help smoke checks are:
 
 ```text
-docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli filters status --help
-docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli filters build --help
-docker compose -f docker-compose.story21.yml --profile operator run --rm --no-deps cli filters measure --help
+docker compose -f docker-compose.yml --profile operator run --rm --no-deps cli filters status --help
+docker compose -f docker-compose.yml --profile operator run --rm --no-deps cli filters build --help
+docker compose -f docker-compose.yml --profile operator run --rm --no-deps cli filters measure --help
 ```
 
 The measurement wrapper is private and disposable only. Run it outside the
@@ -205,8 +254,8 @@ rematerializes the download when bytes are gone.
 Raise the cumulative target when PostgreSQL already has unused known sources:
 
 ```text
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total <N|all>
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.yml --profile operator run --rm cli month sources set-total --payer uhc --collection-month <YYYY-MM> --total <N|all>
+docker compose -f docker-compose.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
 ```
 
 `--total` must be greater than the current numeric target. `all` cannot be
@@ -217,7 +266,7 @@ If `mrf_sources_known` is still below the new target, admit more TOC files
 (`--limit` is additional TOCs, not a reset):
 
 ```text
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 11 --mrf-source-limit <current-target>
+docker compose -f docker-compose.yml --profile operator run --rm cli discover --payer uhc --collection-month <YYYY-MM> --limit 11 --mrf-source-limit <current-target>
 ```
 
 Repeat `discover` with a larger `--limit` until the intended TOC/source
@@ -230,9 +279,9 @@ Numeric targets remain valid for incremental activation; `partial:true` and
 Stop only control. Leave `mrf` and `consumer` running:
 
 ```text
-docker compose -f docker-compose.story21.yml stop control
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli reconcile
-docker compose -f docker-compose.story21.yml up -d control
+docker compose -f docker-compose.yml stop control
+docker compose -f docker-compose.yml --profile operator run --rm cli reconcile
+docker compose -f docker-compose.yml up -d control
 ```
 
 Use this after deploying terminal-parse slot release so already-failed parses
@@ -244,18 +293,18 @@ Rebuild `mrfpipeline:local`, then recreate workers. Do not recreate `mrf`
 while a large parse is still running unless you accept interrupting it.
 
 ```text
-DOCKER_BUILDKIT=1 docker compose -f docker-compose.story21.yml build
-docker compose -f docker-compose.story21.yml --profile workers up -d --no-build --force-recreate --no-deps --scale mrf=3 mrf consumer
-docker compose -f docker-compose.story21.yml stop control
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli migrate
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli reconcile
-docker compose -f docker-compose.story21.yml up -d --no-build --force-recreate --no-deps control
+DOCKER_BUILDKIT=1 docker compose -f docker-compose.yml build
+docker compose -f docker-compose.yml --profile workers up -d --no-build --force-recreate --no-deps --scale mrf=3 mrf consumer
+docker compose -f docker-compose.yml stop control
+docker compose -f docker-compose.yml --profile operator run --rm cli migrate
+docker compose -f docker-compose.yml --profile operator run --rm cli reconcile
+docker compose -f docker-compose.yml up -d --no-build --force-recreate --no-deps control
 ```
 
 Confirm every pipeline container is on the new image:
 
 ```text
-docker compose -f docker-compose.story21.yml ps
+docker compose -f docker-compose.yml ps
 docker inspect --format '{{.Name}} {{.Image}}' \
   mrfpipeline-control-1 mrfpipeline-mrf-1 mrfpipeline-mrf-2 mrfpipeline-mrf-3 mrfpipeline-consumer-1
 ```
@@ -263,36 +312,50 @@ docker inspect --format '{{.Name}} {{.Image}}' \
 ## Status, logs, stalled work
 
 ```text
-docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
-docker compose -f docker-compose.story21.yml logs -f --tail=50 control mrf consumer
-docker compose -f docker-compose.story21.yml ps
-docker compose -f docker-compose.story21.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql
+docker compose -f docker-compose.yml --profile operator run --rm cli month status --payer uhc --collection-month <YYYY-MM>
+docker compose -f docker-compose.yml logs -f --tail=50 control mrf consumer
+docker compose -f docker-compose.yml ps
+docker compose -f docker-compose.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql
 ```
 
 `mrfpipeline stats` is the read-only operational count table. `month status` is the readiness check. Worker logs never print URLs.
 
+Watch progress:
+
+```text
+docker compose -f docker-compose.yml --profile operator run --rm cli stats --payer <payer> --collection-month <YYYY-MM>
+docker compose -f docker-compose.yml --profile operator run --rm cli month status --payer <payer> --collection-month <YYYY-MM>
+```
+
+`stats` is stage counts. `month status` is slots, blockers, and whether the
+month can be activated.
+
 ## River UI (optional)
+
+The `ui` profile runs official River UI on http://localhost:8080 bound to
+loopback. It uses Compose PostgreSQL on the private network
+(`RIVER_SCHEMA=mrfpipeline_river`). It is off until you start it:
+
+```text
+docker compose -f docker-compose.yml --profile ui up -d riverui
+```
 
 Pause and resume queues. Cancelling `mrf.download`, `mrf.parse`, or
 `toc.download` fails that stage and deletes unpublished download bytes. Do not
-retry or delete jobs, and do not cancel other kinds.
+retry or delete jobs, and do not cancel other kinds. Keep using `month status`
+for domain readiness.
+
+Stop the UI without touching workers:
 
 ```text
-docker run --rm -p 8080:8080 --network <project>_default \
-  -e DATABASE_URL=<same URL as the worker> \
-  -e RIVER_SCHEMA=mrfpipeline_river \
-  ghcr.io/riverqueue/riverui:latest
+docker compose -f docker-compose.yml --profile ui stop riverui
 ```
-
-`<project>` is usually `mrfpipeline`. Copy `DATABASE_URL` from
-`MRFPIPELINE_DATABASE_URL` in `docker-compose.story21.yml`. Open
-http://localhost:8080. Keep using `month status` for domain readiness.
 
 ## Stop and tear down
 
 ```text
-docker compose -f docker-compose.story21.yml --profile workers stop consumer mrf control
+docker compose -f docker-compose.yml --profile workers stop consumer mrf control
 ```
 
-`docker compose -f docker-compose.story21.yml down` removes containers and the
+`docker compose -f docker-compose.yml down` removes containers and the
 network but keeps named volumes (PostgreSQL, artifacts, warehouse).

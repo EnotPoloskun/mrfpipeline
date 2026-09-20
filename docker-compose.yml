@@ -88,6 +88,21 @@ services:
     environment: *pipeline-env
     volumes: *pipeline-volumes
 
+  riverui:
+    image: ghcr.io/riverqueue/riverui:latest
+    profiles: [ui]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://mrfpipeline:local-only@postgres/mrfpipeline?sslmode=disable
+      RIVER_SCHEMA: mrfpipeline_river
+    ports:
+      - "127.0.0.1:8080:8080"
+
 volumes:
   pgdata:
   artifacts:

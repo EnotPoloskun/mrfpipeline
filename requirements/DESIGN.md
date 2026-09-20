@@ -474,12 +474,15 @@ month. Activation does not serve queries and this repository has no query API
 or SQL facade. Numeric targets are valid checkpoints; `partial:true` and
 `mrf_source_target_partial` remain explicit full-month coverage diagnostics.
 
-The local Compose recipe builds with BuildKit SSH forwarding, mounts the
-operator's accepted catalog and selector, starts PostgreSQL and migration,
-then starts control before MRF and consumer roles. Control has no automatic
-restart for permanent configuration/capacity errors. No stale-file health
-check or heartbeat table is used. Parsed MRF output, warehouse output,
-PostgreSQL data, and River history have no automatic retention policy.
+The local Compose recipe is `docker-compose.yml`. It builds with BuildKit SSH
+forwarding, mounts the operator's accepted catalog and selector, starts
+PostgreSQL and migration, then starts control before MRF and consumer roles.
+Control has no automatic restart for permanent configuration/capacity errors.
+No stale-file health check or heartbeat table is used. Parser replica count
+and `MRFPIPELINE_MRF_RESIDENT_CAPACITY` stay in sync (`scripts/scale-mrf.sh`).
+The optional `ui` profile publishes River UI on `127.0.0.1:8080` only.
+Parsed MRF output, warehouse output, PostgreSQL data, and River history have
+no automatic retention policy.
 
 ## Historical version 1 implementation reference
 

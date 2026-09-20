@@ -99,14 +99,14 @@ jobs:
 
       - name: Validate Compose configuration
         env:
-          COMPOSE_PROFILES: operator,workers
-        run: docker compose -f docker-compose.story21.yml config --quiet
+          COMPOSE_PROFILES: operator,workers,ui
+        run: docker compose -f docker-compose.yml config --quiet
 
       - name: Build Compose image
         env:
           DOCKER_BUILDKIT: '1'
           COMPOSE_PROFILES: operator,workers
-        run: docker compose -f docker-compose.story21.yml build
+        run: docker compose -f docker-compose.yml build
 
       - name: Verify final Compose image
         run: |
@@ -122,9 +122,9 @@ jobs:
           COMPOSE_PROFILES: operator
         run: |
           set -eu
-          docker compose -f docker-compose.story21.yml run --rm --no-deps cli filters status --help >/dev/null
-          docker compose -f docker-compose.story21.yml run --rm --no-deps cli filters build --help >/dev/null
-          docker compose -f docker-compose.story21.yml run --rm --no-deps cli filters measure --help >/dev/null
+          docker compose -f docker-compose.yml run --rm --no-deps cli filters status --help >/dev/null
+          docker compose -f docker-compose.yml run --rm --no-deps cli filters build --help >/dev/null
+          docker compose -f docker-compose.yml run --rm --no-deps cli filters measure --help >/dev/null
 
       - name: PostgreSQL integration suite
         env:

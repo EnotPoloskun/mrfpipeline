@@ -63,7 +63,7 @@ func TestLocalPackagingContract(t *testing.T) {
 		}
 	}
 
-	compose := readRepositoryFile(t, "docker-compose.story21.yml")
+	compose := readRepositoryFile(t, "docker-compose.yml")
 	for _, fragment := range []string{
 		"image: mrfpipeline:local",
 		"ssh:",
@@ -78,6 +78,10 @@ func TestLocalPackagingContract(t *testing.T) {
 		"${MRFPIPELINE_SERVICES_FILE:-./local/services.csv}",
 		"restart: \"no\"",
 		"restart: \"on-failure:5\"",
+		"profiles: [ui]",
+		"ghcr.io/riverqueue/riverui:latest",
+		"127.0.0.1:8080:8080",
+		"RIVER_SCHEMA: mrfpipeline_river",
 	} {
 		if !strings.Contains(compose, fragment) {
 			t.Fatalf("Compose file missing %q", fragment)
@@ -91,10 +95,18 @@ func TestLocalPackagingContract(t *testing.T) {
 	if !strings.Contains(compose[controlStart:mrfStart], "migrate:\n        condition: service_completed_successfully") {
 		t.Fatal("control must wait for the repeatable migration service")
 	}
-	if strings.Contains(compose, "duckdb:") || strings.Contains(compose, "ports:") {
-		t.Fatal("Compose must not add a DuckDB service or ports")
+	if strings.Contains(compose, "duckdb:") {
+		t.Fatal("Compose must not add a DuckDB service")
 	}
-	for _, service := range []string{"postgres:", "migrate:", "control:", "mrf:", "consumer:", "cli:"} {
+	if strings.Count(compose, "ports:") != 1 {
+		t.Fatal("only riverui may publish ports")
+	}
+	postgresStart := strings.Index(compose, "  postgres:\n")
+	migrateStart := strings.Index(compose, "  migrate:\n")
+	if postgresStart < 0 || migrateStart < postgresStart || strings.Contains(compose[postgresStart:migrateStart], "ports:") {
+		t.Fatal("postgres must not publish ports")
+	}
+	for _, service := range []string{"postgres:", "migrate:", "control:", "mrf:", "consumer:", "cli:", "riverui:"} {
 		if strings.Count(compose, "\n  "+service) != 1 {
 			t.Fatalf("Compose service topology changed for %q", service)
 		}
@@ -102,26 +114,30 @@ func TestLocalPackagingContract(t *testing.T) {
 
 	readme := readRepositoryFile(t, "README.md")
 	for _, fragment := range []string{
-		"DOCKER_BUILDKIT=1 docker compose -f docker-compose.story21.yml build",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli migrate",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli stats",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli retry",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli reconcile",
-		"docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=2 mrf consumer",
-		"docker compose -f docker-compose.story21.yml --profile workers up -d --scale consumer=2 mrf consumer",
-		"docker compose -f docker-compose.story21.yml stop control",
+		"DOCKER_BUILDKIT=1 docker compose -f docker-compose.yml build",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli migrate",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli discover",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli stats",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli month status",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli month sources set-total",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli retry",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli reconcile",
+		"docker compose -f docker-compose.yml --profile workers up -d --scale mrf=2 mrf consumer",
+		"docker compose -f docker-compose.yml --profile workers up -d --scale consumer=2 mrf consumer",
+		"docker compose -f docker-compose.yml stop control",
 		"worker_started",
 		"CGO_ENABLED=0 go build ./cmd/mrfpipeline",
 		"go test -p 1 ./...",
-		"docker compose -f docker-compose.story21.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql",
+		"docker compose -f docker-compose.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql",
 		"MRFPIPELINE_PRIVATE_MODULES_SSH_KEY",
 		"[`DOCKER.md`](DOCKER.md)",
+		"[`USAGE.md`](USAGE.md)",
 		"mrfpipeline filters build",
 		"scripts/measure-filter-build.sh",
 		"scripts/lookup-filter-measure.sh",
+		"scripts/scale-mrf.sh",
+		"scripts/scale-consumer.sh",
+		"docker compose -f docker-compose.yml --profile ui up -d riverui",
 	} {
 		if !strings.Contains(readme, fragment) {
 			t.Fatalf("README missing %q", fragment)
@@ -130,17 +146,17 @@ func TestLocalPackagingContract(t *testing.T) {
 
 	dockerGuide := readRepositoryFile(t, "DOCKER.md")
 	for _, fragment := range []string{
-		"DOCKER_BUILDKIT=1 docker compose -f docker-compose.story21.yml build",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli migrate",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli discover",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli stats",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli month status",
+		"DOCKER_BUILDKIT=1 docker compose -f docker-compose.yml build",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli migrate",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli discover",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli stats",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli month status",
 		"mrfpipeline stats",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli month sources set-total",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli retry",
-		"docker compose -f docker-compose.story21.yml --profile operator run --rm cli reconcile",
-		"docker compose -f docker-compose.story21.yml --profile workers up -d --scale mrf=2 mrf consumer",
-		"docker compose -f docker-compose.story21.yml --profile workers up -d --scale consumer=2 mrf consumer",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli month sources set-total",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli retry",
+		"docker compose -f docker-compose.yml --profile operator run --rm cli reconcile",
+		"docker compose -f docker-compose.yml --profile workers up -d --scale mrf=2 mrf consumer",
+		"docker compose -f docker-compose.yml --profile workers up -d --scale consumer=2 mrf consumer",
 		"--scale mrf=3",
 		"filters build --payer uhc",
 		"filters status --payer uhc",
@@ -149,9 +165,12 @@ func TestLocalPackagingContract(t *testing.T) {
 		"--no-deps cli filters status --help",
 		"--no-deps cli filters build --help",
 		"--no-deps cli filters measure --help",
-		"docker compose -f docker-compose.story21.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql",
+		"docker compose -f docker-compose.yml exec -T postgres psql -U mrfpipeline -d mrfpipeline -v ON_ERROR_STOP=1 < scripts/stalled-work.sql",
 		"RIVER_SCHEMA=mrfpipeline_river",
 		"--scale mrf=3",
+		"scripts/scale-mrf.sh",
+		"scripts/scale-consumer.sh",
+		"docker compose -f docker-compose.yml --profile ui up -d riverui",
 	} {
 		if !strings.Contains(dockerGuide, fragment) {
 			t.Fatalf("DOCKER.md missing %q", fragment)
@@ -161,6 +180,33 @@ func TestLocalPackagingContract(t *testing.T) {
 		t.Fatal("DOCKER.md must not embed a postgres URL")
 	}
 
+	usageGuide := readRepositoryFile(t, "USAGE.md")
+	for _, fragment := range []string{
+		"DOCKER_BUILDKIT=1 docker compose -f docker-compose.yml build",
+		"docker compose --profile operator run --rm cli migrate",
+		"docker compose --profile operator run --rm cli discover",
+		"docker compose --profile operator run --rm cli stats",
+		"docker compose --profile operator run --rm cli month status",
+		"docker compose --profile operator run --rm cli month sources set-total",
+		"docker compose --profile operator run --rm cli retry",
+		"docker compose --profile operator run --rm cli reconcile",
+		"docker compose --profile workers up -d --scale mrf=2 mrf consumer",
+		"scripts/scale-mrf.sh",
+		"scripts/scale-consumer.sh",
+		"docker compose --profile ui up -d riverui",
+		"scripts/measure-filter-build.sh",
+		"scripts/lookup-filter-measure.sh",
+		"RIVER_SCHEMA=mrfpipeline_river",
+		"[`DOCKER.md`](DOCKER.md)",
+	} {
+		if !strings.Contains(usageGuide, fragment) {
+			t.Fatalf("USAGE.md missing %q", fragment)
+		}
+	}
+	if strings.Contains(usageGuide, "postgres://") {
+		t.Fatal("USAGE.md must not embed a postgres URL")
+	}
+
 	workflow := readRepositoryFile(t, ".github/workflows/ci.yml")
 	for _, fragment := range []string{
 		"MRFPIPELINE_PRIVATE_MODULES_SSH_KEY",
@@ -168,9 +214,10 @@ func TestLocalPackagingContract(t *testing.T) {
 		"go vet ./...",
 		"go test -p 1 ./...",
 		"go test -race -p 1 ./...",
-		"docker compose -f docker-compose.story21.yml config --quiet",
-		"docker compose -f docker-compose.story21.yml build",
+		"docker compose -f docker-compose.yml config --quiet",
+		"docker compose -f docker-compose.yml build",
 		"COMPOSE_PROFILES: operator,workers",
+		"COMPOSE_PROFILES: operator,workers,ui",
 		"workflow_dispatch:",
 		"branches: [master]",
 		"mrfpipeline_test_ci",
@@ -183,9 +230,9 @@ func TestLocalPackagingContract(t *testing.T) {
 		"sudo apt-get install --no-install-recommends --yes postgresql-client",
 		"CGO_ENABLED=0 go build ./cmd/mrfpipeline",
 		"Verify final Compose image",
-		"docker compose -f docker-compose.story21.yml run --rm --no-deps cli filters status --help",
-		"docker compose -f docker-compose.story21.yml run --rm --no-deps cli filters build --help",
-		"docker compose -f docker-compose.story21.yml run --rm --no-deps cli filters measure --help",
+		"docker compose -f docker-compose.yml run --rm --no-deps cli filters status --help",
+		"docker compose -f docker-compose.yml run --rm --no-deps cli filters build --help",
+		"docker compose -f docker-compose.yml run --rm --no-deps cli filters measure --help",
 		"/usr/local/bin/duckdb",
 		"command -v ldd",
 	} {
@@ -247,7 +294,12 @@ func TestLocalPackagingContract(t *testing.T) {
 		strings.Contains(lookup, "DROP ") || strings.Contains(lookup, "read_parquet") {
 		t.Fatal("lookup measurement script contains mutation or warehouse SQL")
 	}
-	for _, name := range []string{"scripts/measure-filter-build.sh", "scripts/lookup-filter-measure.sh"} {
+	for _, name := range []string{
+		"scripts/measure-filter-build.sh",
+		"scripts/lookup-filter-measure.sh",
+		"scripts/scale-mrf.sh",
+		"scripts/scale-consumer.sh",
+	} {
 		info, err := os.Stat(repositoryFile(t, name))
 		if err != nil || info.Mode().Perm()&0111 == 0 {
 			t.Fatalf("script %s must be executable: %v", name, err)
