@@ -13,7 +13,7 @@ largest CPU, memory, and disk stage.
 ## Goal
 
 Implement `mrf.parse` through the public `mrfparser` Go package, validate exact
-plan-independent output `1.1.0`, delete the completed download, and atomically
+plan-independent output `1.2.0`, delete the completed download, and atomically
 unblock every waiting consumer snapshot for that source.
 
 This story does not pass plans to the parser, ingest a consumer snapshot, build
@@ -41,7 +41,7 @@ the worker can log stored-byte progress; that callback is a Story 10
 implementation prerequisite if the currently pinned parser release lacks it.
 Do not scrape parser CLI stderr or import `internal/app` to obtain progress.
 
-Parser Story 28 is normative: schema/manifest `1.1.0`, eight datasets, no
+Parser Story 28 is normative: schema/manifest `1.2.0`, seven datasets, no
 `plans` input, no `plans` dataset, and nullable root plan fields retained only
 as source audit metadata.
 
@@ -210,7 +210,7 @@ TargetFileSize = 256 MiB
 RowGroupRows   = 100000
 ```
 
-Do not set a plan field—none exists in parser 1.1.0. Do not generate a dummy
+Do not set a plan field—none exists in parser 1.2.0. Do not generate a dummy
 plan, read `mrf_plans`, query TOC output, or copy root plan metadata into
 configuration.
 
@@ -225,7 +225,6 @@ Require exactly these root entries:
 ```text
 mrf_files/
 services/
-service_relations/
 rate_groups/
 negotiated_prices/
 rate_provider_groups/
@@ -235,7 +234,7 @@ processing_stats.json
 manifest.json
 ```
 
-There is no `plans/` directory or any ninth dataset.
+There is no `plans/` directory, `service_relations/` directory, or any eighth dataset.
 
 Each dataset is a real directory containing contiguous regular non-symlink
 parts `part-00000.parquet`, `part-00001.parquet`, and so on, with no gaps or
@@ -250,11 +249,11 @@ does not scan all rate rows a second time.
 
 ## Manifest validation
 
-Strictly decode `manifest.json` with the documented parser 1.1.0 schema,
+Strictly decode `manifest.json` with the documented parser 1.2.0 schema,
 duplicate/unknown-property rejection, no trailing data, and a 4 MiB size cap.
 Validate:
 
-- exact manifest/output schema `1.1.0`;
+- exact manifest/output schema `1.2.0`;
 - exact `status=complete`;
 - `source.kind=local`;
 - source URI equals the normalized generated download data path. Once valid
@@ -265,7 +264,7 @@ Validate:
 - selector requested/matched/unmatched counts are present, nonnegative, and
   satisfy their equations;
 - source/retained/filtered service counts are nonnegative and consistent;
-- all eight dataset counts are present and satisfy manifest invariants;
+- all seven dataset counts are present and satisfy manifest invariants;
 - `counts.mrf_files == 1`;
 - warning totals/examples satisfy the bounded warning schema; and
 - `counts.plans` is absent.
@@ -351,10 +350,10 @@ fields, service selector values, paths, URLs, or dataset counts in logs or
 - Parse progress logs are throttled, redacted, and omitted when completed
   output is reused.
 - Selector startup/immutability checks use metadata only and no digest.
-- Output layout requires eight datasets, rejects `plans/`, and fails closed on
+- Output layout requires seven datasets, rejects `plans/` and `service_relations/`, and fails closed on
   extra root entries including `.DS_Store`.
 - Every `Parse` call is documented to hold the process-level mutex.
-- Strict manifest validation requires exact 1.1.0, service CSV selection, eight
+- Strict manifest validation requires exact 1.2.0, service CSV selection, seven
   counts, and no plans count.
 - Processing stats validation is exact and redacted.
 - Snapshot scheduling locks/orders rows and uses transactional inserts.
@@ -364,9 +363,9 @@ fields, service selector values, paths, URLs, or dataset counts in logs or
 
 Using small real parser fixtures plus PostgreSQL/River:
 
-- Raw and gzip MRF inputs produce valid plan-independent 1.1.0 outputs.
+- Raw and gzip MRF inputs produce valid plan-independent 1.2.0 outputs.
 - An MRF with no usable root plan succeeds without any supplied plans.
-- Output has eight dataset directories, no plans directory/count, and nullable
+- Output has seven dataset directories, no plans or service_relations directory/count, and nullable
   root audit columns as published by the parser.
 - The configured selector filters services and manifest selection metadata
   matches it.
@@ -399,7 +398,7 @@ go vet ./...
   holds the process-level mutex; queue concurrency one is not that contract.
 - Parser invocation is strictly plan-independent and always uses the configured
   service selector. Missing selector files fail startup.
-- Only exact eight-dataset parser 1.1.0 output is accepted and reused.
+- Only exact seven-dataset parser 1.2.0 output is accepted and reused.
 - Partial output is safely reset; invalid manifest-present output is preserved.
 - Download bytes are deleted only after parse completion is proven; parsed
   output remains for future snapshots.

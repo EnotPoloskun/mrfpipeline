@@ -288,6 +288,15 @@ func TestLayoutRejectsPlansAndDSStore(t *testing.T) {
 	if err := validateCompletedOutput(out, source, svc.Path); err == nil {
 		t.Fatal("plans")
 	}
+	if err := os.Remove(filepath.Join(out, "plans")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(out, "service_relations"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCompletedOutput(out, source, svc.Path); err == nil {
+		t.Fatal("service_relations")
+	}
 }
 
 func TestStrictManifestAndStats(t *testing.T) {
@@ -307,6 +316,14 @@ func TestStrictManifestAndStats(t *testing.T) {
 	plans := bytes.Replace(good, []byte(`"mrf_files":1`), []byte(`"plans":0,"mrf_files":1`), 1)
 	if _, err := decodeManifest(plans); err == nil {
 		t.Fatal("plans count")
+	}
+	legacy := bytes.Replace(good, []byte(`"mrf_files":1`), []byte(`"service_relations":0,"mrf_files":1`), 1)
+	if _, err := decodeManifest(legacy); err == nil {
+		t.Fatal("service_relations count")
+	}
+	oldVer := bytes.ReplaceAll(good, []byte(`"1.2.0"`), []byte(`"1.1.0"`))
+	if _, err := decodeManifest(oldVer); err == nil {
+		t.Fatal("parser 1.1.0")
 	}
 	if err := decodeProcessingStats(validStatsJSON()); err != nil {
 		t.Fatal(err)
@@ -633,7 +650,6 @@ func validManifestJSON(sourceURI, selectorURI string, retained int64) []byte {
 			FilteredServiceCount int64 `json:"filtered_service_count"`
 			MRFFiles             int64 `json:"mrf_files"`
 			Services             int64 `json:"services"`
-			ServiceRelations     int64 `json:"service_relations"`
 			RateGroups           int64 `json:"rate_groups"`
 			NegotiatedPrices     int64 `json:"negotiated_prices"`
 			RateProviderGroups   int64 `json:"rate_provider_groups"`

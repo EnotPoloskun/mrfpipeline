@@ -57,7 +57,7 @@ Pin the first `github.com/enotpoloskun/mrfconsumer` pseudo-version that
 implements Story 26. `go.mod` must not grow a `replace` directive.
 
 Warehouse / snapshot / catalog versions stay exact `2.0.0` / parser
-`1.1.0` / catalog schema `1`. No pipeline migration.
+`1.2.0` / catalog schema `1`. No pipeline migration.
 
 ## Supersession
 

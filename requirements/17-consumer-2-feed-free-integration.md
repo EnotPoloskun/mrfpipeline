@@ -12,7 +12,7 @@ identity, consumer manifests, Parquet schemas, and recovery recognition agree.
 
 ## Dependencies and compatibility
 
-This story depends on Stories 14–16, parser `1.1.0`, and consumer Stories
+This story depends on Stories 14–16, parser `1.2.0`, and consumer Stories
 22–24.
 
 This completes the atomic Stories 14–17 breaking delivery batch defined by
@@ -23,7 +23,7 @@ Pin the exact sibling module revision that implements the approved consumer
 contract. The integration accepts exactly:
 
 ```text
-parser manifest/output              1.1.0
+parser manifest/output              1.2.0
 consumer warehouse                  2.0.0
 consumer snapshot manifest/output   2.0.0
 provider catalog schema             1

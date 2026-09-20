@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	manifestSchemaVersion = "1.1.0"
-	outputSchemaVersion   = "1.1.0"
+	manifestSchemaVersion = "1.2.0"
+	outputSchemaVersion   = "1.2.0"
 	statusComplete        = "complete"
 	sourceKindLocal       = "local"
 	selectionServiceCSV   = "service_csv"
@@ -30,7 +30,7 @@ const (
 var (
 	errOutputInvalid = errors.New("mrf parse output invalid")
 	datasetNames     = []string{
-		"mrf_files", "services", "service_relations", "rate_groups",
+		"mrf_files", "services", "rate_groups",
 		"negotiated_prices", "rate_provider_groups", "provider_groups", "providers",
 	}
 	warningCategories = []string{
@@ -50,7 +50,6 @@ type completedOutput struct {
 type datasetCounts struct {
 	MRFFiles           int64
 	Services           int64
-	ServiceRelations   int64
 	RateGroups         int64
 	NegotiatedPrices   int64
 	RateProviderGroups int64
@@ -64,7 +63,7 @@ type sourceCounts struct {
 	Filtered int64
 }
 
-// ValidateCompletedOutput is the Story 10 exact parser 1.1.0 layout and
+// ValidateCompletedOutput is the exact parser 1.2.0 layout and
 // manifest check. Ingest reuses it and never resets parsed output.
 func ValidateCompletedOutput(dir, sourceURI, servicesPath string) error {
 	return validateCompletedOutput(dir, sourceURI, servicesPath)
@@ -321,7 +320,7 @@ func decodeCounts(dec *json.Decoder) (datasetCounts, sourceCounts, error) {
 	var zeroS sourceCounts
 	obj, err := decodeExactObject(dec, []string{
 		"source_service_count", "retained_service_count", "filtered_service_count",
-		"mrf_files", "services", "service_relations", "rate_groups",
+		"mrf_files", "services", "rate_groups",
 		"negotiated_prices", "rate_provider_groups", "provider_groups", "providers",
 	})
 	if err != nil {
@@ -343,9 +342,6 @@ func decodeCounts(dec *json.Decoder) (datasetCounts, sourceCounts, error) {
 		return zeroD, zeroS, err
 	}
 	if d.Services, err = n("services"); err != nil {
-		return zeroD, zeroS, err
-	}
-	if d.ServiceRelations, err = n("service_relations"); err != nil {
 		return zeroD, zeroS, err
 	}
 	if d.RateGroups, err = n("rate_groups"); err != nil {

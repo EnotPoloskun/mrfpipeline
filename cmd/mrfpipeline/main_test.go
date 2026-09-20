@@ -70,16 +70,16 @@ func TestModulePathAndGoVersion(t *testing.T) {
 	if !strings.Contains(text, "github.com/riverqueue/river/riverdriver/riverpgxv5 v0.39.0") {
 		t.Fatalf("expected pinned riverpgxv5: %s", text)
 	}
-	if !strings.Contains(text, "github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260821182039-590460f1448b") {
+	if !strings.Contains(text, "github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260920042836-9b4a5a91a904") {
 		t.Fatalf("expected pinned mrfdiscoverer: %s", text)
 	}
 	if !strings.Contains(text, "github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5") {
 		t.Fatalf("expected pinned mrftocparser: %s", text)
 	}
-	if !strings.Contains(text, "github.com/EnotPoloskun/mrfparser v0.0.0-20260822232859-7197303b3fe5") {
+	if !strings.Contains(text, "github.com/EnotPoloskun/mrfparser v0.0.0-20260920164435-0c0158114902") {
 		t.Fatalf("expected pinned mrfparser: %s", text)
 	}
-	if !strings.Contains(text, "github.com/enotpoloskun/mrfconsumer v0.0.0-20260909043755-3650afa40dd2") {
+	if !strings.Contains(text, "github.com/enotpoloskun/mrfconsumer v0.0.0-20260920041858-b0678a4b2e96") {
 		t.Fatalf("expected pinned mrfconsumer: %s", text)
 	}
 	if !strings.Contains(text, "github.com/parquet-go/parquet-go v0.30.1") {

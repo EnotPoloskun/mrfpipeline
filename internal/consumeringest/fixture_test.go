@@ -139,7 +139,7 @@ func writeValidParsed(t *testing.T, ws *artifact.Workspace, sourceID int64, serv
 		t.Fatal(err)
 	}
 	for _, name := range []string{
-		"mrf_files", "services", "service_relations", "rate_groups",
+		"mrf_files", "services", "rate_groups",
 		"negotiated_prices", "rate_provider_groups", "provider_groups", "providers",
 	} {
 		p := filepath.Join(output, name)
@@ -174,8 +174,8 @@ func writeValidParsed(t *testing.T, ws *artifact.Workspace, sourceID int64, serv
 
 func validParserManifest(sourceURI, selectorURI string) []byte {
 	m := map[string]any{
-		"manifest_schema_version": "1.1.0",
-		"output_schema_version":   "1.1.0",
+		"manifest_schema_version": "1.2.0",
+		"output_schema_version":   "1.2.0",
 		"status":                  "complete",
 		"source":                  map[string]any{"uri": sourceURI, "kind": "local"},
 		"selection": map[string]any{
@@ -184,7 +184,7 @@ func validParserManifest(sourceURI, selectorURI string) []byte {
 		},
 		"counts": map[string]any{
 			"source_service_count": 0, "retained_service_count": 0, "filtered_service_count": 0,
-			"mrf_files": 1, "services": 0, "service_relations": 0, "rate_groups": 0,
+			"mrf_files": 1, "services": 0, "rate_groups": 0,
 			"negotiated_prices": 0, "rate_provider_groups": 0, "provider_groups": 0, "providers": 0,
 		},
 		"warnings": map[string]any{

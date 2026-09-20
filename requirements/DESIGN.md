@@ -55,6 +55,11 @@ available, and there is no adapter,
 compatibility mode, feature flag, dual consumer version, temporary feed state,
 or supported intermediate runtime.
 
+The active sibling pairing is exact parser `1.2.0` (seven datasets, no
+`service_relations`) with consumer warehouse/snapshot `2.0.0`. Parser `1.1.0`
+outputs are rejected and not migrated. `mrfdiscoverer` lists UHC, Optum, and
+Cigna TOC URLs; it does not download them.
+
 Stories 14–19 intentionally replace these version 1 decisions:
 
 1. `mrf_feeds` and `feed_id` are removed. Snapshot identity is exact MRF
@@ -571,9 +576,9 @@ flowchart LR
     TP --> DB[("PostgreSQL domain state")]
 
     DB --> MD["MRF download"]
-    MD --> MP["mrfparser 1.1.0"]
+    MD --> MP["mrfparser 1.2.0"]
 
-    PC["Manual mrfenricher provider catalog"] --> C["mrfconsumer 1.5.0"]
+    PC["Manual mrfenricher provider catalog"] --> C["mrfconsumer 2.0.0"]
     MP --> C
     DB --> C
     C --> W["Local Parquet warehouse"]
@@ -593,15 +598,14 @@ requirements remain authoritative for parsing and warehouse semantics.
 
 | Component | Pipeline use | Version 1 boundary |
 |---|---|---|
-| `mrfdiscoverer` | Return current UHC TOC URLs in listing order. | UHC listing only; it does not download TOCs. |
+| `mrfdiscoverer` | Return current TOC URLs in listing order. | UHC, Optum, and Cigna listings; it does not download TOCs. |
 | `mrftocparser` | Parse one local TOC into `toc_files` and flattened `mrf_plan_associations`. | Local input/output, exact schema `1.0.0`, final `manifest.json`. |
-| `mrfparser` | Parse one local in-network MRF using the configured service selector. | Exact plan-independent schema `1.1.0`, eight datasets, final `manifest.json`. |
+| `mrfparser` | Parse one local in-network MRF using the configured service selector. | Exact plan-independent schema `1.2.0`, seven datasets, final `manifest.json`. |
 | `mrfenricher` | Produce an up-to-date provider catalog for selected taxonomies. | Operator runs it manually; pipeline receives a local catalog path. |
-| `mrfconsumer` | Ingest one parser output into a snapshot and attach plans later. | Exact warehouse/snapshot version `1.5.0`; serialized local writers. |
+| `mrfconsumer` | Ingest one parser output into a snapshot and attach plans later. | Exact warehouse/snapshot version `2.0.0`; serialized local writers. |
 
-The active pipeline pairing is exact: parser `1.1.0` with consumer `1.5.0`.
-Parser `1.0.0` outputs and consumer `1.4.0` warehouses belong to the former
-plan-aware layout and are not mixed with or migrated into this pipeline.
+The active pipeline pairing is exact: parser `1.2.0` with consumer `2.0.0`.
+Parser `1.1.0` outputs are rejected and not migrated.
 
 The pipeline must not copy the implementation of a sibling tool. It validates
 the documented inputs, versions, reports, and final manifests needed to decide
@@ -1132,12 +1136,11 @@ It does not supply plans. Every `mrfparser.Parse` call holds the process-level
 parser mutex and a public progress callback that logs stored-byte `progress`.
 The pipeline always supplies the configured service selector;
 missing or empty selector files fail worker startup. There is no all-services
-fallback. Parser 1.1.0 writes exactly eight plan-independent datasets:
+fallback. Parser 1.2.0 writes exactly seven plan-independent datasets:
 
 ```text
 mrf_files
 services
-service_relations
 rate_groups
 negotiated_prices
 rate_provider_groups
@@ -1149,7 +1152,7 @@ The six nullable root plan columns in `mrf_files` remain physical source audit
 metadata. They are not canonical plan associations and do not influence
 pipeline plan attachment.
 
-As with TOCs, a valid exact `1.1.0` manifest makes a retry reusable. A partial
+As with TOCs, a valid exact `1.2.0` manifest makes a retry reusable. A partial
 manifest-absent output is deleted before a full retry. After parse success the
 download bytes may be deleted, but the parsed output is retained because later
 TOCs can create another snapshot or add associations for this shared source.
@@ -1169,7 +1172,7 @@ One `mrf_snapshots` row supplies:
 - collection month; and
 - `mrf-<mrf_snapshots.id>` as consumer `output_id`.
 
-`mrfconsumer` 1.5.0 validates parser 1.1.0, filters providers using the pinned
+`mrfconsumer` 2.0.0 validates parser 1.2.0, filters providers using the pinned
 catalog, and atomically publishes one immutable six-dataset rate snapshot.
 Ingest is plan-independent and never reads TOC plans. Snapshot Parquet part
 names follow the consumer contract: `{output_id}-part-<ordinal>.parquet` with a
@@ -1667,7 +1670,7 @@ The version 1 pipeline is complete when all of the following are proven:
 4. Two or more TOCs referencing the same exact MRF URL create one source,
    download, and parse lifecycle.
 5. MRF parsing succeeds without TOC plans, holds the process-level parser
-   mutex, and produces exact parser 1.1.0 output.
+   mutex, and produces exact parser 1.2.0 output.
 6. Every required feed/month snapshot is ingested once with a stable numeric
    output ID. Source-based feeds are not logical cross-month networks;
    `current_*` serving requires an explicit month or a single-month warehouse.

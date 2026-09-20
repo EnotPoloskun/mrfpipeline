@@ -37,7 +37,7 @@ report, err := mrfconsumer.Ingest(ctx, cfg)
 
 Do not execute the consumer CLI, import consumer `internal` packages, copy its
 transformations, or open DuckDB. Consumer Story 21 is normative: parser input
-`1.1.0`, warehouse/snapshot `1.5.0`, six snapshot datasets, a pinned provider
+`1.2.0`, warehouse/snapshot `1.5.0`, six snapshot datasets, a pinned provider
 catalog, a warehouse-level plan-association schema seed, and plan-independent
 ingestion.
 
@@ -154,7 +154,7 @@ completion boundary:
 ```
 
 Re-run Story 10's strict layout and manifest validation before consumer
-invocation. Require exact parser `1.1.0`, eight datasets, no `plans` dataset or
+invocation. Require exact parser `1.2.0`, seven datasets, no `plans` dataset or
 count, the configured service selector, and the expected generated source
 path. A missing, partial, changed, symlinked, or unsupported parser output is a
 consumer-input orchestration failure; do not repair it from this worker.
@@ -359,7 +359,7 @@ diagnostics in logs or `failure_code`.
 
 ### Integration tests
 
-Using PostgreSQL/River, a small exact parser 1.1.0 fixture, and a real provider
+Using PostgreSQL/River, a small exact parser 1.2.0 fixture, and a real provider
 catalog fixture:
 
 - First ingest initializes a 1.5.0 warehouse, pins the catalog, repairs the
@@ -392,7 +392,7 @@ go vet ./...
 
 - Every eligible snapshot is ingested plan-independently through the public
   consumer API at maximum warehouse concurrency one.
-- Consumer input is exact parser 1.1.0 output and publication is exact
+- Consumer input is exact parser 1.2.0 output and publication is exact
   warehouse/snapshot 1.5.0 with six datasets.
 - The configured manual provider catalog is validated and pinned by the
   consumer; the pipeline never runs enrichment.
