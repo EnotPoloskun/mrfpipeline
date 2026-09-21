@@ -15,7 +15,7 @@ Operator CLI is the one-shot `cli` service:
 docker compose --profile operator run --rm cli <command>
 ```
 
-`--payer` is `uhc`, `optum`, or `cigna`. `--collection-month` is `YYYY-MM`.
+`--payer` is `uhc`, `optum`, `cigna`, or `molina`. `--collection-month` is `YYYY-MM`.
 
 ## What this stack is
 
@@ -97,14 +97,64 @@ docker buildx build --ssh default --progress=plain --load --tag mrfpipeline:loca
 
 Confirm `docker images mrfpipeline:local` before migrate.
 
-Pushing to a private registry is optional:
+### Publish to private GHCR
+
+This computer already has `mrfpipeline:local` (`linux/arm64`). That image
+runs on Apple Silicon and other arm64 Linux hosts. It will not run on
+Intel/AMD (`amd64`) without a separate build.
+
+Create a GitHub personal access token with `write:packages` and
+`read:packages`. Log in, tag the local image, and push. Replace
+`<git-sha>` with `git rev-parse --short HEAD`:
 
 ```text
-docker tag mrfpipeline:local ghcr.io/<namespace>/mrfpipeline:<git-sha>
-docker push ghcr.io/<namespace>/mrfpipeline:<git-sha>
+echo '<github-pat>' | docker login ghcr.io -u EnotPoloskun --password-stdin
+docker tag mrfpipeline:local ghcr.io/enotpoloskun/mrfpipeline:<git-sha>
+docker push ghcr.io/enotpoloskun/mrfpipeline:<git-sha>
 ```
 
-Keep that package private. The image includes compiled private modules.
+Keep the package private. The image includes compiled private modules.
+In GitHub: Packages -> `mrfpipeline` -> Package settings. Grant the other
+computer's GitHub user `read` on that package.
+
+### Install on another computer
+
+The other host needs Docker Compose, a clone of this repo (for Compose and
+scripts), the enricher catalog directory, and `services.csv`. It does **not**
+need Go, an SSH key for sibling modules, enricher, or enricher Postgres.
+
+```text
+git clone git@github.com:EnotPoloskun/mrfpipeline.git
+cd mrfpipeline
+git checkout <git-sha>
+cp .env.example .env
+mkdir -p local/provider-catalog
+cp config/services.csv.example local/services.csv
+```
+
+Copy the real catalog into `local/provider-catalog/` (must contain
+`manifest.json`). Edit `.env` paths if they differ. Then pull the image
+and retag it to the Compose name. `--no-build` is required so Compose does
+not try to rebuild from source:
+
+```text
+echo '<github-pat>' | docker login ghcr.io -u <github-user> --password-stdin
+docker pull ghcr.io/enotpoloskun/mrfpipeline:<git-sha>
+docker tag ghcr.io/enotpoloskun/mrfpipeline:<git-sha> mrfpipeline:local
+test -f local/provider-catalog/manifest.json && echo catalog_ok
+test -f local/services.csv && echo services_ok
+docker compose --profile operator run --rm --no-build cli migrate
+docker compose up -d --no-build control
+docker compose logs -f --tail=50 control
+```
+
+After `worker_started`, start workers:
+
+```text
+docker compose --profile workers up -d --no-build --scale mrf=2 mrf consumer
+```
+
+Continue from [Typical month](#typical-month).
 
 ### 3. First start
 
@@ -184,6 +234,10 @@ outputs. Do not activate before discovery/TOC work is terminal.
 |---|---|
 | Build image | `DOCKER_BUILDKIT=1 docker compose -f docker-compose.yml build` |
 | Direct image build | `DOCKER_BUILDKIT=1 docker build --ssh default --tag mrfpipeline:local .` |
+| Publish (this computer) | `docker tag mrfpipeline:local ghcr.io/enotpoloskun/mrfpipeline:<git-sha>` then `docker push ghcr.io/enotpoloskun/mrfpipeline:<git-sha>` |
+| Pull on another computer | `docker pull ghcr.io/enotpoloskun/mrfpipeline:<git-sha>` then `docker tag ghcr.io/enotpoloskun/mrfpipeline:<git-sha> mrfpipeline:local` |
+| Start from pulled image | `docker compose --profile operator run --rm --no-build cli migrate` |
+| CLI help / version | `docker compose --profile operator run --rm --no-deps cli --help` / `--version` |
 | Migrate | `docker compose --profile operator run --rm cli migrate` |
 | Start control | `docker compose up -d control` |
 | Follow control | `docker compose logs -f --tail=50 control` |

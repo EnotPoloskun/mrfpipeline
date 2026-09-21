@@ -72,16 +72,16 @@ func ValidatePayerIdentifier(raw string) error {
 }
 
 // ValidatePayer accepts the exact production adapter identifiers supported by
-// the pinned mrfdiscoverer: uhc, optum, and cigna.
+// the pinned mrfdiscoverer: uhc, optum, cigna, and molina.
 func ValidatePayer(raw string) error {
 	if err := ValidatePayerIdentifier(raw); err != nil {
 		return err
 	}
 	switch raw {
-	case "uhc", "optum", "cigna":
+	case "uhc", "optum", "cigna", "molina":
 		return nil
 	default:
-		return wrap(FieldPayer, "must be an exact adapter identifier: uhc, optum, or cigna")
+		return wrap(FieldPayer, "must be an exact adapter identifier: uhc, optum, cigna, or molina")
 	}
 }
 

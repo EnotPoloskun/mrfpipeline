@@ -70,13 +70,13 @@ func TestModulePathAndGoVersion(t *testing.T) {
 	if !strings.Contains(text, "github.com/riverqueue/river/riverdriver/riverpgxv5 v0.39.0") {
 		t.Fatalf("expected pinned riverpgxv5: %s", text)
 	}
-	if !strings.Contains(text, "github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260920042836-9b4a5a91a904") {
+	if !strings.Contains(text, "github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260920224759-f72c7a996998") {
 		t.Fatalf("expected pinned mrfdiscoverer: %s", text)
 	}
 	if !strings.Contains(text, "github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5") {
 		t.Fatalf("expected pinned mrftocparser: %s", text)
 	}
-	if !strings.Contains(text, "github.com/EnotPoloskun/mrfparser v0.0.0-20260920164435-0c0158114902") {
+	if !strings.Contains(text, "github.com/EnotPoloskun/mrfparser v0.0.0-20260921002343-0dfed7965d5a") {
 		t.Fatalf("expected pinned mrfparser: %s", text)
 	}
 	if !strings.Contains(text, "github.com/enotpoloskun/mrfconsumer v0.0.0-20260920041858-b0678a4b2e96") {

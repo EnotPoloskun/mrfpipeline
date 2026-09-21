@@ -308,8 +308,8 @@ reconciles, and consumes discovery/TOC/admission queues. The `mrf` role owns
 only MRF download and parse. The `consumer` role owns consumer ingest and plan
 attachment and is replicable: one mutation per process; scale with `--scale consumer=N`.
 
-`discover` enqueues one discovery run (`--payer uhc`, `optum`, or
-`cigna`) for a building monthly release and reports identifiers without waiting
+`discover` enqueues one discovery run (`--payer uhc`, `optum`,
+`cigna`, or `molina`) for a building monthly release and reports identifiers without waiting
 for downloads. `--limit` is a per-run TOC admission cap: a positive integer or
 `all`. `--mrf-source-limit` is the cumulative
 MRF target; it is required when a release is still `unset`, and can be increased
@@ -664,8 +664,10 @@ mrf.parse` reuses valid raw bytes when present and rematerializes the download
 when they are gone. `mrf.parse`, `mrf.download`, and `toc.download` have four
 attempts including the first. HTTP 404 and 410 are not retried. Parse, import,
 ingest, and attach errors that cannot succeed on the same frozen bytes or
-process identity also fail on the first attempt. Other HTTP 4xx/5xx, listing,
-parser execution, database, and cleanup errors still retry. Other stages retain
+process identity also fail on the first attempt, including
+`mrf_parse_input_invalid` for JSON/CMS schema errors from the pinned parser
+(Story 23 cleanup still runs). Other HTTP 4xx/5xx, listing, parser execution
+(OOM/disk/unknown), database, and cleanup errors still retry. Other stages retain
 eight. After deploy, reconcile repairs already terminal parses that still hold
 slots; do not delete slot rows from SQL.
 Cancelling `mrf.download`, `mrf.parse`, or `toc.download` in River UI fails
@@ -1038,7 +1040,7 @@ cancel other kinds.
 
 ## Limitations
 
-Discovery accepts `uhc`, `optum`, and `cigna`; month control and import honor
+Discovery accepts `uhc`, `optum`, `cigna`, and `molina`; month control and import honor
 the generic payer contract. Local storage only. No automatic enrichment. No plan
 removal/correction. No recurring discovery. Required `--limit` (`N` or `all`).
 No UI in this binary. TOC import rejects HTTPS MRF URLs that contain user information; the

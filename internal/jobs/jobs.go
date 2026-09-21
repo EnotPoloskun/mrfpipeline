@@ -31,6 +31,7 @@ const (
 	FailureTOCParseOutputInvalid             = "toc_parse_output_invalid"
 	FailureTOCParseCleanupFailed             = "toc_parse_cleanup_failed"
 	FailureMRFParseExecutionFailed           = "mrf_parse_execution_failed"
+	FailureMRFParseInputInvalid              = "mrf_parse_input_invalid"
 	FailureMRFParseOutputInvalid             = "mrf_parse_output_invalid"
 	FailureMRFParseSelectorChanged           = "mrf_parse_selector_changed"
 	FailureMRFParseCleanupFailed             = "mrf_parse_cleanup_failed"
@@ -137,7 +138,7 @@ func allowedFailureCode(code string) bool {
 		FailureTOCDownload, FailureTOCDownloadNotFound, FailureMRFDownload, FailureMRFDownloadNotFound,
 		FailureTOCParseInputInvalid, FailureTOCParseResourceFailed, FailureTOCParseOutputFailed,
 		FailureTOCParseOutputInvalid, FailureTOCParseCleanupFailed,
-		FailureMRFParseExecutionFailed, FailureMRFParseOutputInvalid, FailureMRFParseSelectorChanged,
+		FailureMRFParseExecutionFailed, FailureMRFParseInputInvalid, FailureMRFParseOutputInvalid, FailureMRFParseSelectorChanged,
 		FailureMRFParseCleanupFailed, FailureMRFParseDatabaseFailed,
 		FailureTOCImportManifestInvalid, FailureTOCImportSchemaInvalid, FailureTOCImportRowInvalid,
 		FailureTOCImportOrderInvalid, FailureTOCImportDatabaseFailed, FailureTOCImportInvariant,
@@ -176,7 +177,7 @@ func isImmediateFail(err error) bool {
 		FailureTOCDownloadNotFound, FailureMRFDownloadNotFound,
 		FailureSealedReleaseInconsistent, FailureSealedReleaseRetryForbidden,
 		FailureTOCParseInputInvalid, FailureTOCParseOutputInvalid,
-		FailureMRFParseOutputInvalid, FailureMRFParseSelectorChanged,
+		FailureMRFParseInputInvalid, FailureMRFParseOutputInvalid, FailureMRFParseSelectorChanged,
 		FailureTOCImportManifestInvalid, FailureTOCImportSchemaInvalid,
 		FailureTOCImportRowInvalid, FailureTOCImportOrderInvalid, FailureTOCImportInvariant,
 		FailureConsumerIngestConfigInvalid, FailureConsumerIngestInputInvalid,

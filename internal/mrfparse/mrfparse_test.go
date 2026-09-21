@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -96,6 +97,30 @@ func TestMapWorkErrorRedactsParserText(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "151") {
 		t.Fatalf("exposed: %v", err)
+	}
+}
+
+func TestMapWorkErrorSourceInputInvalid(t *testing.T) {
+	t.Parallel()
+	secret := "https://secret.example.invalid/in_network/0/billing_code"
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"sentinel", mrfparser.ErrUnsafeStructure},
+		{"wrapped", fmt.Errorf("%w: %w", mrfparser.ErrInvalidInput, mrfparser.ErrUnsafeStructure)},
+		{"path", fmt.Errorf("%w: %w", mrfparser.ErrInvalidInput, errors.New(secret))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := mapWorkError(tc.err)
+			if !jobs.IsFailure(err, jobs.FailureMRFParseInputInvalid) {
+				t.Fatalf("got %v", err)
+			}
+			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), secret) {
+				t.Fatalf("exposed: %v", err)
+			}
+		})
 	}
 }
 

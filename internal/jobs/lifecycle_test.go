@@ -489,6 +489,7 @@ func TestRunImmediateWorkFailureIsTerminal(t *testing.T) {
 		code string
 	}{
 		{kind: KindTOCParse, spec: TOCParseStage, code: FailureTOCParseOutputInvalid},
+		{kind: KindMRFParse, spec: MRFParseStage, code: FailureMRFParseInputInvalid},
 		{kind: KindMRFParse, spec: MRFParseStage, code: FailureMRFParseOutputInvalid},
 		{kind: KindTOCImport, spec: TOCImportStage, code: FailureTOCImportRowInvalid},
 		{kind: KindConsumerIngest, spec: ConsumerIngestStage, code: FailureConsumerIngestInputInvalid},

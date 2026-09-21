@@ -2,7 +2,7 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–37 architecture and
+This document describes the implemented Stories 01–39 architecture and
 operational acceptance. The numbered requirement stories remain authoritative
 where more specific.
 Sections explicitly labeled historical version 1 are background only; they
@@ -58,8 +58,8 @@ or supported intermediate runtime.
 
 The active sibling pairing is exact parser `1.2.0` (seven datasets, no
 `service_relations`) with consumer warehouse/snapshot `2.0.0`. Parser `1.1.0`
-outputs are rejected and not migrated. `mrfdiscoverer` lists UHC, Optum, and
-Cigna TOC URLs; it does not download them.
+outputs are rejected and not migrated. `mrfdiscoverer` lists UHC, Optum, Cigna, and
+Molina TOC URLs; it does not download them.
 
 Stories 14–19 intentionally replace these version 1 decisions:
 
@@ -138,7 +138,7 @@ The target keeps these version 1 invariants:
   storage.
 
 Production discovery accepts the exact identifiers the pinned `mrfdiscoverer`
-already lists (`uhc`, `optum`, and `cigna`). Generic payer columns and
+already lists (`uhc`, `optum`, `cigna`, and `molina`). Generic payer columns and
 per-payer release state remain the domain/query boundary; a later discoverer
 payer still needs a later pipeline story.
 
@@ -602,7 +602,7 @@ requirements remain authoritative for parsing and warehouse semantics.
 
 | Component | Pipeline use | Version 1 boundary |
 |---|---|---|
-| `mrfdiscoverer` | Return current TOC URLs in listing order. | UHC, Optum, and Cigna listings; it does not download TOCs. |
+| `mrfdiscoverer` | Return current TOC URLs in listing order. | UHC, Optum, Cigna, and Molina listings; it does not download TOCs. |
 | `mrftocparser` | Parse one local TOC into `toc_files` and flattened `mrf_plan_associations`. | Local input/output, exact schema `1.0.0`, final `manifest.json`. |
 | `mrfparser` | Parse one local in-network MRF using the configured service selector. | Exact plan-independent schema `1.2.0`, seven datasets, final `manifest.json`. |
 | `mrfenricher` | Produce an up-to-date provider catalog for selected taxonomies. | Operator runs it manually; pipeline receives a local catalog path. |
@@ -1445,9 +1445,11 @@ operator changing frozen bytes, URL, catalog, or process identity. Those
 codes fail the assigned stage on this attempt, run the existing Terminal
 hook, and cancel the River delivery. HTTP 410 uses the same
 `*_download_not_found` codes and download Terminal cleanup as HTTP 404.
-`mrf_parse_execution_failed`, generic `*_download_failed`, listing,
-database, cleanup, and mixed ingest/attach `*_output_invalid` codes stay
-retryable.
+`mrf_parse_input_invalid` is immediate (frozen JSON/CMS schema from
+the pinned parser's `ErrInvalidInput` / `IsSourceError`) and runs Story 23
+Terminal cleanup. `mrf_parse_execution_failed`, generic `*_download_failed`,
+listing, database, cleanup, and mixed ingest/attach `*_output_invalid` codes
+stay retryable.
 
 ### Exhausted stage
 
@@ -1669,6 +1671,18 @@ Story 37 is implemented discover `--limit all`:
 |---:|---|
 | 37 | Accept `discover --limit all` to admit every new TOC URL in this listing. (Implemented.) |
 
+Story 38 is implemented Molina discover-adapter expansion:
+
+| Story | Deliverable |
+|---:|---|
+| 38 | Accept `discover --payer molina` and pin `mrfdiscoverer` to the Molina listing revision. (Implemented.) |
+
+Story 39 is implemented MRF parse frozen-input fail-fast:
+
+| Story | Deliverable |
+|---:|---|
+| 39 | Pin parser Story 36, map `ErrInvalidInput`/`IsSourceError` to immediate `mrf_parse_input_invalid` with Story 23 cleanup, and keep `mrf_parse_execution_failed` retryable. (Implemented.) |
+
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC
 TOC first, then two, then five representative TOCs before UI work begins.
@@ -1679,8 +1693,8 @@ The version 1 pipeline is complete when all of the following are proven:
 
 1. A migration initializes current application and River schemas and is safe
    to rerun.
-2. A discovery for a supported payer identifier (`uhc`, `optum`, or
-   `cigna`) requires `--limit` (`N` or `all`). Numeric limits durably admit
+2. A discovery for a supported payer identifier (`uhc`, `optum`,
+   `cigna`, or `molina`) requires `--limit` (`N` or `all`). Numeric limits durably admit
    only that number of new TOCs and record overflow of distinct new URLs that
    were not admitted. `--limit all` admits every new TOC in this listing with
    overflow 0.

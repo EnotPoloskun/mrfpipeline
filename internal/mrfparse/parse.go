@@ -94,6 +94,7 @@ func mapWorkError(err error) error {
 		jobs.FailureInvalidArguments,
 		jobs.FailureMissingRecord,
 		jobs.FailureMRFParseExecutionFailed,
+		jobs.FailureMRFParseInputInvalid,
 		jobs.FailureMRFParseOutputInvalid,
 		jobs.FailureMRFParseSelectorChanged,
 		jobs.FailureMRFParseCleanupFailed,
@@ -102,6 +103,9 @@ func mapWorkError(err error) error {
 		if jobs.IsFailure(err, code) {
 			return err
 		}
+	}
+	if errors.Is(err, mrfparser.ErrInvalidInput) || mrfparser.IsSourceError(err) {
+		return jobs.Failure(jobs.FailureMRFParseInputInvalid)
 	}
 	if errors.Is(err, artifact.ErrArtifact) {
 		return jobs.Failure(jobs.FailureDomainInvariant)

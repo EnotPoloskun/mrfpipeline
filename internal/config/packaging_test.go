@@ -198,6 +198,8 @@ func TestLocalPackagingContract(t *testing.T) {
 		"scripts/lookup-filter-measure.sh",
 		"RIVER_SCHEMA=mrfpipeline_river",
 		"[`DOCKER.md`](DOCKER.md)",
+		"ghcr.io/enotpoloskun/mrfpipeline",
+		"docker compose --profile operator run --rm --no-build cli migrate",
 	} {
 		if !strings.Contains(usageGuide, fragment) {
 			t.Fatalf("USAGE.md missing %q", fragment)
