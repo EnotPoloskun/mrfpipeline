@@ -504,9 +504,12 @@ func TestIntegrationWorkerRuntime(t *testing.T) {
 	t.Cleanup(func() { _ = os.Setenv("TMPDIR", old) })
 
 	started := make(chan struct{})
-	discover := func(ctx context.Context, payer string) ([]TOCFile, error) {
+	discover := func(ctx context.Context, payer, month string) ([]TOCFile, error) {
 		if payer != "uhc" {
 			t.Errorf("payer %q", payer)
+		}
+		if month != "2026-08" {
+			t.Errorf("month %q", month)
 		}
 		select {
 		case <-started:
@@ -564,7 +567,7 @@ WHERE kind = $1`, jobs.KindTOCDownload).Scan(&state, &kind); err != nil {
 func TestIntegrationShutdownCancelsListing(t *testing.T) {
 	_, pool := testDB(t)
 	entered := make(chan struct{})
-	discover := func(ctx context.Context, _ string) ([]TOCFile, error) {
+	discover := func(ctx context.Context, _, _ string) ([]TOCFile, error) {
 		close(entered)
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -599,7 +602,7 @@ func TestIntegrationShutdownCancelsListing(t *testing.T) {
 func TestIntegrationRetryAfterPrecommitFailure(t *testing.T) {
 	_, pool := testDB(t)
 	attempts := 0
-	discover := func(context.Context, string) ([]TOCFile, error) {
+	discover := func(context.Context, string, string) ([]TOCFile, error) {
 		attempts++
 		if attempts == 1 {
 			return nil, mrfdiscoverer.ErrListing

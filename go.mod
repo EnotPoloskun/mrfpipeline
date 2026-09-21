@@ -3,7 +3,7 @@ module github.com/enotpoloskun/mrfpipeline
 go 1.26
 
 require (
-	github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260920224759-f72c7a996998
+	github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260921173811-4136d8c47146
 	github.com/EnotPoloskun/mrfparser v0.0.0-20260921002343-0dfed7965d5a
 	github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5
 	github.com/enotpoloskun/mrfconsumer v0.0.0-20260920041858-b0678a4b2e96

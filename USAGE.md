@@ -15,7 +15,7 @@ Operator CLI is the one-shot `cli` service:
 docker compose --profile operator run --rm cli <command>
 ```
 
-`--payer` is `uhc`, `optum`, `cigna`, or `molina`. `--collection-month` is `YYYY-MM`.
+`--payer` is `uhc`, `optum`, `cigna`, `molina`, or `oscar`. `--collection-month` is `YYYY-MM`.
 
 ## What this stack is
 

@@ -70,7 +70,7 @@ func TestModulePathAndGoVersion(t *testing.T) {
 	if !strings.Contains(text, "github.com/riverqueue/river/riverdriver/riverpgxv5 v0.39.0") {
 		t.Fatalf("expected pinned riverpgxv5: %s", text)
 	}
-	if !strings.Contains(text, "github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260920224759-f72c7a996998") {
+	if !strings.Contains(text, "github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260921173811-4136d8c47146") {
 		t.Fatalf("expected pinned mrfdiscoverer: %s", text)
 	}
 	if !strings.Contains(text, "github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5") {

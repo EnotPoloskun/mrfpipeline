@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/EnotPoloskun/mrfdiscoverer"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
@@ -254,5 +255,27 @@ func TestLimitSelectionCountsUnlimited(t *testing.T) {
 	}
 	if existing != 1 || admitted != 4 || overflow != 0 {
 		t.Fatalf("existing=%d admitted=%d overflow=%d", existing, admitted, overflow)
+	}
+}
+
+func TestToDiscovererMonth(t *testing.T) {
+	t.Parallel()
+	got, err := toDiscovererMonth("2026-09")
+	if err != nil || got != "09-2026" {
+		t.Fatalf("got %q %v", got, err)
+	}
+	if _, err := toDiscovererMonth("09-2026"); err == nil {
+		t.Fatal("mm-yyyy must not pass as pipeline collection month")
+	}
+	if _, err := toDiscovererMonth(""); err == nil {
+		t.Fatal("empty")
+	}
+}
+
+func TestFormatCollectionMonth(t *testing.T) {
+	t.Parallel()
+	month := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	if got := formatCollectionMonth(month); got != "2026-09" {
+		t.Fatalf("got %q", got)
 	}
 }

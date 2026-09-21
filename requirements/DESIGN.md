@@ -2,7 +2,7 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–39 architecture and
+This document describes the implemented Stories 01–40 architecture and
 operational acceptance. The numbered requirement stories remain authoritative
 where more specific.
 Sections explicitly labeled historical version 1 are background only; they
@@ -58,8 +58,8 @@ or supported intermediate runtime.
 
 The active sibling pairing is exact parser `1.2.0` (seven datasets, no
 `service_relations`) with consumer warehouse/snapshot `2.0.0`. Parser `1.1.0`
-outputs are rejected and not migrated. `mrfdiscoverer` lists UHC, Optum, Cigna, and
-Molina TOC URLs; it does not download them.
+outputs are rejected and not migrated. `mrfdiscoverer` lists UHC, Optum, Cigna, Molina, and
+Oscar TOC URLs for a required reporting month; it does not download them.
 
 Stories 14–19 intentionally replace these version 1 decisions:
 
@@ -138,7 +138,7 @@ The target keeps these version 1 invariants:
   storage.
 
 Production discovery accepts the exact identifiers the pinned `mrfdiscoverer`
-already lists (`uhc`, `optum`, `cigna`, and `molina`). Generic payer columns and
+already lists (`uhc`, `optum`, `cigna`, `molina`, and `oscar`). Generic payer columns and
 per-payer release state remain the domain/query boundary; a later discoverer
 payer still needs a later pipeline story.
 
@@ -602,7 +602,7 @@ requirements remain authoritative for parsing and warehouse semantics.
 
 | Component | Pipeline use | Version 1 boundary |
 |---|---|---|
-| `mrfdiscoverer` | Return current TOC URLs in listing order. | UHC, Optum, Cigna, and Molina listings; it does not download TOCs. |
+| `mrfdiscoverer` | Return current TOC URLs for one payer and reporting month. | UHC, Optum, Cigna, Molina, and Oscar listings; it does not download TOCs. |
 | `mrftocparser` | Parse one local TOC into `toc_files` and flattened `mrf_plan_associations`. | Local input/output, exact schema `1.0.0`, final `manifest.json`. |
 | `mrfparser` | Parse one local in-network MRF using the configured service selector. | Exact plan-independent schema `1.2.0`, seven datasets, final `manifest.json`. |
 | `mrfenricher` | Produce an up-to-date provider catalog for selected taxonomies. | Operator runs it manually; pipeline receives a local catalog path. |
@@ -708,11 +708,13 @@ Recreate/SIGTERM stays an interruption. Do not retry or delete jobs from the UI;
 do not cancel other kinds.
 
 Discovery is manually invoked or scheduled externally. The caller supplies
-the collection month as an operator-owned label for that listing; the pipeline
-does not infer it from current time, a URL, or payer contents, and does not
-check it against blob dates. The first admitting run freezes that month on the
-TOC row. A wrong first admission is not corrected by rediscovery or retry; it
-requires rebuilding the affected pipeline and warehouse state.
+the collection month as an operator-owned `YYYY-MM` label. The pipeline
+forwards that month to the pinned `mrfdiscoverer` as `mm-yyyy` and does not
+infer it from current time, a URL, or payer contents. The discoverer returns
+only TOC URLs whose listing-derived reporting month matches. The first
+admitting run freezes that month on the TOC row. A wrong first admission is
+not corrected by rediscovery or retry; it requires rebuilding the affected
+pipeline and warehouse state.
 
 `reconcile` needs the complete worker environment. `migrate`, `stats`,
 `discover`, `retry`, no-flag `month status`, targeted `month status`, and
@@ -1683,6 +1685,12 @@ Story 39 is implemented MRF parse frozen-input fail-fast:
 |---:|---|
 | 39 | Pin parser Story 36, map `ErrInvalidInput`/`IsSourceError` to immediate `mrf_parse_input_invalid` with Story 23 cleanup, and keep `mrf_parse_execution_failed` retryable. (Implemented.) |
 
+Story 40 is implemented month-aware discoverer pin and Oscar adapter:
+
+| Story | Deliverable |
+|---:|---|
+| 40 | Pin `mrfdiscoverer` Stories 06–07, pass `--collection-month` into `Discover` as `mm-yyyy`, and accept `discover --payer oscar`. (Implemented.) |
+
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC
 TOC first, then two, then five representative TOCs before UI work begins.
@@ -1694,7 +1702,7 @@ The version 1 pipeline is complete when all of the following are proven:
 1. A migration initializes current application and River schemas and is safe
    to rerun.
 2. A discovery for a supported payer identifier (`uhc`, `optum`,
-   `cigna`, or `molina`) requires `--limit` (`N` or `all`). Numeric limits durably admit
+   `cigna`, `molina`, or `oscar`) requires `--limit` (`N` or `all`). Numeric limits durably admit
    only that number of new TOCs and record overflow of distinct new URLs that
    were not admitted. `--limit all` admits every new TOC in this listing with
    overflow 0.

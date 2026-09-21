@@ -45,7 +45,7 @@ func (w *Worker) execute(ctx context.Context, job *river.Job[jobs.DiscoveryRunAr
 		return err
 	}
 	w.log(ctx, "listing_started", job)
-	files, err := resolveDiscover(w.Discover)(ctx, run.PayerID)
+	files, err := resolveDiscover(w.Discover)(ctx, run.PayerID, formatCollectionMonth(run.Month))
 	if err != nil {
 		return mapDiscoverError(err)
 	}

@@ -309,7 +309,7 @@ only MRF download and parse. The `consumer` role owns consumer ingest and plan
 attachment and is replicable: one mutation per process; scale with `--scale consumer=N`.
 
 `discover` enqueues one discovery run (`--payer uhc`, `optum`,
-`cigna`, or `molina`) for a building monthly release and reports identifiers without waiting
+`cigna`, `molina`, or `oscar`) for a building monthly release and reports identifiers without waiting
 for downloads. `--limit` is a per-run TOC admission cap: a positive integer or
 `all`. `--mrf-source-limit` is the cumulative
 MRF target; it is required when a release is still `unset`, and can be increased
@@ -1040,7 +1040,7 @@ cancel other kinds.
 
 ## Limitations
 
-Discovery accepts `uhc`, `optum`, `cigna`, and `molina`; month control and import honor
+Discovery accepts `uhc`, `optum`, `cigna`, `molina`, and `oscar`; month control and import honor
 the generic payer contract. Local storage only. No automatic enrichment. No plan
 removal/correction. No recurring discovery. Required `--limit` (`N` or `all`).
 No UI in this binary. TOC import rejects HTTPS MRF URLs that contain user information; the

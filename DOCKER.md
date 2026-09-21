@@ -179,7 +179,7 @@ docker compose -f docker-compose.yml --profile operator run --rm cli retry --sta
 docker compose -f docker-compose.yml --profile operator run --rm cli month activate --payer uhc --collection-month <YYYY-MM>
 ```
 
-Supported `--payer` values: `uhc`, `optum`, `cigna`, `molina`. `--limit` is `N` or `all`.
+Supported `--payer` values: `uhc`, `optum`, `cigna`, `molina`, `oscar`. `--limit` is `N` or `all`.
 `--mrf-source-limit all` selects every known MRF source for the month.
 
 Full-month example:
