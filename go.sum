@@ -1,11 +1,11 @@
 github.com/DATA-DOG/go-sqlmock v1.5.2 h1:OcvFkGmslmlZibjAjaHm3L//6LiuBgolP7OputlJIzU=
 github.com/DATA-DOG/go-sqlmock v1.5.2/go.mod h1:88MAG/4G7SMwSE3CeA0ZKzrT5CiOU3OJ+JlNzwDqpNU=
-github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260921173811-4136d8c47146 h1:dP7cpKd6YbrByLwo4JQFTIunFeeLsj6Vol8VN0uYByo=
-github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260921173811-4136d8c47146/go.mod h1:64lqzWrE+wZNNUM3+Oe+C4az9vNe1B+eqDrNiSGtvIg=
+github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260922052238-95d426b19e88 h1:9ZXPMgimK+ndbeJDW/bQ8tEQeE2zJUJjt3mOSAoCq7s=
+github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260922052238-95d426b19e88/go.mod h1:64lqzWrE+wZNNUM3+Oe+C4az9vNe1B+eqDrNiSGtvIg=
 github.com/EnotPoloskun/mrfparser v0.0.0-20260921002343-0dfed7965d5a h1:n7GYvWACtT1XkpACgGLTr+gHqPUH5hlW8xnzBUU+BBI=
 github.com/EnotPoloskun/mrfparser v0.0.0-20260921002343-0dfed7965d5a/go.mod h1:fMoLUb7b6l5KK97n477v9/vbzrwbb2iln4isCGTVlnc=
-github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5 h1:Tk709hsE6tw82hpjTXvhVKdm/DFIli31tKnw5BDSF7k=
-github.com/EnotPoloskun/mrftocparser v0.0.0-20260822213145-f80bb070f2b5/go.mod h1:+IEc/ezTxFmRPrRHWQyuKz2cphckurYlaOXOQmoBYXg=
+github.com/EnotPoloskun/mrftocparser v0.0.0-20260923051044-2379186624fb h1:kKM1vwWLVBtRU60zNA5GTIzGnTNiVBv/U2dkKm4an4A=
+github.com/EnotPoloskun/mrftocparser v0.0.0-20260923051044-2379186624fb/go.mod h1:+IEc/ezTxFmRPrRHWQyuKz2cphckurYlaOXOQmoBYXg=
 github.com/alecthomas/assert/v2 v2.10.0 h1:jjRCHsj6hBJhkmhznrCzoNpbA3zqy0fYiUcYZP/GkPY=
 github.com/alecthomas/assert/v2 v2.10.0/go.mod h1:Bze95FyfUr7x34QZrjL+XP+0qgp/zg8yS+TtBj1WA3k=
 github.com/alecthomas/repr v0.4.0 h1:GhI2A8MACjfegCPVq9f1FLvIBS+DrQ2KQBFZP1iFzXc=

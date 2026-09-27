@@ -399,7 +399,7 @@ func TestDiscoverSemanticValidation(t *testing.T) {
 func TestDiscoverSupportedPayers(t *testing.T) {
 	t.Parallel()
 	env := envMap(validDB())
-	for _, payer := range []string{"uhc", "optum", "cigna", "molina", "oscar"} {
+	for _, payer := range []string{"uhc", "optum", "cigna", "molina", "oscar", "anthem"} {
 		args := []string{"discover", "--payer", payer, "--collection-month", "2026-08", "--limit", "1", "--mrf-source-limit", "all"}
 		_, err := execute(context.Background(), args, env)
 		if !errors.Is(err, database.ErrDatabase) {
@@ -438,7 +438,7 @@ func TestDiscoverHelpNamesSupportedPayers(t *testing.T) {
 		if code != 0 || stderr != "" {
 			t.Fatalf("%v: exit %d stderr=%q", args, code, stderr)
 		}
-		for _, want := range []string{"uhc", "optum", "cigna", "molina", "oscar"} {
+		for _, want := range []string{"uhc", "optum", "cigna", "molina", "oscar", "anthem"} {
 			if !strings.Contains(stdout, want) {
 				t.Fatalf("%v missing %q: %s", args, want, stdout)
 			}

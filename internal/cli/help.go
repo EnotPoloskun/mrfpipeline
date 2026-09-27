@@ -10,7 +10,7 @@ started by the pipeline.
 Usage:
   mrfpipeline migrate
   mrfpipeline work --role <control|mrf|consumer>
-  mrfpipeline discover --payer <uhc|optum|cigna|molina|oscar> --collection-month <YYYY-MM> --limit <N|all> [--mrf-source-limit <N|all>]
+  mrfpipeline discover --payer <uhc|optum|cigna|molina|oscar|anthem> --collection-month <YYYY-MM> --limit <N|all> [--mrf-source-limit <N|all>]
   mrfpipeline reconcile
   mrfpipeline retry --stage <job-kind> --id <domain-id>
   mrfpipeline stats [--payer <payer>] [--collection-month <YYYY-MM>] [--json]
@@ -68,7 +68,7 @@ resident capacity is the shared download-plus-parse disk bound.
 `
 
 const discoverHelp = `Usage:
-  mrfpipeline discover --payer <uhc|optum|cigna|molina|oscar> --collection-month <YYYY-MM> --limit <N|all> [--mrf-source-limit <N|all>]
+  mrfpipeline discover --payer <uhc|optum|cigna|molina|oscar|anthem> --collection-month <YYYY-MM> --limit <N|all> [--mrf-source-limit <N|all>]
   mrfpipeline discover --help
 
 Enqueue one background discovery run. Success reports the durable run and
@@ -87,7 +87,7 @@ that durable target. It accepts a positive integer or all. The target is
 cumulative and can later be increased with month sources set-total.
 
 Required flags:
-  --payer              Exact payer adapter identifier (uhc, optum, cigna, molina, or oscar)
+  --payer              Exact payer adapter identifier (uhc, optum, cigna, molina, oscar, or anthem)
   --collection-month   Caller-selected month, exactly YYYY-MM
   --limit              Positive int64 of newly admitted TOCs, or all
 
