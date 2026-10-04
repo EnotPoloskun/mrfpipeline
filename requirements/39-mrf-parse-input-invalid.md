@@ -4,6 +4,11 @@
 
 Implemented.
 
+Completed-output references to parser `1.2.0` below are historical: the current
+boundary is exact `1.3.0`, as documented in
+[README](../README.md#parser-input-compatibility). Source-error classification,
+redaction, and cleanup rules are unchanged.
+
 ## User story
 
 As an operator, I want an MRF whose downloaded bytes cannot be parsed

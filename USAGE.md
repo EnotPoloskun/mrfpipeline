@@ -97,6 +97,13 @@ docker buildx build --ssh default --progress=plain --load --tag mrfpipeline:loca
 
 Confirm `docker images mrfpipeline:local` before migrate.
 
+Updating `go.mod` does not update an existing image or running worker. Rebuild
+the shared image and recreate all worker roles with the configured replica
+counts after stopping the old workers. The current parser/consumer pairing
+requires parser `1.3.0`; see
+[parser input compatibility](README.md#parser-input-compatibility) before
+reusing existing parsed artifacts.
+
 ### Publish to private GHCR
 
 This computer already has `mrfpipeline:local` (`linux/arm64`). That image

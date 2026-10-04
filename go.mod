@@ -4,9 +4,9 @@ go 1.26
 
 require (
 	github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260922052238-95d426b19e88
-	github.com/EnotPoloskun/mrfparser v0.0.0-20260921002343-0dfed7965d5a
+	github.com/EnotPoloskun/mrfparser v0.0.0-20261004195231-d3ae66549dde
 	github.com/EnotPoloskun/mrftocparser v0.0.0-20260923051044-2379186624fb
-	github.com/enotpoloskun/mrfconsumer v0.0.0-20260920041858-b0678a4b2e96
+	github.com/enotpoloskun/mrfconsumer v0.0.0-20261004212133-bb260c9cd053
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/parquet-go/parquet-go v0.30.1
 	github.com/riverqueue/river v0.39.0

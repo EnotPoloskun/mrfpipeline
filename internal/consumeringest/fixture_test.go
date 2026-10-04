@@ -174,18 +174,23 @@ func writeValidParsed(t *testing.T, ws *artifact.Workspace, sourceID int64, serv
 
 func validParserManifest(sourceURI, selectorURI string) []byte {
 	m := map[string]any{
-		"manifest_schema_version": "1.2.0",
-		"output_schema_version":   "1.2.0",
+		"manifest_schema_version": "1.3.0",
+		"output_schema_version":   "1.3.0",
 		"status":                  "complete",
 		"source":                  map[string]any{"uri": sourceURI, "kind": "local"},
 		"selection": map[string]any{
 			"mode": "service_csv", "selector_uri": selectorURI,
 			"requested_unique_pair_count": 1, "matched_unique_pair_count": 0, "unmatched_unique_pair_count": 1,
 		},
+		"price_selection": map[string]any{
+			"mode":             "negotiated_types",
+			"negotiated_types": []string{"negotiated"},
+		},
 		"counts": map[string]any{
 			"source_service_count": 0, "retained_service_count": 0, "filtered_service_count": 0,
 			"mrf_files": 1, "services": 0, "rate_groups": 0,
 			"negotiated_prices": 0, "rate_provider_groups": 0, "provider_groups": 0, "providers": 0,
+			"filtered_price_count": 0,
 		},
 		"warnings": map[string]any{
 			"totals": map[string]any{

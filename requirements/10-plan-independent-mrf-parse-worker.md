@@ -4,6 +4,12 @@
 
 Implemented.
 
+The parser `1.2.0` version boundary below is historical and superseded by the
+exact `1.3.0` input cutover in
+[README](../README.md#parser-input-compatibility). Completion now also validates
+required `price_selection` and `counts.filtered_price_count`; the seven
+dataset layouts, service selector, cleanup, and scheduling rules remain.
+
 ## User story
 
 As a pipeline operator, I want one shared MRF source parsed independently from

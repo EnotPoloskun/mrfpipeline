@@ -92,6 +92,12 @@ docker buildx build --ssh default --progress=plain --load --tag mrfpipeline:loca
 
 Confirm `docker images mrfpipeline:local` shows a real image before migrate.
 
+After dependency updates, rebuild this shared image and recreate every worker
+role, preserving configured replica counts. Stop old workers before the
+cutover to avoid mixing parser/consumer versions. The current pairing requires
+parser `1.3.0`; older parsed outputs need reparsing, not manifest relabeling.
+See [parser input compatibility](README.md#parser-input-compatibility).
+
 The image contains the statically built `mrfpipeline` binary and the official
 DuckDB CLI at `/usr/local/bin/duckdb`, both pinned to the repository contract;
 DuckDB is exact `v1.5.5` for both `linux/amd64` and `linux/arm64` builds.

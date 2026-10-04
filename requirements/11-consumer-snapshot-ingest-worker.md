@@ -4,6 +4,11 @@
 
 Implemented.
 
+The parser-version boundary below is superseded by the exact `1.3.0` cutover in
+[README](../README.md#parser-input-compatibility). Consumer publication remains
+`2.0.0` as established by [Story 17](17-consumer-2-feed-free-integration.md);
+this update does not migrate or relabel old parsed output or snapshots.
+
 ## User story
 
 As a pipeline operator, I want each eligible payer/feed/month snapshot ingested

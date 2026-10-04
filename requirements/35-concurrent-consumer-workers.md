@@ -4,6 +4,11 @@
 
 Implemented.
 
+The parser-version reference below is historical: the current pairing requires
+exact parser `1.3.0`; see
+[README](../README.md#parser-input-compatibility). This input cutover leaves the
+distinct-output concurrency protocol and warehouse `2.0.0` unchanged.
+
 ## User story
 
 As an operator, I want more than one `consumer.ingest` / `consumer.attach_plans`

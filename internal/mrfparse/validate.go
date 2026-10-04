@@ -16,15 +16,17 @@ import (
 )
 
 const (
-	manifestSchemaVersion = "1.2.0"
-	outputSchemaVersion   = "1.2.0"
-	statusComplete        = "complete"
-	sourceKindLocal       = "local"
-	selectionServiceCSV   = "service_csv"
-	maxManifestBytes      = 4 << 20
-	maxStatsBytes         = 64 << 10
-	fileManifest          = "manifest.json"
-	fileStats             = "processing_stats.json"
+	manifestSchemaVersion         = "1.3.0"
+	outputSchemaVersion           = "1.3.0"
+	priceSelectionAllPrices       = "all_prices"
+	priceSelectionNegotiatedTypes = "negotiated_types"
+	statusComplete                = "complete"
+	sourceKindLocal               = "local"
+	selectionServiceCSV           = "service_csv"
+	maxManifestBytes              = 4 << 20
+	maxStatsBytes                 = 64 << 10
+	fileManifest                  = "manifest.json"
+	fileStats                     = "processing_stats.json"
 )
 
 var (
@@ -58,12 +60,13 @@ type datasetCounts struct {
 }
 
 type sourceCounts struct {
-	Source   int64
-	Retained int64
-	Filtered int64
+	Source         int64
+	Retained       int64
+	Filtered       int64
+	FilteredPrices int64
 }
 
-// ValidateCompletedOutput is the exact parser 1.2.0 layout and
+// ValidateCompletedOutput is the exact parser 1.3.0 layout and
 // manifest check. Ingest reuses it and never resets parsed output.
 func ValidateCompletedOutput(dir, sourceURI, servicesPath string) error {
 	return validateCompletedOutput(dir, sourceURI, servicesPath)
@@ -193,7 +196,8 @@ func decodeManifest(data []byte) (completedOutput, error) {
 	seen := map[string]bool{}
 	var m completedOutput
 	var manifestVer, outputVer, status string
-	var haveSource, haveSel, haveCounts, haveWarn bool
+	var haveSource, haveSel, havePriceSel, haveCounts, haveWarn bool
+	var priceMode string
 	for dec.More() {
 		keyTok, err := dec.Token()
 		if err != nil {
@@ -217,6 +221,9 @@ func decodeManifest(data []byte) (completedOutput, error) {
 		case "selection":
 			haveSel = true
 			m.SelectorURI, err = decodeSelection(dec)
+		case "price_selection":
+			havePriceSel = true
+			priceMode, err = decodePriceSelection(dec)
 		case "counts":
 			haveCounts = true
 			m.Counts, m.SourceCounts, err = decodeCounts(dec)
@@ -244,7 +251,7 @@ func decodeManifest(data []byte) (completedOutput, error) {
 	if off := dec.InputOffset(); int(off) < len(data) && len(bytes.TrimSpace(data[off:])) > 0 {
 		return zero, errOutputInvalid
 	}
-	if len(seen) != 7 || !haveSource || !haveSel || !haveCounts || !haveWarn {
+	if len(seen) != 8 || !haveSource || !haveSel || !havePriceSel || !haveCounts || !haveWarn {
 		return zero, errOutputInvalid
 	}
 	if manifestVer != manifestSchemaVersion || outputVer != outputSchemaVersion || status != statusComplete {
@@ -262,7 +269,104 @@ func decodeManifest(data []byte) (completedOutput, error) {
 	if m.Counts.Services != m.SourceCounts.Retained {
 		return zero, errOutputInvalid
 	}
+	if priceMode == priceSelectionAllPrices && m.SourceCounts.FilteredPrices != 0 {
+		return zero, errOutputInvalid
+	}
 	return m, nil
+}
+
+func decodePriceSelection(dec *json.Decoder) (string, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return "", err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '{' {
+		return "", errOutputInvalid
+	}
+	seen := map[string]bool{}
+	var mode string
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return "", err
+		}
+		key, ok := keyTok.(string)
+		if !ok || seen[key] {
+			return "", errOutputInvalid
+		}
+		seen[key] = true
+		switch key {
+		case "mode":
+			mode, err = decodeString(dec)
+		case "negotiated_types":
+			err = decodeCMSNegotiatedTypes(dec)
+		default:
+			return "", errOutputInvalid
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	end, err := dec.Token()
+	if err != nil {
+		return "", err
+	}
+	if delim, ok := end.(json.Delim); !ok || delim != '}' {
+		return "", errOutputInvalid
+	}
+	switch mode {
+	case priceSelectionAllPrices:
+		if len(seen) != 1 {
+			return "", errOutputInvalid
+		}
+	case priceSelectionNegotiatedTypes:
+		if len(seen) != 2 {
+			return "", errOutputInvalid
+		}
+	default:
+		return "", errOutputInvalid
+	}
+	return mode, nil
+}
+
+func decodeCMSNegotiatedTypes(dec *json.Decoder) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '[' {
+		return errOutputInvalid
+	}
+	haveType := false
+	for dec.More() {
+		s, err := decodeString(dec)
+		if err != nil {
+			return err
+		}
+		if !knownNegotiatedType(s) {
+			return errOutputInvalid
+		}
+		haveType = true
+	}
+	end, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := end.(json.Delim); !ok || delim != ']' || !haveType {
+		return errOutputInvalid
+	}
+	return nil
+}
+
+func knownNegotiatedType(value string) bool {
+	switch value {
+	case "negotiated", "derived", "fee schedule", "percentage", "per diem":
+		return true
+	default:
+		return false
+	}
 }
 
 func decodeSource(dec *json.Decoder) (string, error) {
@@ -320,6 +424,7 @@ func decodeCounts(dec *json.Decoder) (datasetCounts, sourceCounts, error) {
 	var zeroS sourceCounts
 	obj, err := decodeExactObject(dec, []string{
 		"source_service_count", "retained_service_count", "filtered_service_count",
+		"filtered_price_count",
 		"mrf_files", "services", "rate_groups",
 		"negotiated_prices", "rate_provider_groups", "provider_groups", "providers",
 	})
@@ -336,6 +441,9 @@ func decodeCounts(dec *json.Decoder) (datasetCounts, sourceCounts, error) {
 		return zeroD, zeroS, err
 	}
 	if s.Filtered, err = n("filtered_service_count"); err != nil {
+		return zeroD, zeroS, err
+	}
+	if s.FilteredPrices, err = n("filtered_price_count"); err != nil {
 		return zeroD, zeroS, err
 	}
 	if d.MRFFiles, err = n("mrf_files"); err != nil {
@@ -533,7 +641,7 @@ func decodeInt64(v any) (int64, error) {
 		return 0, errOutputInvalid
 	}
 	raw := string(num)
-	if raw == "" || strings.ContainsAny(raw, ".eE+") || (len(raw) > 1 && raw[0] == '0') {
+	if raw == "" || strings.ContainsAny(raw, ".eE+") || raw[0] == '-' || (len(raw) > 1 && raw[0] == '0') {
 		return 0, errOutputInvalid
 	}
 	n, err := num.Int64()

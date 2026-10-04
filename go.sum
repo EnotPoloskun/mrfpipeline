@@ -2,8 +2,8 @@ github.com/DATA-DOG/go-sqlmock v1.5.2 h1:OcvFkGmslmlZibjAjaHm3L//6LiuBgolP7Oputl
 github.com/DATA-DOG/go-sqlmock v1.5.2/go.mod h1:88MAG/4G7SMwSE3CeA0ZKzrT5CiOU3OJ+JlNzwDqpNU=
 github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260922052238-95d426b19e88 h1:9ZXPMgimK+ndbeJDW/bQ8tEQeE2zJUJjt3mOSAoCq7s=
 github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260922052238-95d426b19e88/go.mod h1:64lqzWrE+wZNNUM3+Oe+C4az9vNe1B+eqDrNiSGtvIg=
-github.com/EnotPoloskun/mrfparser v0.0.0-20260921002343-0dfed7965d5a h1:n7GYvWACtT1XkpACgGLTr+gHqPUH5hlW8xnzBUU+BBI=
-github.com/EnotPoloskun/mrfparser v0.0.0-20260921002343-0dfed7965d5a/go.mod h1:fMoLUb7b6l5KK97n477v9/vbzrwbb2iln4isCGTVlnc=
+github.com/EnotPoloskun/mrfparser v0.0.0-20261004195231-d3ae66549dde h1:7zuCsCBhBjy4Nzmuv2K48Z+nBU0Es72iAsS1sS452RE=
+github.com/EnotPoloskun/mrfparser v0.0.0-20261004195231-d3ae66549dde/go.mod h1:fMoLUb7b6l5KK97n477v9/vbzrwbb2iln4isCGTVlnc=
 github.com/EnotPoloskun/mrftocparser v0.0.0-20260923051044-2379186624fb h1:kKM1vwWLVBtRU60zNA5GTIzGnTNiVBv/U2dkKm4an4A=
 github.com/EnotPoloskun/mrftocparser v0.0.0-20260923051044-2379186624fb/go.mod h1:+IEc/ezTxFmRPrRHWQyuKz2cphckurYlaOXOQmoBYXg=
 github.com/alecthomas/assert/v2 v2.10.0 h1:jjRCHsj6hBJhkmhznrCzoNpbA3zqy0fYiUcYZP/GkPY=
@@ -51,8 +51,8 @@ github.com/aws/smithy-go v1.27.3/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqx
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/enotpoloskun/mrfconsumer v0.0.0-20260920041858-b0678a4b2e96 h1:TJB2bIQVY0NELuvuxAo+tpZlFF73u79VmEn9qiPKM/M=
-github.com/enotpoloskun/mrfconsumer v0.0.0-20260920041858-b0678a4b2e96/go.mod h1:s43Vj+y0f+JWbAA3LfXOiNUGBJ3S6Ngk8MJwJP/XxZk=
+github.com/enotpoloskun/mrfconsumer v0.0.0-20261004212133-bb260c9cd053 h1:jLg65Mab+gDz/hbnO41S27WgE9g1BWKpw1jKW3xRfdc=
+github.com/enotpoloskun/mrfconsumer v0.0.0-20261004212133-bb260c9cd053/go.mod h1:s43Vj+y0f+JWbAA3LfXOiNUGBJ3S6Ngk8MJwJP/XxZk=
 github.com/google/go-cmp v0.5.5 h1:Khx7svrCpmxxtHBq5j2mp/xVjsi8hQMfNLvJFAlrGgU=
 github.com/google/go-cmp v0.5.5/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

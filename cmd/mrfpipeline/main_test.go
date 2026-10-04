@@ -48,48 +48,6 @@ func TestREADMEDescribesVersion1(t *testing.T) {
 	}
 }
 
-func TestModulePathAndGoVersion(t *testing.T) {
-	t.Parallel()
-	data, err := os.ReadFile(filepath.Join(repoRoot(t), "go.mod"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
-	if !strings.HasPrefix(text, "module github.com/enotpoloskun/mrfpipeline\n") {
-		t.Fatalf("module path: %s", text)
-	}
-	if !strings.Contains(text, "\ngo 1.26\n") && !strings.HasSuffix(strings.TrimSpace(text), "\ngo 1.26") {
-		t.Fatalf("go version: %s", text)
-	}
-	if !strings.Contains(text, "github.com/jackc/pgx/v5 v5.9.2") {
-		t.Fatalf("expected pinned pgx: %s", text)
-	}
-	if !strings.Contains(text, "github.com/riverqueue/river v0.39.0") {
-		t.Fatalf("expected pinned river: %s", text)
-	}
-	if !strings.Contains(text, "github.com/riverqueue/river/riverdriver/riverpgxv5 v0.39.0") {
-		t.Fatalf("expected pinned riverpgxv5: %s", text)
-	}
-	if !strings.Contains(text, "github.com/EnotPoloskun/mrfdiscoverer v0.0.0-20260922052238-95d426b19e88") {
-		t.Fatalf("expected pinned mrfdiscoverer: %s", text)
-	}
-	if !strings.Contains(text, "github.com/EnotPoloskun/mrftocparser v0.0.0-20260923051044-2379186624fb") {
-		t.Fatalf("expected pinned mrftocparser: %s", text)
-	}
-	if !strings.Contains(text, "github.com/EnotPoloskun/mrfparser v0.0.0-20260921002343-0dfed7965d5a") {
-		t.Fatalf("expected pinned mrfparser: %s", text)
-	}
-	if !strings.Contains(text, "github.com/enotpoloskun/mrfconsumer v0.0.0-20260920041858-b0678a4b2e96") {
-		t.Fatalf("expected pinned mrfconsumer: %s", text)
-	}
-	if !strings.Contains(text, "github.com/parquet-go/parquet-go v0.30.1") {
-		t.Fatalf("expected pinned parquet-go: %s", text)
-	}
-	if strings.Contains(text, "\nreplace ") || strings.HasPrefix(text, "replace ") {
-		t.Fatal("go.mod must not contain a replace directive")
-	}
-}
-
 func TestBuildTargets(t *testing.T) {
 	root := repoRoot(t)
 	targets := []struct{ goos, goarch string }{

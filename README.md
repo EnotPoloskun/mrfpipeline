@@ -220,6 +220,30 @@ setting can be compile-checked on the host with `CGO_ENABLED=0 go build ./cmd/mr
 a host-built
 macOS/Windows binary is not a substitute for the Linux container image.
 
+## Parser input compatibility
+
+The pipeline pins parser `d3ae66549dde` and consumer `bb260c9cd053` in
+`go.mod`. Completion checks and consumer ingestion require exact parser
+manifest/output schema `1.3.0`; warehouse/snapshot schema remains `2.0.0`.
+
+MRF workers use the parser default: only prices with
+`negotiated_type = negotiated` are retained. Completion validation requires
+`price_selection` and nonnegative `counts.filtered_price_count`; `all_prices`
+requires a zero filtered count and no `negotiated_types` member. Groups and
+provider links may remain with no prices, and retained price IDs may have gaps.
+The pipeline does not expose a negotiated-type configuration flag.
+
+Parser `1.2.0` and older completed outputs are rejected and preserved, not
+converted or relabeled. Re-parse their original source files into fresh
+`1.3.0` outputs before consuming them. Existing warehouse `2.0.0` snapshots
+are not rewritten by this input cutover.
+
+Dependency changes take effect only after rebuilding the binary or shared
+Docker image and restarting all worker roles. Stop old workers before the
+cutover so old parsers and new consumers do not run together; preserve configured
+replica counts when recreating workers. Do not delete warehouse or database
+volumes as part of a dependency upgrade.
+
 ## External local inputs
 
 The Compose file mounts the accepted provider catalog and service selector

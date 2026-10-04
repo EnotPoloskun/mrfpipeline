@@ -4,6 +4,11 @@
 
 Implemented.
 
+The parser `1.2.0` boundary recorded below is superseded by exact parser
+`1.3.0` with a compatible published consumer; see
+[README](../README.md#parser-input-compatibility). Consumer warehouse and
+snapshot schemas remain `2.0.0`, and the provider catalog remains schema `1`.
+
 ## User story
 
 As a pipeline operator, I want snapshot ingestion and plan attachment to use

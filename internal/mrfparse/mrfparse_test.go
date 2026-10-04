@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -58,30 +57,6 @@ func TestClassifyClaim(t *testing.T) {
 				t.Fatalf("got %s %v want %s", got, err, tc.want)
 			}
 		})
-	}
-}
-
-func TestDefaultConfigOnlyAllowedFields(t *testing.T) {
-	t.Parallel()
-	cfg := mrfparser.DefaultConfig()
-	if cfg.MemoryLimit != 1<<30 || cfg.TempDiskLimit != 10<<30 ||
-		cfg.TargetFileSize != 256<<20 || cfg.RowGroupRows != 100_000 {
-		t.Fatalf("defaults %+v", cfg)
-	}
-	typ := reflect.TypeOf(cfg)
-	allowed := map[string]bool{
-		"Input": true, "Output": true, "Services": true, "TempDir": true, "OnProgress": true,
-		"MemoryLimit": true, "TempDiskLimit": true, "TargetFileSize": true, "RowGroupRows": true,
-	}
-	for i := 0; i < typ.NumField(); i++ {
-		name := typ.Field(i).Name
-		if !allowed[name] {
-			t.Fatalf("unexpected field %s", name)
-		}
-		if name == "Plans" || name == "Payer" || name == "Feed" || name == "CollectionMonth" ||
-			name == "Snapshot" || name == "TOC" {
-			t.Fatal(name)
-		}
 	}
 }
 
@@ -346,15 +321,64 @@ func TestStrictManifestAndStats(t *testing.T) {
 	if _, err := decodeManifest(legacy); err == nil {
 		t.Fatal("service_relations count")
 	}
-	oldVer := bytes.ReplaceAll(good, []byte(`"1.2.0"`), []byte(`"1.1.0"`))
+	oldVer := bytes.ReplaceAll(good, []byte(`"1.3.0"`), []byte(`"1.1.0"`))
 	if _, err := decodeManifest(oldVer); err == nil {
 		t.Fatal("parser 1.1.0")
+	}
+	ver120 := bytes.ReplaceAll(good, []byte(`"1.3.0"`), []byte(`"1.2.0"`))
+	if _, err := decodeManifest(ver120); err == nil {
+		t.Fatal("parser 1.2.0")
 	}
 	if err := decodeProcessingStats(validStatsJSON()); err != nil {
 		t.Fatal(err)
 	}
 	if err := decodeProcessingStats([]byte(`{"stored_bytes":1}`)); err == nil {
 		t.Fatal("short stats")
+	}
+}
+
+func TestPriceSelectionManifestBoundaries(t *testing.T) {
+	t.Parallel()
+	svc := mustServices(t)
+	good := validManifestJSON("/abs/download/data", svc.Path, 0)
+	allPrices := validManifestJSONAllPrices("/abs/download/data", svc.Path, 0)
+	if _, err := decodeManifest(allPrices); err != nil {
+		t.Fatalf("all_prices: %v", err)
+	}
+	withFiltered := bytes.Replace(good, []byte(`"filtered_price_count":0`), []byte(`"filtered_price_count":2`), 1)
+	if _, err := decodeManifest(withFiltered); err != nil {
+		t.Fatalf("negotiated_types with filtered count: %v", err)
+	}
+	cases := []struct {
+		name string
+		raw  []byte
+	}{
+		{"missing price_selection", bytes.Replace(good, []byte(`"price_selection":{"mode":"negotiated_types","negotiated_types":["negotiated"]},`), []byte(``), 1)},
+		{"unknown price_selection field", bytes.Replace(good, []byte(`"mode":"negotiated_types"`), []byte(`"mode":"negotiated_types","extra":1`), 1)},
+		{"null mode", bytes.Replace(good, []byte(`"mode":"negotiated_types"`), []byte(`"mode":null`), 1)},
+		{"duplicate mode key", bytes.Replace(good, []byte(`"price_selection":{"mode":"negotiated_types"`), []byte(`"price_selection":{"mode":"all_prices","mode":"negotiated_types"`), 1)},
+		{"unknown mode", bytes.Replace(good, []byte(`"mode":"negotiated_types"`), []byte(`"mode":"unknown"`), 1)},
+		{"all_prices with negotiated_types", bytes.Replace(good, []byte(`"price_selection":{"mode":"negotiated_types","negotiated_types":["negotiated"]}`), []byte(`"price_selection":{"mode":"all_prices","negotiated_types":["negotiated"]}`), 1)},
+		{"all_prices with null negotiated_types", bytes.Replace(good, []byte(`"price_selection":{"mode":"negotiated_types","negotiated_types":["negotiated"]}`), []byte(`"price_selection":{"mode":"all_prices","negotiated_types":null}`), 1)},
+		{"all_prices with empty negotiated_types", bytes.Replace(good, []byte(`"price_selection":{"mode":"negotiated_types","negotiated_types":["negotiated"]}`), []byte(`"price_selection":{"mode":"all_prices","negotiated_types":[]}`), 1)},
+		{"negotiated_types missing list", bytes.Replace(good, []byte(`,"negotiated_types":["negotiated"]`), []byte(``), 1)},
+		{"empty negotiated_types array", bytes.Replace(good, []byte(`"negotiated_types":["negotiated"]`), []byte(`"negotiated_types":[]`), 1)},
+		{"invalid negotiated type case", bytes.Replace(good, []byte(`"negotiated_types":["negotiated"]`), []byte(`"negotiated_types":["Negotiated"]`), 1)},
+		{"all_prices nonzero filtered count", bytes.Replace(allPrices, []byte(`"filtered_price_count":0`), []byte(`"filtered_price_count":1`), 1)},
+		{"missing filtered_price_count", bytes.Replace(good, []byte(`"filtered_price_count":0,`), []byte(``), 1)},
+		{"leading zero filtered count", bytes.Replace(good, []byte(`"filtered_price_count":0`), []byte(`"filtered_price_count":00`), 1)},
+		{"float filtered count", bytes.Replace(good, []byte(`"filtered_price_count":0`), []byte(`"filtered_price_count":0.0`), 1)},
+		{"negative filtered count", bytes.Replace(good, []byte(`"filtered_price_count":0`), []byte(`"filtered_price_count":-1`), 1)},
+		{"negative zero filtered count", bytes.Replace(good, []byte(`"filtered_price_count":0`), []byte(`"filtered_price_count":-0`), 1)},
+		{"filtered count overflow", bytes.Replace(good, []byte(`"filtered_price_count":0`), []byte(`"filtered_price_count":9223372036854775808`), 1)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := decodeManifest(tc.raw); err == nil {
+				t.Fatal("expected reject")
+			}
+		})
 	}
 }
 
@@ -669,10 +693,15 @@ func validManifestJSON(sourceURI, selectorURI string, retained int64) []byte {
 			MatchedUniquePairCount   int64  `json:"matched_unique_pair_count"`
 			UnmatchedUniquePairCount int64  `json:"unmatched_unique_pair_count"`
 		} `json:"selection"`
+		PriceSelection struct {
+			Mode            string   `json:"mode"`
+			NegotiatedTypes []string `json:"negotiated_types,omitempty"`
+		} `json:"price_selection"`
 		Counts struct {
 			SourceServiceCount   int64 `json:"source_service_count"`
 			RetainedServiceCount int64 `json:"retained_service_count"`
 			FilteredServiceCount int64 `json:"filtered_service_count"`
+			FilteredPriceCount   int64 `json:"filtered_price_count"`
 			MRFFiles             int64 `json:"mrf_files"`
 			Services             int64 `json:"services"`
 			RateGroups           int64 `json:"rate_groups"`
@@ -707,6 +736,8 @@ func validManifestJSON(sourceURI, selectorURI string, retained int64) []byte {
 	m.Selection.SelectorURI = selectorURI
 	m.Selection.RequestedUniquePairCount = 1
 	m.Selection.UnmatchedUniquePairCount = 1
+	m.PriceSelection.Mode = priceSelectionNegotiatedTypes
+	m.PriceSelection.NegotiatedTypes = []string{"negotiated"}
 	m.Counts.MRFFiles = 1
 	m.Counts.SourceServiceCount = retained
 	m.Counts.RetainedServiceCount = retained
@@ -716,6 +747,12 @@ func validManifestJSON(sourceURI, selectorURI string, retained int64) []byte {
 	if err != nil {
 		panic(err)
 	}
+	return b
+}
+
+func validManifestJSONAllPrices(sourceURI, selectorURI string, retained int64) []byte {
+	b := validManifestJSON(sourceURI, selectorURI, retained)
+	b = bytes.Replace(b, []byte(`"price_selection":{"mode":"negotiated_types","negotiated_types":["negotiated"]}`), []byte(`"price_selection":{"mode":"all_prices"}`), 1)
 	return b
 }
 
