@@ -14,27 +14,26 @@ import (
 // ParseFunc matches mrfparser.Parse.
 type ParseFunc func(ctx context.Context, cfg mrfparser.Config) error
 
-// parseMu serializes every mrfparser.Parse call in this process, including
-// injected test fakes. Queue concurrency 1 is not that safety contract:
-// River 0.39 rescue does not terminate an in-flight Go invocation.
+// parseMu serializes every parser child (and injected test fake) in this
+// process. Queue concurrency 1 is not that safety contract: River 0.39
+// rescue does not terminate an in-flight child.
 var parseMu sync.Mutex
 
-// DefaultParse calls the pinned public parser.
+// DefaultParse execs the mrfparser CLI. It holds parseMu for the child
+// lifetime. Injected ParseFunc fakes use callParse instead.
 func DefaultParse(ctx context.Context, cfg mrfparser.Config) error {
-	return mrfparser.Parse(ctx, cfg)
-}
-
-func resolveParse(fn ParseFunc) ParseFunc {
-	if fn != nil {
-		return fn
-	}
-	return DefaultParse
+	parseMu.Lock()
+	defer parseMu.Unlock()
+	return runParserCLI(ctx, cfg)
 }
 
 func callParse(fn ParseFunc, ctx context.Context, cfg mrfparser.Config) error {
-	parseMu.Lock()
-	defer parseMu.Unlock()
-	return resolveParse(fn)(ctx, cfg)
+	if fn != nil {
+		parseMu.Lock()
+		defer parseMu.Unlock()
+		return fn(ctx, cfg)
+	}
+	return DefaultParse(ctx, cfg)
 }
 
 func generatedPaths(ws *artifact.Workspace, id int64) (input, output string, err error) {

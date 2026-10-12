@@ -43,6 +43,7 @@ type Runtime struct {
 	ServicesPath        string
 	WarehousePath       string
 	ProviderCatalogPath string
+	ParserPath          string
 }
 
 // QueuesForRole returns the queues owned by one explicit long-lived process.
@@ -71,7 +72,7 @@ func QueuesForRole(role string) map[string]river.QueueConfig {
 // Run starts one explicit role-specific River client, waits until ctx is
 // canceled or the client stops, then shuts down. A requested shutdown after
 // Start succeeds returns nil. MRF parse concurrency is one per process because
-// every parser call holds the process mutex. Consumer concurrency is one job
+// every parser child holds the process mutex. Consumer concurrency is one job
 // per process; scale with multiple consumer replicas.
 func (r Runtime) Run(ctx context.Context) error {
 	if ctx == nil {
@@ -90,6 +91,13 @@ func (r Runtime) Run(ctx context.Context) error {
 	services, err := mrfparse.InspectServices(r.ServicesPath)
 	if err != nil {
 		return err
+	}
+	if role == "mrf" && r.ParseMRF == nil {
+		path, err := mrfparse.LookupParser(r.ParserPath)
+		if err != nil {
+			return err
+		}
+		mrfparse.SetResolvedParser(path)
 	}
 	var catalog consumeringest.CatalogID
 	var warehouse consumeringest.WarehouseState

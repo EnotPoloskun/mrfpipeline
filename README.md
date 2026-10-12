@@ -211,9 +211,10 @@ Compose forwards the agent through its `build.ssh: [default]` configuration
 and builds the image used by every service. A direct build is also supported:
 `DOCKER_BUILDKIT=1 docker build --ssh default --tag mrfpipeline:local .`.
 
-The key must be able to read every private sibling module named by `go.mod`.
-If the SSH agent or private-module access is missing, the build fails during
-dependency resolution. The key is forwarded through the SSH agent only; it is
+The key must be able to read every private sibling module named by `go.mod`
+and the Rust parser sibling `mrfparser_rust`. If the SSH agent or private-module
+access is missing, the build fails during Go module download or the parser
+clone. The key is forwarded through the SSH agent only; it is
 never a build argument or image layer. No database URL, accepted catalog, or
 host path is a build argument or image layer. The Dockerfile's `CGO_ENABLED=0`
 setting can be compile-checked on the host with `CGO_ENABLED=0 go build ./cmd/mrfpipeline`;
@@ -222,9 +223,15 @@ macOS/Windows binary is not a substitute for the Linux container image.
 
 ## Parser input compatibility
 
-The pipeline pins parser `d3ae66549dde` and consumer `bb260c9cd053` in
-`go.mod`. Completion checks and consumer ingestion require exact parser
-manifest/output schema `1.3.0`; warehouse/snapshot schema remains `2.0.0`.
+Production `mrf.parse` execs the Rust `mrfparser` CLI shipped at
+`/usr/local/bin/mrfparser`. The image builds that binary from the private
+Rust sibling at `d1a66424bf896074a9505f1ebe709f86a4cc18a1`. `mrfparser
+--version` is a smoke test (`mrfparser 0.1.0` today); the Dockerfile
+revision is the pin. The Go module pin `d3ae66549dde` in `go.mod` remains
+for tests and fixture generators; production parse does not call
+`mrfparser.Parse`. Consumer `bb260c9cd053` stays in `go.mod`. Completion
+checks and consumer ingestion require exact parser manifest/output schema
+`1.3.0`; warehouse/snapshot schema remains `2.0.0`.
 
 MRF workers use the parser default: only prices with
 `negotiated_type = negotiated` are retained. Completion validation requires
@@ -239,10 +246,16 @@ converted or relabeled. Re-parse their original source files into fresh
 are not rewritten by this input cutover.
 
 Dependency changes take effect only after rebuilding the binary or shared
-Docker image and restarting all worker roles. Stop old workers before the
-cutover so old parsers and new consumers do not run together; preserve configured
-replica counts when recreating workers. Do not delete warehouse or database
-volumes as part of a dependency upgrade.
+Docker image and restarting all worker roles. Stop old `mrf` workers before
+the cutover so an old in-process parser and a new consumer do not run
+together on the same sources; preserve configured replica counts when
+recreating workers. Completed `1.3.0` output remains reusable. Do not
+delete warehouse or database volumes as part of a dependency upgrade.
+Parser RSS is no longer a 1 GiB Go target; replica sizing is operational
+(`MRFPIPELINE_MRF_RESIDENT_CAPACITY` plus `--scale mrf=N`), not a new
+environment knob. The `mrf` service sets `stop_grace_period: 45s` so a
+Compose stop can SIGTERM the parser group, wait `GracefulStop` (30 s), and
+SIGKILL before Docker kills the container.
 
 ## External local inputs
 
@@ -365,6 +378,7 @@ slot is returned to blocked waiting state until control can refill it.
 | `MRFPIPELINE_PROVIDER_CATALOG_PATH` | `work`, `reconcile` |
 | `MRFPIPELINE_SERVICES_PATH` | `work`, `reconcile` |
 | `MRFPIPELINE_MRF_RESIDENT_CAPACITY` | control `work` |
+| `MRFPIPELINE_MRFPARSER_PATH` | mrf `work` (optional; otherwise `mrfparser` on `PATH`) |
 
 `retry` needs only the database URL so a remote operator can enqueue work for
 the correctly configured worker host.

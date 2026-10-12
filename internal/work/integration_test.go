@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/EnotPoloskun/mrfparser"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/database"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
@@ -177,6 +178,7 @@ SELECT artifact_root FROM mrfpipeline.pipeline_runtime WHERE id = true`).Scan(&r
 		done <- Runtime{
 			Role: "mrf", Pool: pool, Workspace: ws, Downloader: dl,
 			Logger: jobs.NewLogger(io.Discard), ServicesPath: svcPath,
+			ParseMRF: mrfparser.Parse,
 		}.Run(ctx)
 	}()
 	go func() {

@@ -177,4 +177,15 @@ func TestParserMutexRecordedWithoutImport(t *testing.T) {
 	if cfg.Queues[QueueMRFParse].MaxWorkers != 1 {
 		t.Fatal("mrf_parse concurrency")
 	}
+	mutexSrc, err := os.ReadFile(filepath.Join(dir, "parser_mutex.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(mutexSrc)
+	if !strings.Contains(text, "child") {
+		t.Fatal("parser mutex comment must record child lifetime")
+	}
+	if strings.Contains(text, "GOMEMLIMIT") {
+		t.Fatal("parser mutex comment must not record GOMEMLIMIT")
+	}
 }

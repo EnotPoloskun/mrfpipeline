@@ -29,16 +29,21 @@ docker compose --profile operator run --rm cli <command>
 | `cli` | One-shot operator commands (`operator` profile) |
 | `riverui` | Optional River job UI on `127.0.0.1:8080` (`ui` profile) |
 
-The image is `mrfpipeline:local`. It contains the pipeline binary and DuckDB
-`v1.5.5`. It does **not** contain enricher, NPPES, or the provider catalog.
-Produce the catalog with `mrfenricher` (separate program, separate Postgres),
-then copy the export directory onto this host.
+The image is `mrfpipeline:local`. It contains the pipeline binary,
+`/usr/local/bin/mrfparser`, and DuckDB `v1.5.5`. It does **not** contain
+enricher, NPPES, or the provider catalog. Produce the catalog with
+`mrfenricher` (separate program, separate Postgres), then copy the export
+directory onto this host. The `mrf` service `stop_grace_period` is 45 s so
+a parser child can receive SIGTERM, exit, or be SIGKILLed after
+`GracefulStop` before Docker kills the container. Parser RSS is operational
+replica sizing, not a 1 GiB Go target.
 
 ## What you need
 
 - Docker Compose
 - An SSH key that can read the private sibling modules (`mrfparser`,
-  `mrfdiscoverer`, `mrfconsumer`) **only to build** the image
+  `mrfparser_rust`, `mrfdiscoverer`, `mrfconsumer`) **only to build** the
+  image
 - A real `mrfenricher` catalog directory with `manifest.json`
 - A services CSV with header `billing_code_type,billing_code`
 
@@ -97,10 +102,12 @@ docker buildx build --ssh default --progress=plain --load --tag mrfpipeline:loca
 
 Confirm `docker images mrfpipeline:local` before migrate.
 
-Updating `go.mod` does not update an existing image or running worker. Rebuild
-the shared image and recreate all worker roles with the configured replica
-counts after stopping the old workers. The current parser/consumer pairing
-requires parser `1.3.0`; see
+Updating `go.mod` or the Rust parser pin does not update an existing image
+or running worker. Rebuild the shared image and recreate all worker roles
+with the configured replica counts after stopping the old `mrf` workers.
+Do not mix an old in-process parser with a new consumer on the same
+sources; completed `1.3.0` output remains reusable. The current
+parser/consumer pairing requires parser `1.3.0`; see
 [parser input compatibility](README.md#parser-input-compatibility) before
 reusing existing parsed artifacts.
 

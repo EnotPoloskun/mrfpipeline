@@ -60,6 +60,7 @@ services:
     <<: *pipeline-image
     profiles: [workers]
     restart: "on-failure:5"
+    stop_grace_period: 45s
     command: ["work", "--role", "mrf"]
     depends_on:
       control:

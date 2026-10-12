@@ -139,9 +139,9 @@ func (a *MRFDownloadArgs) UnmarshalJSON(data []byte) error {
 
 // MRFParseArgs is the durable payload for mrf.parse.
 //
-// Story 10 must wrap every mrfparser.Parse call with one process-level mutex.
+// Production mrf.parse execs one mrfparser child under a process-level mutex.
 // Queue concurrency 1 on mrf_parse bounds resource use; it is not that
-// contract. River 0.39 rescue does not terminate the existing Go invocation.
+// contract. River 0.39 rescue does not terminate the existing child.
 type MRFParseArgs struct {
 	MRFSourceID int64 `json:"mrf_source_id"`
 }

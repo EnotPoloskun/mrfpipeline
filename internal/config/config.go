@@ -19,6 +19,7 @@ const (
 	EnvProviderCatalogPath = "MRFPIPELINE_PROVIDER_CATALOG_PATH"
 	EnvServicesPath        = "MRFPIPELINE_SERVICES_PATH"
 	EnvMRFResidentCapacity = "MRFPIPELINE_MRF_RESIDENT_CAPACITY"
+	EnvMRFParserPath       = "MRFPIPELINE_MRFPARSER_PATH"
 
 	FieldPayer            = "payer"
 	FieldCollectionMonth  = "collection_month"

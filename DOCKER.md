@@ -7,9 +7,10 @@ stay in [`README.md`](README.md). The topology file is
 [`docker-compose.yml`](docker-compose.yml).
 
 The pipeline image is `mrfpipeline:local`. It contains the `mrfpipeline`
-binary and pinned DuckDB `v1.5.5`. It does **not** contain enricher, NPPES
-data, or the provider catalog. Enricher is a separate program with its own
-Postgres; copy its export directory onto this host.
+binary, `/usr/local/bin/mrfparser`, and pinned DuckDB `v1.5.5`. It does
+**not** contain enricher, NPPES data, or the provider catalog. Enricher is a
+separate program with its own Postgres; copy its export directory onto this
+host.
 
 Run every command from the repository root. `-f docker-compose.yml` is
 optional (it is the default Compose file). Compose does not take a host
@@ -34,7 +35,8 @@ Compose PostgreSQL. The optional River UI profile publishes only
 
 - Docker Compose
 - An SSH key that can read the private sibling modules (`mrfparser`,
-  `mrfdiscoverer`, `mrfconsumer`) **only to build** the image
+  `mrfparser_rust`, `mrfdiscoverer`, `mrfconsumer`) **only to build** the
+  image
 - A real `mrfenricher` catalog directory with `manifest.json`
 - A services CSV with header `billing_code_type,billing_code`
 - Disk: resident slots bound in-flight raw MRFs, not warehouse/parsed output
@@ -93,17 +95,23 @@ docker buildx build --ssh default --progress=plain --load --tag mrfpipeline:loca
 Confirm `docker images mrfpipeline:local` shows a real image before migrate.
 
 After dependency updates, rebuild this shared image and recreate every worker
-role, preserving configured replica counts. Stop old workers before the
-cutover to avoid mixing parser/consumer versions. The current pairing requires
-parser `1.3.0`; older parsed outputs need reparsing, not manifest relabeling.
-See [parser input compatibility](README.md#parser-input-compatibility).
+role, preserving configured replica counts. Stop old `mrf` workers before the
+cutover to avoid mixing an old in-process parser with a new consumer on the
+same sources. Completed `1.3.0` output remains reusable. The current pairing
+requires parser `1.3.0`; older parsed outputs need reparsing, not manifest
+relabeling. See [parser input compatibility](README.md#parser-input-compatibility).
 
-The image contains the statically built `mrfpipeline` binary and the official
-DuckDB CLI at `/usr/local/bin/duckdb`, both pinned to the repository contract;
-DuckDB is exact `v1.5.5` for both `linux/amd64` and `linux/arm64` builds.
-DuckDB is not a Compose service, has no port or persistent volume, and never
-runs in a worker. CI verifies `mrfpipeline --version`, `duckdb --version`, and
-the static binary after the final image build.
+The image contains the statically built `mrfpipeline` binary, the Rust
+`mrfparser` CLI at `/usr/local/bin/mrfparser`, and the official DuckDB CLI at
+`/usr/local/bin/duckdb`, all pinned to the repository contract; DuckDB is
+exact `v1.5.5` for both `linux/amd64` and `linux/arm64` builds. DuckDB is
+not a Compose service, has no port or persistent volume, and never runs in
+a worker. CI verifies `mrfpipeline --version`, `mrfparser --version`,
+`duckdb --version`, and the static pipeline binary after the final image
+build. `mrfparser --version` is a smoke test; the Dockerfile Rust revision
+is the pin. The `mrf` service sets `stop_grace_period: 45s` so Compose stop
+can SIGTERM the parser, wait the 30 s `GracefulStop` ceiling, and SIGKILL
+before Docker's default 10 s stop timeout kills the container.
 
 After a code change, rebuild the tag, then recreate running services so they
 pick up the new image (see [Reload a rebuilt image](#reload-a-rebuilt-image)).

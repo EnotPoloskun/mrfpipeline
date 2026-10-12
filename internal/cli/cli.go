@@ -238,6 +238,15 @@ func runWork(ctx context.Context, getenv func(string) string, roles ...string) e
 			return err
 		}
 	}
+	parserPath := ""
+	if role == "mrf" {
+		if raw := getenv(config.EnvMRFParserPath); raw != "" {
+			parserPath, err = config.NormalizeLocalPath(config.EnvMRFParserPath, raw)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	return work.Runtime{
 		Role: role, ResidentCapacity: capacity, Lease: lease,
 		Pool:                pool,
@@ -246,6 +255,7 @@ func runWork(ctx context.Context, getenv func(string) string, roles ...string) e
 		ServicesPath:        services,
 		WarehousePath:       warehouse,
 		ProviderCatalogPath: catalog,
+		ParserPath:          parserPath,
 	}.Run(ctx)
 }
 

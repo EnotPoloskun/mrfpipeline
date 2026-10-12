@@ -2,7 +2,7 @@
 
 ## Document status
 
-This document describes the implemented Stories 01–41 architecture and
+This document describes the implemented Stories 01–42 architecture and
 operational acceptance. The numbered requirement stories remain authoritative
 where more specific.
 Sections explicitly labeled historical version 1 are background only; they
@@ -20,8 +20,9 @@ except where the target addendum explicitly replaces them:
   remains invalid.
 - Download and parse one exact MRF URL once, even when several TOCs reference
   it.
-- Keep `mrfparser` plan-independent and serialize every `Parse` call with a
-  process-level mutex.
+- Keep `mrfparser` plan-independent and serialize every production parser
+  child with a process-level mutex. There is no process-wide parser memory
+  limit.
 - Ingest rates once per consumer snapshot, then attach newly discovered plans
   additively without rewriting rate/provider data.
 - Treat TOC captures as payer + collection month + exact URL, and MRF source
@@ -141,6 +142,17 @@ Production discovery accepts the exact identifiers the pinned `mrfdiscoverer`
 already lists (`uhc`, `optum`, `cigna`, `molina`, `oscar`, and `anthem`). Generic payer columns and
 per-payer release state remain the domain/query boundary; a later discoverer
 payer still needs a later pipeline story.
+
+Production `mrf.parse` execs the Linux `mrfparser` CLI from the shared image
+(`--input`, `--output`, `--services`, `--temp-dir`). It does not call
+`mrfparser.Parse` in-process. Exit `4` is immediate `mrf_parse_input_invalid`;
+other child failures are retryable `mrf_parse_execution_failed`. The process
+mutex serializes the child because River 0.39 rescue does not kill it. The
+`mrf` Compose service uses `stop_grace_period: 45s` so SIGTERM, the 30 s
+`GracefulStop` wait, and SIGKILL finish before Docker kills the container.
+Optional `MRFPIPELINE_MRFPARSER_PATH` selects the executable; otherwise
+`mrfparser` is looked up on `PATH`. Tests and fixture generators may still
+call the Go library pin.
 
 ## Release filter architecture: Stories 28–32 implemented
 
@@ -1704,6 +1716,12 @@ Story 41 is implemented Anthem discoverer adapter:
 | Story | Deliverable |
 |---:|---|
 | 41 | Pin `mrfdiscoverer` Story 08 and accept `discover --payer anthem`. (Implemented.) |
+
+Story 42 is implemented production MRF parse CLI exec:
+
+| Story | Deliverable |
+|---:|---|
+| 42 | Exec the Rust `mrfparser` CLI from production `mrf.parse`, map child exit codes, SIGTERM then SIGKILL the process group, and ship the Linux binary in the shared image. (Implemented.) |
 
 Each worker story must include its own retry/crash tests and prove it conforms
 to Stories 03 and 04. Story 13 validates the complete pipeline with one UHC

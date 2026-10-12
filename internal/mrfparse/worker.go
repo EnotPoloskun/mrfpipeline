@@ -112,17 +112,9 @@ func (w *Worker) parse(ctx context.Context, job *river.Job[jobs.MRFParseArgs]) e
 		if err != nil {
 			return jobs.Failure(jobs.FailureMRFParseExecutionFailed)
 		}
-		cfg.OnProgress = func(p mrfparser.Progress) error {
-			params := jobs.ProgressParams{
-				JobID: job.ID, Kind: jobs.KindMRFParse, Queue: jobs.QueueMRFParse, Phase: "mrf_parse",
-				CopiedBytes: p.StoredBytes,
-			}
-			if p.SizeKnown && p.TotalBytes > 0 {
-				params.TotalBytes = p.TotalBytes
-			}
-			_ = progress.Log(params)
-			return nil
-		}
+		_ = progress.Log(jobs.ProgressParams{
+			JobID: job.ID, Kind: jobs.KindMRFParse, Queue: jobs.QueueMRFParse, Phase: "mrf_parse",
+		})
 		if err := callParse(w.Parse, ctx, cfg); err != nil {
 			return mapWorkError(err)
 		}

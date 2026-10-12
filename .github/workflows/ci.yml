@@ -112,6 +112,7 @@ jobs:
         run: |
           set -eu
           test "$(docker run --rm --entrypoint /usr/local/bin/mrfpipeline mrfpipeline:local --version)" = "mrfpipeline dev"
+          test "$(docker run --rm --entrypoint /usr/local/bin/mrfparser mrfpipeline:local --version)" = "mrfparser 0.1.0"
           duckdb_version="$(docker run --rm --entrypoint /usr/local/bin/duckdb mrfpipeline:local --version)"
           test "${duckdb_version%% *}" = "v1.5.5"
           docker run --rm --entrypoint /bin/sh mrfpipeline:local -c \

@@ -44,6 +44,12 @@ func TestLocalPackagingContract(t *testing.T) {
 		"install -d /out",
 		"/out/duckdb",
 		"COPY --from=duckdb /out/duckdb /usr/local/bin/duckdb",
+		"COPY --from=mrfparser /out/mrfparser /usr/local/bin/mrfparser",
+		"rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0",
+		"d1a66424bf896074a9505f1ebe709f86a4cc18a1",
+		"cargo build --release --locked",
+		"github.com/EnotPoloskun/mrfparser_rust",
+		"FROM --platform=$BUILDPLATFORM",
 		"apt-get install --no-install-recommends --yes ca-certificates",
 		"apt-get clean",
 		"rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*",
@@ -57,10 +63,13 @@ func TestLocalPackagingContract(t *testing.T) {
 		t.Fatal("Dockerfile missing final slim runtime stage")
 	}
 	runtime := dockerfile[runtimeStart:]
-	for _, forbidden := range []string{"curl", "unzip", "sha256sum", "github.com/duckdb/duckdb/releases"} {
+	for _, forbidden := range []string{"curl", "unzip", "sha256sum", "github.com/duckdb/duckdb/releases", "rustc", "cargo build", "mrfparser_rust.git"} {
 		if strings.Contains(runtime, forbidden) {
 			t.Fatalf("runtime stage retains build-only content %q", forbidden)
 		}
+	}
+	if strings.Contains(dockerfile, "FROM rust:") && !strings.Contains(dockerfile, "rust:1.88.0-bookworm@sha256:") {
+		t.Fatal("Rust builder must be pinned by version and digest")
 	}
 
 	compose := readRepositoryFile(t, "docker-compose.yml")
@@ -71,6 +80,7 @@ func TestLocalPackagingContract(t *testing.T) {
 		"command: [\"migrate\"]",
 		"command: [\"work\", \"--role\", \"control\"]",
 		"command: [\"work\", \"--role\", \"mrf\"]",
+		"stop_grace_period: 45s",
 		"command: [\"work\", \"--role\", \"consumer\"]",
 		"profiles: [operator]",
 		"profiles: [workers]",
@@ -111,6 +121,10 @@ func TestLocalPackagingContract(t *testing.T) {
 			t.Fatalf("Compose service topology changed for %q", service)
 		}
 	}
+	consumerStart := strings.Index(compose, "  consumer:\n")
+	if mrfStart < 0 || consumerStart < mrfStart || !strings.Contains(compose[mrfStart:consumerStart], "stop_grace_period: 45s") {
+		t.Fatal("mrf stop_grace_period must cover GracefulStop plus 15s")
+	}
 
 	readme := readRepositoryFile(t, "README.md")
 	for _, fragment := range []string{
@@ -138,6 +152,10 @@ func TestLocalPackagingContract(t *testing.T) {
 		"scripts/scale-mrf.sh",
 		"scripts/scale-consumer.sh",
 		"docker compose -f docker-compose.yml --profile ui up -d riverui",
+		"d1a66424bf896074a9505f1ebe709f86a4cc18a1",
+		"/usr/local/bin/mrfparser",
+		"mrfparser_rust",
+		"stop_grace_period",
 	} {
 		if !strings.Contains(readme, fragment) {
 			t.Fatalf("README missing %q", fragment)
@@ -171,6 +189,8 @@ func TestLocalPackagingContract(t *testing.T) {
 		"scripts/scale-mrf.sh",
 		"scripts/scale-consumer.sh",
 		"docker compose -f docker-compose.yml --profile ui up -d riverui",
+		"/usr/local/bin/mrfparser",
+		"stop_grace_period",
 	} {
 		if !strings.Contains(dockerGuide, fragment) {
 			t.Fatalf("DOCKER.md missing %q", fragment)
@@ -200,6 +220,8 @@ func TestLocalPackagingContract(t *testing.T) {
 		"[`DOCKER.md`](DOCKER.md)",
 		"ghcr.io/enotpoloskun/mrfpipeline",
 		"docker compose --profile operator run --rm --no-build cli migrate",
+		"/usr/local/bin/mrfparser",
+		"stop_grace_period",
 	} {
 		if !strings.Contains(usageGuide, fragment) {
 			t.Fatalf("USAGE.md missing %q", fragment)
@@ -236,6 +258,8 @@ func TestLocalPackagingContract(t *testing.T) {
 		"docker compose -f docker-compose.yml run --rm --no-deps cli filters build --help",
 		"docker compose -f docker-compose.yml run --rm --no-deps cli filters measure --help",
 		"/usr/local/bin/duckdb",
+		"/usr/local/bin/mrfparser",
+		"mrfparser 0.1.0",
 		"command -v ldd",
 	} {
 		if !strings.Contains(workflow, fragment) {

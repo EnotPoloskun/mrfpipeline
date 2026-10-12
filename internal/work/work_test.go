@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/EnotPoloskun/mrfparser"
 	"github.com/enotpoloskun/mrfpipeline/internal/artifact"
 	"github.com/enotpoloskun/mrfpipeline/internal/jobs"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -101,6 +103,64 @@ func TestRunRequiresExplicitRole(t *testing.T) {
 	err = Runtime{Pool: &pgxpool.Pool{}, Workspace: ws}.Run(context.Background())
 	if !jobs.IsFailure(err, jobs.FailureInvalidArguments) {
 		t.Fatalf("role error = %v", err)
+	}
+}
+
+func TestRunMRFRequiresParser(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := filepath.Join(t.TempDir(), "services.csv")
+	if err := os.WriteFile(svc, []byte("billing_code_type,billing_code\nCPT,99213\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err = Runtime{Role: "mrf", Pool: &pgxpool.Pool{}, Workspace: ws, ServicesPath: svc}.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected parser failure")
+	}
+	if errors.Is(err, jobs.ErrJob) && jobs.IsFailure(err, jobs.FailureInvalidArguments) {
+		t.Fatalf("unexpected classification %v", err)
+	}
+}
+
+func TestRunMRFInjectedParseSkipsParser(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := filepath.Join(t.TempDir(), "services.csv")
+	if err := os.WriteFile(svc, []byte("billing_code_type,billing_code\nCPT,99213\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var runErr error
+	func() {
+		defer func() { recover() }()
+		runErr = Runtime{
+			Role: "mrf", Pool: &pgxpool.Pool{}, Workspace: ws, ServicesPath: svc,
+			ParseMRF: func(context.Context, mrfparser.Config) error { return nil },
+		}.Run(context.Background())
+	}()
+	if runErr != nil && runErr.Error() == jobs.ErrJob.Error()+": runtime" {
+		t.Fatalf("injected parse looked up the parser: %v", runErr)
+	}
+}
+
+func TestRunControlDoesNotRequireParser(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	ws, err := artifact.Init(context.Background(), filepath.Join(t.TempDir(), "ws"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := filepath.Join(t.TempDir(), "services.csv")
+	if err := os.WriteFile(svc, []byte("billing_code_type,billing_code\nCPT,99213\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err = Runtime{Role: "control", Pool: &pgxpool.Pool{}, Workspace: ws, ServicesPath: svc}.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected catalog failure")
 	}
 }
 

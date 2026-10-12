@@ -61,6 +61,9 @@ Required environment:
   MRFPIPELINE_PROVIDER_CATALOG_PATH (control and consumer)
   MRFPIPELINE_SERVICES_PATH
 
+Optional environment:
+  MRFPIPELINE_MRFPARSER_PATH (mrf only; otherwise mrfparser on PATH)
+
 The control role must be the only control process. The consumer role is
 replicable: one mutation per process; scale with --scale consumer=N. MRF download
 has two workers and MRF parse has one worker per process; the database-owned

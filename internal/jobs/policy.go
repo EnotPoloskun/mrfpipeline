@@ -19,7 +19,7 @@ func productionQueues() map[string]river.QueueConfig {
 		QueueTOCImport:   {MaxWorkers: 2},
 		QueueMRFDownload: {MaxWorkers: 2},
 		// mrf_parse concurrency 1 bounds CPU/memory/disk. It is not the
-		// Story 10 process-level mrfparser.Parse mutex.
+		// process-level parser-child mutex.
 		QueueMRFParse: {MaxWorkers: 1},
 		QueueConsumer: {MaxWorkers: 1},
 	}

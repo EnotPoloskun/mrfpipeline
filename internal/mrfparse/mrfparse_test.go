@@ -212,8 +212,8 @@ func TestIncompleteResetThenParse(t *testing.T) {
 			if cfg.TempDir != wantTemp || cfg.Services != svc.Path {
 				t.Fatalf("cfg %+v", cfg)
 			}
-			if cfg.MemoryLimit != 1<<30 || cfg.OnProgress == nil {
-				t.Fatal("defaults or progress")
+			if cfg.OnProgress != nil {
+				t.Fatal("OnProgress")
 			}
 			input, _, _ := generatedPaths(ws, id)
 			writeValidParsed(t, cfg.Output, expectedSourceURI(input), svc.Path)
@@ -444,11 +444,8 @@ func TestProgressLiveVersusReuse(t *testing.T) {
 		Services:  svc,
 		Progress:  jobs.NewProgress(jobs.NewLogger(&live)),
 		Parse: func(ctx context.Context, cfg mrfparser.Config) error {
-			if cfg.OnProgress == nil {
-				t.Fatal("missing OnProgress")
-			}
-			if err := cfg.OnProgress(mrfparser.Progress{StoredBytes: 12, TotalBytes: 100, SizeKnown: true}); err != nil {
-				t.Fatal(err)
+			if cfg.OnProgress != nil {
+				t.Fatal("OnProgress")
 			}
 			input, _, _ := generatedPaths(ws, id)
 			writeValidParsed(t, cfg.Output, expectedSourceURI(input), svc.Path)
@@ -458,7 +455,7 @@ func TestProgressLiveVersusReuse(t *testing.T) {
 	if err := w.parse(context.Background(), parseJob(15, id)); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(live.String(), `"phase":"mrf_parse"`) || !strings.Contains(live.String(), `"percent":`) {
+	if !strings.Contains(live.String(), `"phase":"mrf_parse"`) || strings.Contains(live.String(), `"percent":`) {
 		t.Fatalf("live %s", live.String())
 	}
 	if strings.Contains(live.String(), "mrf-source") || strings.Contains(live.String(), ws.Root) {
@@ -537,7 +534,7 @@ func TestFixturesParseThroughPackage(t *testing.T) {
 			if err := os.Mkdir(cfg.TempDir, 0700); err != nil {
 				t.Fatal(err)
 			}
-			if err := DefaultParse(context.Background(), cfg); err != nil {
+			if err := mrfparser.Parse(context.Background(), cfg); err != nil {
 				t.Fatal(err)
 			}
 			source, err := normalizePath(in)
@@ -581,7 +578,7 @@ func TestFixturesParseThroughPackage(t *testing.T) {
 		if err := os.Mkdir(cfg.TempDir, 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err := DefaultParse(context.Background(), cfg); err != nil {
+		if err := mrfparser.Parse(context.Background(), cfg); err != nil {
 			t.Fatal(err)
 		}
 		source, err := normalizePath(in)
@@ -656,13 +653,19 @@ func writeDownload(t *testing.T, ws *artifact.Workspace, id int64, body []byte) 
 
 func writeValidParsed(t *testing.T, dir, sourceURI, servicesPath string) {
 	t.Helper()
+	if err := writeValidLayout(dir, sourceURI, servicesPath); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeValidLayout(dir, sourceURI, servicesPath string) error {
 	for _, name := range datasetNames {
 		p := filepath.Join(dir, name)
 		if err := os.MkdirAll(p, 0700); err != nil {
-			t.Fatal(err)
+			return err
 		}
 		if err := os.WriteFile(filepath.Join(p, "part-00000.parquet"), []byte("p"), 0600); err != nil {
-			t.Fatal(err)
+			return err
 		}
 	}
 	sel := servicesPath
@@ -670,11 +673,9 @@ func writeValidParsed(t *testing.T, dir, sourceURI, servicesPath string) {
 		sel = resolved
 	}
 	if err := os.WriteFile(filepath.Join(dir, fileManifest), validManifestJSON(sourceURI, sel, 0), 0600); err != nil {
-		t.Fatal(err)
+		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, fileStats), validStatsJSON(), 0600); err != nil {
-		t.Fatal(err)
-	}
+	return os.WriteFile(filepath.Join(dir, fileStats), validStatsJSON(), 0600)
 }
 
 func validManifestJSON(sourceURI, selectorURI string, retained int64) []byte {
